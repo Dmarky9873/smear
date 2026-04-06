@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Smear local scaffolding
+frontend/node_modules/
+.DS_Store

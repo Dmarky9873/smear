@@ -45,9 +45,8 @@ class Deck:
             rank = get_rank_from_card_code(card_code)
             rank_order = RANK_ORDER.get(rank)
 
-            # Include jokers and cards with rank >= low
             if rank_order is None or rank_order >= low_order:
-                self._deck.append(card_code)
+                self._deck.append(Card(card_code))
 
     def shuffle(self) -> None:
         random.shuffle(self._deck)
@@ -109,3 +108,20 @@ class Team:
 
     def __str__(self):
         return f"team with {[player.name for player in self.constituents]}"
+
+
+# GAMEPLAY
+
+
+@dataclass
+class TrickState:
+    leader: str
+    plays: list[tuple[str, Card]]
+
+
+@dataclass
+class RoundState:
+    current_player: Player
+    trump: str | None
+    current_trick: TrickState
+    hidden_cards: set[Card]

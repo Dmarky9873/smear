@@ -1,11 +1,11 @@
-from models import Player, Team, Card, Deck
+from models import Player, Team, Card, Deck, RoundState
 from constants import RANKS, HAND_SIZE
 
 
 class Game:
 
     hand_size: int = HAND_SIZE
-    players: dict[str: Player]
+    players: dict[str, Player]
     player_order: list[str] = []
     teams: set[Team] = None
     deck: Deck
@@ -64,7 +64,7 @@ class Game:
 
     @property
     def num_dealt(self):
-        return self.num_dealt
+        return self._num_dealt
 
     def view_state(self):
         if self.players == {}:
@@ -91,7 +91,7 @@ class Game:
 
         for player in self.player_order:
             self.players[player] = Player(
-                player, {})
+                player, set())
 
         self.deal_cards()
 
@@ -105,3 +105,41 @@ class Simulator:
 
     def __init__(self, game: Game):
         self._game = game
+
+
+def get_legal_actions(state: RoundState) -> set[Card]:
+    hand = state.current_player.cards
+
+    if not state.current_trick.plays:
+        return set(hand)
+
+    played_cards = [play[1] for play in state.current_trick.plays]
+
+    if state.trump is not None:
+        trump_cards_in_hand = {
+            card for card in hand
+            if not card.is_joker and card.suit == state.trump
+        }
+
+        trump_has_been_played = any(
+            (not card.is_joker and card.suit == state.trump)
+            for card in played_cards
+        )
+
+        if trump_has_been_played and trump_cards_in_hand:
+            return trump_cards_in_hand
+
+    lead_card = played_cards[0]
+    if (
+        not lead_card.is_joker
+        and state.trump is not None
+        and lead_card.suit != state.trump
+    ):
+        same_suit_cards = {
+            card for card in hand
+            if not card.is_joker and card.suit == lead_card.suit
+        }
+        if same_suit_cards:
+            return same_suit_cards
+
+    return set(hand)

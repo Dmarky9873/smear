@@ -1,25 +1,33 @@
-from backend.models import Player, Team, Card, Deck, RANKS
+from models import Player, Team, Card, Deck
+from constants import RANKS, HAND_SIZE
 
 
 class Game:
 
-    hand_size: int = 6
+    hand_size: int = HAND_SIZE
     players: dict[str: Player]
-    player_order: list[str]
-    teams: set[Team]
+    player_order: list[str] = []
+    teams: set[Team] = None
     deck: Deck
     trump_suit: str = None
 
-    def __init__(self, num_players: int):
+    def __init__(self, num_players: int, player_names: list[str]):
         if num_players > 8 or num_players < 3:
             raise ValueError(
                 f"the number of players must be in [3, 8], you gave {num_players}")
 
         self._num_players = num_players
+        self.players = {}
         self._low, self._num_hiding, self._num_dealt = self._calculate_low()
         self.deck = Deck(self._low)
 
-    def _calculate_low(self) -> tuple[int, int, int]:
+        if len(player_names) != self.num_players:
+            raise ValueError(
+                f"you did not provide an adaquate number of names")
+
+        self.player_order = player_names.copy()
+
+    def _calculate_low(self) -> tuple[str, int, int]:
         dealt = Game.hand_size * self.num_players
         best_low = None
         best_hiding = None
@@ -69,17 +77,31 @@ class Game:
 
             print(f"Trump suit: {self.trump_suit}")
 
-    def new_game(self, player_names: list[str]):
-        if len(player_names) != self.num_players:
-            raise ValueError(
-                f"you did not provide an adaquate number of names")
+    def deal_cards(self):
+        self.deck.shuffle()
+        deck_copy = self.deck.deck.copy()
+
+        for player in self.player_order:
+            self.players[player].receive_new_hand(
+                {deck_copy.pop() for _ in range(Game.hand_size)})
+
+    def init_new_game(self):
 
         print(f"creating a game with a low of {self.low}...")
 
-        self.deck.shuffle()
-
-        deck_copy = self.deck.deck.copy()
-        for player in player_names:
-            self.player_order.append(player)
+        for player in self.player_order:
             self.players[player] = Player(
-                player, {deck_copy.pop() for _ in range(Game.hand_size)})
+                player, {})
+
+        self.deal_cards()
+
+        print(f"initialized game with {len(self.player_order)} players.")
+        for player in self.player_order:
+            print(self.players[player])
+
+
+class Simulator:
+    game: Game
+
+    def __init__(self, game: Game):
+        self._game = game

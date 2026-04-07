@@ -133,7 +133,6 @@ class TrickState:
 class RoundState:
     players: list[Player]
     current_player: Player
-    leader_index: int
     trump: str | None
     current_trick: TrickState
     hidden_cards: set[Card]
@@ -146,4 +145,4 @@ class RoundState:
         for player in self.players:
             if not player.is_out_of_cards():
                 return False
-        return True
+        return self.current_trick.is_terminal

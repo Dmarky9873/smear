@@ -1,34 +1,54 @@
-from models import Player, Team, Card, Deck, RoundState
+from models import Player, Team, Card, Deck, RoundState, TrickState, Play
 from constants import RANKS, HAND_SIZE
 
 
 class Game:
 
     hand_size: int = HAND_SIZE
-    players: dict[str, Player]
-    player_order: list[str] = []
     teams: set[Team] = None
-    deck: Deck
-    trump_suit: str = None
 
-    def __init__(self, num_players: int, player_names: list[str]):
+    def __init__(self, num_players: int, player_names: list[str], teams: set[tuple]):
+
         if num_players > 8 or num_players < 3:
             raise ValueError(
                 f"the number of players must be in [3, 8], you gave {num_players}")
 
-        self._num_players = num_players
-        self.players = {}
-        self._low, self._num_hiding, self._num_dealt = self._calculate_low()
-        self.deck = Deck(self._low)
+        self._low, self._num_hiding, self._num_dealt = self._calculate_low(
+            num_players)
 
-        if len(player_names) != self.num_players:
+        deck = Deck(self._low)
+
+        print(f"creating a game with a low of {self._low}...")
+
+        if len(player_names) != num_players:
             raise ValueError(
                 f"you did not provide an adaquate number of names")
 
-        self.player_order = player_names.copy()
+        players = [Player(name, set()) for name in player_names]
+        player_dict = dict()
+        for player in players:
+            player_dict[player.name] = player
 
-    def _calculate_low(self) -> tuple[str, int, int]:
-        dealt = Game.hand_size * self.num_players
+        curr_player = players[0]
+
+        hiding_cards = set(self.deal_cards(deck, players))
+
+        teams_to_add = []
+        for team in teams:
+            new_team = Team([player_dict[name] for name in team], set())
+            teams_to_add.append(new_team)
+
+        first_trick = TrickState(players[0], [], players)
+
+        self._round_state = RoundState(players,
+                                       curr_player, 0, None, first_trick, hiding_cards, [], teams_to_add, deck)
+
+        print(f"initialized game with {num_players} players.")
+        for player in players:
+            print(player)
+
+    def _calculate_low(self, num_players) -> tuple[str, int, int]:
+        dealt = Game.hand_size * num_players
         best_low = None
         best_hiding = None
         best_diff = float("inf")
@@ -51,53 +71,58 @@ class Game:
         return best_low, best_hiding, dealt
 
     @property
-    def num_players(self):
-        return self._num_players
-
-    @property
     def low(self):
         return self._low
 
-    @property
-    def num_hiding(self):
-        return self._num_hiding
-
-    @property
-    def num_dealt(self):
-        return self._num_dealt
-
     def view_state(self):
-        if self.players == {}:
+        if self._round_state.players == []:
             print("no game has been initialized. Call `new_game`.")
         else:
             print("Players:")
-            for name, player in self.players.items():
+            for player in self._round_state.players:
                 print(
-                    f"{name}: cards: {player.cards}, captured cards: {player.captured_cards}")
+                    f"{player.name}: cards: {player.cards}, captured cards: {player.captured_cards}")
 
-            print(f"Trump suit: {self.trump_suit}")
+            print(f"Trump suit: {self._round_state.trump}")
 
-    def deal_cards(self):
-        self.deck.shuffle()
-        deck_copy = self.deck.deck.copy()
+    def get_state(self) -> RoundState:
+        if self._round_state.current_player == None:
+            raise ValueError(f"initialize a game before getting the state")
+        return self._round_state
 
-        for player in self.player_order:
-            self.players[player].receive_new_hand(
+    def apply_trick_action(self, action: Play):
+
+        if action.player != self._round_state.current_player:
+            raise ValueError(
+                f"action with player {action.player} was attempted despite {self._round_state.current_player} being the current player")
+
+        if action.card not in get_legal_actions(self.get_state):
+            raise ValueError(
+                f"action with card {action.card} attepted despite card not being in legal moves")
+
+        self._round_state.current_player.play_card(action.card)
+        self._round_state.current_trick.plays.append(action)
+
+        if len(self._round_state.current_trick.plays) == len(self._round_state.players):
+            self._round_state.trick_history.append(
+                self._round_state.current_trick)
+
+            self._round_state.current_trick = TrickState()
+
+    def deal_cards(self, deck: Deck, players: set[Player] | list[Player]) -> list[Card]:
+        """Shuffles and deals cards to the players within the game
+
+        Returns:
+            list[Card]: Cards that are hiding based on this shuffle
+        """
+        deck.shuffle()
+        deck_copy = deck.get_copy()
+
+        for player in players:
+            player.receive_new_hand(
                 {deck_copy.pop() for _ in range(Game.hand_size)})
 
-    def init_new_game(self):
-
-        print(f"creating a game with a low of {self.low}...")
-
-        for player in self.player_order:
-            self.players[player] = Player(
-                player, set())
-
-        self.deal_cards()
-
-        print(f"initialized game with {len(self.player_order)} players.")
-        for player in self.player_order:
-            print(self.players[player])
+        return deck_copy
 
 
 class Simulator:
@@ -113,7 +138,7 @@ def get_legal_actions(state: RoundState) -> set[Card]:
     if not state.current_trick.plays:
         return set(hand)
 
-    lead_card = state.current_trick.plays[0][1]
+    lead_card = state.current_trick.plays[0].card
 
     # If trump was led, must play trump if possible.
     if state.trump is not None and not lead_card.is_joker and lead_card.suit == state.trump:
@@ -137,3 +162,7 @@ def get_legal_actions(state: RoundState) -> set[Card]:
 
     # If a joker was led, anything may be played.
     return set(hand)
+
+
+def get_trick_winner(state: TrickState) -> Player:
+    ...

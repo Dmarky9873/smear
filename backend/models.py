@@ -51,9 +51,8 @@ class Deck:
     def shuffle(self) -> None:
         random.shuffle(self._deck)
 
-    @property
-    def deck(self) -> list[Card]:
-        return self._deck
+    def get_copy(self) -> list[Card]:
+        return self._deck.copy()
 
     def __str__(self) -> str:
         return f"deck: {self._deck}"
@@ -93,18 +92,21 @@ class Player:
         self._cards = cards
 
     @property
-    def captured_cards(self):
+    def captured_cards(self) -> set[Card]:
         return self._captured_cards
 
     @property
-    def cards(self):
+    def cards(self) -> set[Card]:
         return self._cards
+
+    def is_out_of_cards(self) -> bool:
+        return self._cards == set()
 
 
 @dataclass
 class Team:
     constituents: list[Player]
-    captured_cards: list[Card]
+    captured_cards: set[Card]
 
     def __str__(self):
         return f"team with {[player.name for player in self.constituents]}"
@@ -114,14 +116,37 @@ class Team:
 
 
 @dataclass
+class Play:
+    player: Player
+    card: Card
+
+
+@dataclass
 class TrickState:
-    leader: str
-    plays: list[tuple[str, Card]]
+    leader: Player
+    plays: list[Play]
+    players: list[Player]
+
+    @property
+    def is_terminal(self):
+        return len(self.plays) == len(self.players)
 
 
 @dataclass
 class RoundState:
+    players: list[Player]
     current_player: Player
+    leader_index: int
     trump: str | None
     current_trick: TrickState
     hidden_cards: set[Card]
+    trick_history: list[TrickState]
+    teams: list[Team]
+    deck: Deck
+
+    @property
+    def is_terminal(self):
+        for player in self.players:
+            if not player.is_out_of_cards():
+                return False
+        return True

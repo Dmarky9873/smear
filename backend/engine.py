@@ -100,14 +100,21 @@ class Game:
             raise ValueError(
                 f"action with card {action.card} attepted despite card not being in legal moves")
 
+        curr_trick = self._round_state.current_trick
         self._round_state.current_player.play_card(action.card)
-        self._round_state.current_trick.plays.append(action)
+        curr_trick.plays.append(action)
 
         if len(self._round_state.current_trick.plays) == len(self._round_state.players):
-            self._round_state.trick_history.append(
-                self._round_state.current_trick)
 
-            self._round_state.current_trick = TrickState()
+            trick_winner = get_trick_winner(curr_trick)
+
+            for play in curr_trick.plays:
+                trick_winner.capture(play.card)
+
+            self._round_state.current_trick = TrickState(
+                trick_winner, [], curr_trick.players)
+            self._round_state.trick_history.append(
+                curr_trick)
 
     def deal_cards(self, deck: Deck, players: set[Player] | list[Player]) -> list[Card]:
         """Shuffles and deals cards to the players within the game
@@ -165,4 +172,7 @@ def get_legal_actions(state: RoundState) -> set[Card]:
 
 
 def get_trick_winner(state: TrickState) -> Player:
+    if not state.is_terminal:
+        raise ValueError(f"trick is not in terminal state")
+
     ...

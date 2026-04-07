@@ -62,9 +62,6 @@ class Deck:
 
 
 class Player:
-    name: str
-    cards: set[Card]
-    captured_cards: set[Card]
 
     def __init__(self, name: str, cards: set[Card] = None):
         if cards is None:

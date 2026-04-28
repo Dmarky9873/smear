@@ -1,5 +1,5 @@
-from engine import Game, get_legal_actions
-from models import Play, Card
+from engine import Game, get_legal_actions, score_round
+from models import Play, Card, Player
 
 
 class Simulator:
@@ -8,11 +8,7 @@ class Simulator:
     def __init__(self, game: Game):
         self._game = game
 
-    def run_trick(self, trump):
-        trick = self._game._round_state.current_trick
-        round = self._game._round_state
-        trick.trump = trump
-        round.trump = trump
+    def _run_trick(self):
         is_terminal = False
         while not is_terminal:
             curr_player = self._game.curr_player
@@ -26,3 +22,12 @@ class Simulator:
             play = Play(curr_player, card)
 
             is_terminal = self._game.apply_trick_action(play)
+
+    def _run_round(self, auction_winner: Player) -> dict:
+        self._game.set_starting_player(auction_winner)
+
+        while not self._game._round_state.is_terminal:
+            self._game.deal_cards()
+            self._run_trick()
+
+        return score_round(self._game._round_state)

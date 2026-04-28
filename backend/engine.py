@@ -67,9 +67,18 @@ class Game:
 
         return best_low, best_hiding, dealt
 
+    def set_trump(self, trump) -> None:
+        trick = self._round_state.current_trick
+        round = self._round_state
+        trick.trump = trump
+        round.trump = trump
+
     @property
     def low(self):
         return self._low
+
+    def set_starting_player(self, starting_player: Player) -> None:
+        self._round_state.current_player = starting_player
 
     def view_state(self):
         print("Players:")
@@ -106,6 +115,11 @@ class Game:
         curr_player.play_card(action.card)
         curr_trick.plays.append(action)
 
+        # If this is the first play of the entire round, set trump to the suit of this card
+        if len(self._round_state.trick_history) == 0 and len(curr_trick.plays) == 1:
+            if not action.card.is_joker:
+                self.set_trump(action.card.suit)
+
         players = self._round_state.players
 
         if self._round_state.current_trick.is_terminal:
@@ -134,7 +148,7 @@ class Game:
     def curr_player(self):
         return self._round_state.current_player
 
-    def deal_cards(self, deck: Deck, players: set[Player] | list[Player]) -> list[Card]:
+    def _deal_cards(self, deck: Deck, players: set[Player] | list[Player]) -> list[Card]:
         """Shuffles and deals cards to the players within the game
 
         Returns:
@@ -149,11 +163,28 @@ class Game:
 
         return deck_copy
 
+    def reset_round(self) -> None:
+        deck = self._round_state.deck
+        deck.shuffle()
+
+        players = self._round_state.players
+
+        hiding_cards = set(self.deal_cards(deck, players))
+
+        first_trick = TrickState(players[0], [], players, None)
+
+        self._round_state = RoundState(players,
+                                       players[0], None, first_trick, hiding_cards, [], self._round_state.teams, deck)
+
 
 def get_legal_actions(state: RoundState) -> set[Card]:
     hand = state.current_player.cards
 
     if not state.current_trick.plays:
+        # First card of the trick
+        if state.trump is None:
+            # First player of the round cannot play a joker
+            return {card for card in hand if not card.is_joker}
         return set(hand)
 
     # Check if any trump has been played (includes trumping in)
@@ -200,6 +231,11 @@ def get_legal_actions(state: RoundState) -> set[Card]:
 
     # If a joker was led and is the only card played, anything may be played.
     return set(hand)
+
+
+def score_round(round: RoundState) -> dict:
+    if not round.is_terminal:
+        raise ValueError("round is not in terminal state")
 
 
 def get_trick_winner(trick: TrickState) -> Player:

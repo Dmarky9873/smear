@@ -79,6 +79,7 @@ class Player:
         self.name = name
         self._cards = cards
         self._captured_plays = set()
+        self.score = 0
 
     def __str__(self) -> str:
         return f"Player {self.name} has {self._cards} in their hands and {self._captured_cards} captured"

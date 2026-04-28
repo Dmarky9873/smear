@@ -156,17 +156,28 @@ def get_legal_actions(state: RoundState) -> set[Card]:
     if not state.current_trick.plays:
         return set(hand)
 
-    lead_card = state.current_trick.plays[0].card
+    # Check if any trump has been played
+    trump_played = any(
+        not play.card.is_joker and play.card.suit == state.trump
+        for play in state.current_trick.plays
+    )
 
-    # If trump was led, must play trump if possible.
-    if state.trump is not None and not lead_card.is_joker and lead_card.suit == state.trump:
-        trump_cards = {
+    # Check if any joker has been played
+    joker_played = any(
+        play.card.is_joker for play in state.current_trick.plays)
+
+    # If trump or joker was played, must play trump or joker if possible.
+    if trump_played or joker_played:
+        trump_or_joker_cards = {
             card for card in hand
-            if not card.is_joker and card.suit == state.trump
+            if card.is_joker or (not card.is_joker and card.suit == state.trump)
         }
-        if trump_cards:
-            return trump_cards
+        if trump_or_joker_cards:
+            return trump_or_joker_cards
         return set(hand)
+
+    # If no trump or joker played, check the lead card for follow-suit rules
+    lead_card = state.current_trick.plays[0].card
 
     # If a non-trump, non-joker suit was led, must follow that suit if possible.
     if (
@@ -182,7 +193,7 @@ def get_legal_actions(state: RoundState) -> set[Card]:
             return same_suit_cards
         return set(hand)
 
-    # If a joker was led, anything may be played.
+    # If a joker was led and is the only card played, anything may be played.
     return set(hand)
 
 

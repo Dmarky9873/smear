@@ -1,7 +1,5 @@
-import random
-from engine import Game, get_legal_actions
-from models import Play
-from constants import SUITS
+from engine import Game
+from simulator import Simulator
 
 
 def get_player_names(num_players: int) -> list[str]:
@@ -55,7 +53,9 @@ def main():
 
     game = Game(num_players, player_names, teams)
 
-    return game
+    simulator = Simulator(game)
+
+    simulator.run_trick("H")
 
 
 if __name__ == "__main__":

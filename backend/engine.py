@@ -115,7 +115,7 @@ class Game:
             self._round_state.current_player = trick_winner
 
             for play in curr_trick.plays:
-                trick_winner.capture(play.card)
+                trick_winner.capture(play)
 
             self._round_state.current_trick = TrickState(
                 trick_winner, [], curr_trick.players, self._round_state.trump)

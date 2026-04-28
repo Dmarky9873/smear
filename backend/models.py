@@ -78,13 +78,13 @@ class Player:
             cards = set()
         self.name = name
         self._cards = cards
-        self._captured_cards = set()
+        self._captured_plays = set()
 
     def __str__(self) -> str:
         return f"Player {self.name} has {self._cards} in their hands and {self._captured_cards} captured"
 
-    def capture(self, card: Card):
-        self._captured_cards.add(card)
+    def capture(self, play: Play):
+        self._captured_plays.add(play)
 
     def play_card(self, card: Card):
         if card in self._cards:

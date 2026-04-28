@@ -1,4 +1,4 @@
-from models import Player, Team, Card, Deck, RoundState, TrickState, Play
+from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
 from constants import RANKS, HAND_SIZE
 
 
@@ -35,7 +35,7 @@ class Game:
             new_team = Team([player_dict[name] for name in team], set())
             teams_to_add.append(new_team)
 
-        first_trick = TrickState(players[0], [], players)
+        first_trick = TrickState(players[0], [], players, None)
 
         self._round_state = RoundState(players,
                                        curr_player, None, first_trick, hiding_cards, [], teams_to_add, deck)
@@ -79,7 +79,19 @@ class Game:
 
         print(f"Trump suit: {self._round_state.trump}")
 
-    def apply_trick_action(self, action: Play) -> None:
+    def apply_trick_action(self, action: Play) -> bool:
+        """ Applies action and returns whether action resulted in a terminal trick state.
+
+        Args:
+            action (Play): The action to apply
+
+        Raises:
+            ValueError: If the action attempted was not with the current player, raise ValueError
+            ValueError: If the action attempted was not with a legal card, raise ValueError
+
+        Returns:
+            bool: Whether the action resulted in a terminal trick state.
+        """
 
         if action.player != self._round_state.current_player:
             raise ValueError(
@@ -96,7 +108,7 @@ class Game:
 
         players = self._round_state.players
 
-        if len(self._round_state.current_trick.plays) == len(players):
+        if self._round_state.current_trick.is_terminal:
 
             trick_winner = get_trick_winner(curr_trick)
 
@@ -106,13 +118,21 @@ class Game:
                 trick_winner.capture(play.card)
 
             self._round_state.current_trick = TrickState(
-                trick_winner, [], curr_trick.players)
+                trick_winner, [], curr_trick.players, self._round_state.trump)
             self._round_state.trick_history.append(
                 curr_trick)
+
+            return True
 
         else:
             self._round_state.current_player = players[(
                 players.index(curr_player) + 1) % len(players)]
+
+            return False
+
+    @property
+    def curr_player(self):
+        return self._round_state.current_player
 
     def deal_cards(self, deck: Deck, players: set[Player] | list[Player]) -> list[Card]:
         """Shuffles and deals cards to the players within the game
@@ -128,13 +148,6 @@ class Game:
                 {deck_copy.pop() for _ in range(HAND_SIZE)})
 
         return deck_copy
-
-
-class Simulator:
-    game: Game
-
-    def __init__(self, game: Game):
-        self._game = game
 
 
 def get_legal_actions(state: RoundState) -> set[Card]:
@@ -173,8 +186,52 @@ def get_legal_actions(state: RoundState) -> set[Card]:
     return set(hand)
 
 
-def get_trick_winner(state: TrickState) -> Player:
-    if not state.is_terminal:
+def get_trick_winner(trick: TrickState) -> Player:
+    """ Return the winner of a terminal trick
+
+    Preconditions: 
+        - trick.trump is not None
+    """
+
+    if not trick.is_terminal:
         raise ValueError(f"trick is not in terminal state")
 
-    ...
+    trump_plays = list()
+    trick_trump = None
+    trick_trump_plays = list()
+    joker_plays = list()
+
+    for play in trick.plays:
+        # Check if card is trump suit (excluding jokers)
+        if not play.card.is_joker and play.card.suit == trick.trump:
+            trump_plays.append(play)
+
+        # Set trick trump to first non-joker, non-trump suit
+        if not play.card.is_joker and play.card.suit != trick.trump and trick_trump is None:
+            trick_trump = play.card.suit
+
+        # Add to trick_trump_plays if it matches trick trump
+        if not play.card.is_joker and play.card.suit == trick_trump:
+            trick_trump_plays.append(play)
+
+        # Track jokers
+        if play.card.is_joker:
+            joker_plays.append(play)
+
+    # Trump suit beats everything
+    if len(trump_plays) != 0:
+        m = get_max_card([play.card for play in trump_plays])
+        for play in trump_plays:
+            if play.card == m:
+                return play.player
+
+    # Jokers beat sub-round trump
+    elif len(joker_plays) != 0:
+        return joker_plays[0].player
+
+    # Sub-round trump (suit of first card) beats nothing
+    else:
+        m = get_max_card([play.card for play in trick_trump_plays])
+        for play in trick_trump_plays:
+            if play.card == m:
+                return play.player

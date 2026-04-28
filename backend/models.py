@@ -1,7 +1,17 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 import random
 
-from constants import HAND_SIZE, CARD_DICT, SUITS, RANKS, RANK_ORDER, GAME_VALUES
+from constants import HAND_SIZE, CARD_DICT, RANKS, RANK_ORDER
+
+
+# CARDS
+
+def get_max_card(lst: list[Card]) -> Card:
+    if not lst:
+        raise ValueError("lst must not be empty")
+    return max(lst, key=lambda card: RANK_ORDER.get(card.rank, -1))
 
 
 def get_rank_from_card_code(card_code: str) -> str:
@@ -114,6 +124,8 @@ class Team:
 
 @dataclass
 class Play:
+    """A player and a card
+    """
     player: Player
     card: Card
 
@@ -123,6 +135,7 @@ class TrickState:
     leader: Player
     plays: list[Play]
     players: list[Player]
+    trump: str | None
 
     @property
     def is_terminal(self):

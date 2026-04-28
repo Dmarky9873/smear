@@ -41,8 +41,8 @@ def get_teams(players: list) -> set[tuple[str, str]]:
 def main():
     num_players = int(input("how many players: "))
     player_names = get_player_names(num_players)
-    is_teams = input("teams? (y/n): ").lower()
-    if is_teams not in {'y', 'n'}:
+    is_teams = input("teams? (y/N): ").lower()
+    if is_teams not in {'y', 'n', ''}:
         raise ValueError(
             f"answer yes or no to wanting teams. you answered {is_teams}")
     is_teams = is_teams == "y" and num_players % 2 == 0

@@ -67,6 +67,12 @@ class Deck:
     def __str__(self) -> str:
         return f"deck: {self._deck}"
 
+    @property
+    def low(self) -> str:
+        non_joker_ranks = [
+            card.rank for card in self._deck if not card.is_joker]
+        return min(non_joker_ranks, key=lambda rank: RANK_ORDER[rank])
+
 
 # PLAYERS
 
@@ -82,7 +88,7 @@ class Player:
         self.score = 0
 
     def __str__(self) -> str:
-        return f"Player {self.name} has {self._cards} in their hands and {self._captured_cards} captured"
+        return f"Player {self.name} has {self._cards} in their hands and {self.captured_cards} captured"
 
     def capture(self, play: Play):
         self._captured_plays.add(play)
@@ -100,8 +106,12 @@ class Player:
         self._cards = cards
 
     @property
+    def captured_plays(self) -> set[Play]:
+        return self._captured_plays
+
+    @property
     def captured_cards(self) -> set[Card]:
-        return self._captured_cards
+        return {play.card for play in self._captured_plays}
 
     @property
     def cards(self) -> set[Card]:
@@ -159,4 +169,4 @@ class RoundState:
         for player in self.players:
             if not player.is_out_of_cards():
                 return False
-        return self.current_trick.is_terminal
+        return len(self.trick_history) == HAND_SIZE and self.current_trick.plays == []

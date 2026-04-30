@@ -12,7 +12,7 @@ class Simulator:
         is_terminal = False
         while not is_terminal:
             curr_player = self._game.curr_player
-            legal_actions = get_legal_actions(round)
+            legal_actions = get_legal_actions(self._game._round_state)
             print(f"Current player: {curr_player}")
             card = None
             while card not in legal_actions:
@@ -27,7 +27,7 @@ class Simulator:
         self._game.set_starting_player(auction_winner)
 
         while not self._game._round_state.is_terminal:
-            self._game.deal_cards()
+            self._game._deal_cards()
             self._run_trick()
 
         return score_round(self._game._round_state)

@@ -1,5 +1,5 @@
 from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
-from constants import RANKS, HAND_SIZE
+from constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
 
 
 class Game:
@@ -12,8 +12,6 @@ class Game:
 
         self._low, self._num_hiding, self._num_dealt = self._calculate_low(
             num_players)
-
-        deck = Deck(self._low)
 
         print(f"creating a game with a low of {self._low}...")
 
@@ -28,8 +26,6 @@ class Game:
 
         curr_player = players[0]
 
-        hiding_cards = set(self.deal_cards(deck, players))
-
         teams_to_add = []
         for team in teams:
             new_team = Team([player_dict[name] for name in team], set())
@@ -38,7 +34,8 @@ class Game:
         first_trick = TrickState(players[0], [], players, None)
 
         self._round_state = RoundState(players,
-                                       curr_player, None, first_trick, hiding_cards, [], teams_to_add, deck)
+                                       curr_player, None, first_trick, set(), [], teams_to_add, Deck(self._low))
+        self._deal_cards()
 
         print(f"initialized game with {num_players} players.")
         for player in players:
@@ -148,33 +145,31 @@ class Game:
     def curr_player(self):
         return self._round_state.current_player
 
-    def _deal_cards(self, deck: Deck, players: set[Player] | list[Player]) -> list[Card]:
+    def _deal_cards(self) -> None:
         """Shuffles and deals cards to the players within the game
 
         Returns:
             list[Card]: Cards that are hiding based on this shuffle
         """
+        deck = Deck(self._low)
         deck.shuffle()
-        deck_copy = deck.get_copy()
+        remaining_cards = deck.get_copy()
 
-        for player in players:
+        for player in self._round_state.players:
             player.receive_new_hand(
-                {deck_copy.pop() for _ in range(HAND_SIZE)})
+                {remaining_cards.pop() for _ in range(HAND_SIZE)})
 
-        return deck_copy
+        self._round_state.deck = self.deck
+        self._round_state.hidden_cards = remaining_cards
 
     def reset_round(self) -> None:
-        deck = self._round_state.deck
-        deck.shuffle()
-
         players = self._round_state.players
-
-        hiding_cards = set(self.deal_cards(deck, players))
 
         first_trick = TrickState(players[0], [], players, None)
 
         self._round_state = RoundState(players,
-                                       players[0], None, first_trick, hiding_cards, [], self._round_state.teams, deck)
+                                       players[0], None, first_trick, set(), [], self._round_state.teams, Deck(self._low))
+        self._deal_cards()
 
 
 def get_legal_actions(state: RoundState) -> set[Card]:
@@ -233,9 +228,90 @@ def get_legal_actions(state: RoundState) -> set[Card]:
     return set(hand)
 
 
-def score_round(round: RoundState) -> dict:
+def score_round(round: RoundState) -> dict[str, int]:
     if not round.is_terminal:
         raise ValueError("round is not in terminal state")
+
+    if round.trump is None:
+        raise ValueError("round trump has not been set")
+
+    player_points = {player.name: 0 for player in round.players}
+    possessed_cards = {
+        player.name: set(player.captured_cards) for player in round.players
+    }
+
+    all_completed_plays = [
+        play for trick in round.trick_history for play in trick.plays
+    ]
+
+    visible_trump_cards = [
+        card for card in round.deck.get_copy()
+        if (
+            not card.is_joker
+            and card.suit == round.trump
+            and card not in round.hidden_cards
+        )
+    ]
+
+    if not visible_trump_cards:
+        raise ValueError(
+            "no non-hidden trump cards are available to score high/low")
+
+    low_card = min(visible_trump_cards, key=lambda card: RANK_ORDER[card.rank])
+    high_card = max(visible_trump_cards,
+                    key=lambda card: RANK_ORDER[card.rank])
+
+    # low belongs to whoever was originally dealt / played it
+    low_owner = None
+    for play in all_completed_plays:
+        if play.card == low_card:
+            low_owner = play.player.name
+            break
+
+    if low_owner is None:
+        raise ValueError(
+            "could not determine owner of low card from completed plays")
+
+    # make sure low is credited to the original owner for scoring purposes
+    for cards in possessed_cards.values():
+        cards.discard(low_card)
+    possessed_cards[low_owner].add(low_card)
+    player_points[low_owner] += 1
+
+    # high goes to whoever possesses the highest visible trump
+    high_owner = None
+    for player_name, cards in possessed_cards.items():
+        if high_card in cards:
+            high_owner = player_name
+            break
+
+    if high_owner is None:
+        raise ValueError(
+            "could not determine owner of high card from possessed cards")
+
+    player_points[high_owner] += 1
+
+    # one point per joker possessed
+    for player_name, cards in possessed_cards.items():
+        joker_count = sum(1 for card in cards if card.is_joker)
+        player_points[player_name] += joker_count
+
+    # game point: unique highest total only
+    game_totals = {
+        player_name: sum(GAME_VALUES.get(card.rank, 0) for card in cards)
+        for player_name, cards in possessed_cards.items()
+    }
+
+    if game_totals:
+        max_total = max(game_totals.values())
+        winners = [
+            player_name for player_name, total in game_totals.items()
+            if total == max_total
+        ]
+        if len(winners) == 1 and max_total > 0:
+            player_points[winners[0]] += 1
+
+    return player_points
 
 
 def get_trick_winner(trick: TrickState) -> Player:

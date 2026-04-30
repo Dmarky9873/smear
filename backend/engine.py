@@ -1,10 +1,14 @@
-from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
-from constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
+try:
+    from .models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
+    from .constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
+except ImportError:
+    from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
+    from constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
 
 
 class Game:
 
-    def __init__(self, num_players: int, player_names: list[str], teams: set[tuple]):
+    def __init__(self, num_players: int, player_names: list[str], teams):
 
         if num_players > 8 or num_players < 3:
             raise ValueError(
@@ -74,6 +78,14 @@ class Game:
     def low(self):
         return self._low
 
+    @property
+    def round_state(self) -> RoundState:
+        return self._round_state
+
+    @property
+    def num_players(self) -> int:
+        return len(self._round_state.players)
+
     def set_starting_player(self, starting_player: Player) -> None:
         self._round_state.current_player = starting_player
         self._round_state.current_trick.leader = starting_player
@@ -106,7 +118,7 @@ class Game:
 
         if action.card not in get_legal_actions(self._round_state):
             raise ValueError(
-                f"action with card {action.card} attepted despite card not being in legal moves")
+                f"action with card {action.card} attempted despite card not being in legal moves")
 
         curr_player = self._round_state.current_player
         curr_trick = self._round_state.current_trick
@@ -165,6 +177,8 @@ class Game:
 
     def reset_round(self) -> None:
         players = self._round_state.players
+        for team in self._round_state.teams:
+            team.captured_cards.clear()
 
         first_trick = TrickState(players[0], [], players, None)
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import random
 
-from constants import HAND_SIZE, CARD_DICT, RANKS, RANK_ORDER
+try:
+    from .constants import HAND_SIZE, CARD_DICT, RANKS, RANK_ORDER
+except ImportError:
+    from constants import HAND_SIZE, CARD_DICT, RANKS, RANK_ORDER
 
 
 # CARDS
@@ -104,6 +107,8 @@ class Player:
             raise ValueError(
                 f"not enough cards were dealt, expected {HAND_SIZE} but got {len(cards)}")
         self._cards = cards
+        self._captured_plays = set()
+        self.score = 0
 
     @property
     def captured_plays(self) -> set[Play]:
@@ -133,7 +138,7 @@ class Team:
 # GAMEPLAY
 
 
-@dataclass
+@dataclass(frozen=True)
 class Play:
     """A player and a card
     """

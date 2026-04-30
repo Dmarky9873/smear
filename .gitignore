@@ -208,4 +208,6 @@ __marimo__/
 
 # Smear local scaffolding
 frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
 .DS_Store

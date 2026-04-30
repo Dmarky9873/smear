@@ -26,3 +26,49 @@ The importance of the trump suit in smear cannot be overstated. The individual w
 ### Post-Auction Play
 
 As mentioned, post-auction play is relatively formulaic. There are 6 sub-rounds within a round (which means that all cards in your hand will leave and all that will be left will be captured cards). Starting with the winner of the previous sub-round and proceeding clockwise (the winner of the auction if in the first round), each player places a card down onto the table. Trump is as follows: trump suit > jokers > sub-round trump > any other suit (in the event of a tie, the higher card value wins; in the event of a tie between jokers, the first-placed joker wins). Notice in our version of Smear, jokers are below trump suit. Sub-round trump is the suit of the first played card in the sub-round, if that card wasn't of overall trump suit. The winner of a sub-round is the player with the "best" card (i.e. highest-priority trump). The winner keeps all played cards except for the "low;" no matter what, the individual/team who was dealt "low" keeps it. When deciding on what cards to play, a further advantage is given to the player who plays first in the "following trump" rule: if the first card played was a trump, you _must_ play a trump when it comes your turn (if you have one). If the first card played was not of trump suit or a joker (i.e., we are playing with a sub-round trump), this rule becomes a "following suit" rule: you are only required to play a card of the same suit if you have it—you do not have to play a joker or an overall trump if you deem it unstrategic.
+
+## Local Debug Harness
+
+This repo now includes a minimal local full-stack debug harness:
+
+- `backend/` exposes a small FastAPI API around the existing Smear engine.
+- `frontend/` is a plain React + Vite + TypeScript debug UI for inspecting and playing a round.
+
+This is intentionally a basic testing interface, not the final product.
+
+### Backend
+
+Create a virtual environment, install the backend requirements, and run the API:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+python -m uvicorn backend.server:app --reload
+```
+
+The API will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+Useful endpoints:
+
+- `GET /health`
+- `POST /game/new`
+- `POST /game/reset`
+- `GET /game/state`
+- `GET /game/legal-actions`
+- `POST /game/play`
+- `GET /game/score`
+
+### Frontend
+
+In a second terminal, install the frontend dependencies and run Vite:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The UI will be available at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+By default the frontend talks to `http://127.0.0.1:8000`. If you need a different backend URL, set `VITE_API_BASE_URL` before starting Vite.

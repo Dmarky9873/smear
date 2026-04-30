@@ -1,5 +1,9 @@
-from engine import Game
-from simulator import Simulator
+try:
+    from .engine import Game
+    from .simulator import Simulator
+except ImportError:
+    from engine import Game
+    from simulator import Simulator
 
 
 def get_player_names(num_players: int) -> list[str]:
@@ -49,7 +53,7 @@ def main():
     if is_teams:
         teams = get_teams(player_names)
     else:
-        teams = {(player) for player in player_names}
+        teams = {(player,) for player in player_names}
 
     game = Game(num_players, player_names, teams)
 

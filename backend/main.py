@@ -55,7 +55,7 @@ def main():
 
     simulator = Simulator(game)
 
-    simulator.run_trick("H")
+    simulator._run_round(game._round_state.players[0])
 
 
 if __name__ == "__main__":

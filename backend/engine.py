@@ -76,6 +76,7 @@ class Game:
 
     def set_starting_player(self, starting_player: Player) -> None:
         self._round_state.current_player = starting_player
+        self._round_state.current_trick.leader = starting_player
 
     def view_state(self):
         print("Players:")
@@ -159,8 +160,8 @@ class Game:
             player.receive_new_hand(
                 {remaining_cards.pop() for _ in range(HAND_SIZE)})
 
-        self._round_state.deck = self.deck
-        self._round_state.hidden_cards = remaining_cards
+        self._round_state.deck = deck
+        self._round_state.hidden_cards = set(remaining_cards)
 
     def reset_round(self) -> None:
         players = self._round_state.players

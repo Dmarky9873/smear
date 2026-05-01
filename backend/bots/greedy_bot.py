@@ -1,7 +1,14 @@
 from random import choice
 
 from backend.engine import get_legal_actions, get_legal_auction_actions
-from backend.models import AuctionState, RoundState, Card, would_win, get_cards_value
+from backend.models import (
+    AuctionEvent,
+    AuctionState,
+    Card,
+    RoundState,
+    get_cards_value,
+    would_win,
+)
 
 try:
     from .base import BotPlayer
@@ -27,6 +34,17 @@ class GreedyPlayer(BotPlayer):
                       if value == max_value]
         return choice(best_cards)
 
-    def choose_auction_action(self, auction_state):
+    def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
         """For the greedy player, always bid one higher than the previous, if possible."""
-        return auction_state.highest_bid + 1
+        legal_actions = get_legal_auction_actions(auction_state)
+        potential_bid = (
+            1 if auction_state.highest_bid is None
+            else auction_state.highest_bid + 1
+        )
+        for action in legal_actions:
+            if action.amount == potential_bid:
+                return action
+        for action in legal_actions:
+            if action.action == "pass":
+                return action
+        raise ValueError("greedy bot could not find a legal auction action")

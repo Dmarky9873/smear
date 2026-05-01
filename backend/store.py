@@ -86,6 +86,13 @@ def _sort_cards(cards: list[Card] | set[Card]) -> list[Card]:
     )
 
 
+def _serialize_auction_event(event: AuctionEvent) -> dict:
+    payload = {"type": event.action}
+    if event.amount is not None:
+        payload["amount"] = event.amount
+    return payload
+
+
 def _normalize_teams(
     player_names: list[str],
     teams: list[list[str]] | None,
@@ -202,18 +209,8 @@ class GameStore:
                 f"bot '{player_name}' selected illegal auction action {action}; legal actions are {legal_actions}"
             )
 
-        if action["type"] == "bid":
-            session.auction.apply_event(
-                AuctionEvent(
-                    bidder_name=player_name,
-                    action="bid",
-                    amount=action["amount"],
-                )
-            )
-        elif action["type"] == "pass":
-            session.auction.apply_event(
-                AuctionEvent(bidder_name=player_name, action="pass")
-            )
+        if action.action in {"bid", "pass"}:
+            session.auction.apply_event(action)
         else:
             raise ValueError(f"unsupported bot auction action: {action}")
 
@@ -319,6 +316,23 @@ class GameStore:
         round_score["bid_summary"] = bid_summary
         return round_score
 
+    def _apply_match_score_updates(self, session: GameSession, round_score: dict) -> None:
+        auction_winning_unit_name = round_score["bid_summary"]["unit_name"]
+        non_bidder_win_cap = session.target_score - 1
+
+        for result in round_score["results"]:
+            current_score = session.match_scores[result["name"]]
+            next_score = current_score + result["match_delta"]
+
+            if (
+                result["name"] != auction_winning_unit_name
+                and next_score > non_bidder_win_cap
+            ):
+                next_score = non_bidder_win_cap
+                result["match_delta"] = next_score - current_score
+
+            session.match_scores[result["name"]] = next_score
+
     def _score_terminal_round_if_needed(self, session: GameSession) -> None:
         if not session.game.round_state.is_terminal or session.last_round_score is not None:
             return
@@ -327,9 +341,8 @@ class GameStore:
             session,
             score_round_details(session.game.round_state),
         )
+        self._apply_match_score_updates(session, round_score)
         session.last_round_score = round_score
-        for result in round_score["results"]:
-            session.match_scores[result["name"]] += result["match_delta"]
 
     def create_game(
         self,
@@ -407,7 +420,10 @@ class GameStore:
         session = self.require_session()
         self._score_terminal_round_if_needed(session)
         if session.phase == "auction":
-            return session.auction.legal_actions()
+            return [
+                _serialize_auction_event(action)
+                for action in session.auction.legal_actions()
+            ]
         if session.phase in {"round_complete", "match_complete"}:
             return []
         return [

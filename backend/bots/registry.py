@@ -5,9 +5,11 @@ from typing import Callable
 
 try:
     from .base import BotPlayer
+    from .greedy_bot import GreedyPlayer
     from .random_bot import RandomPlayer
 except ImportError:
     from base import BotPlayer
+    from greedy_bot import GreedyPlayer
     from random_bot import RandomPlayer
 
 
@@ -26,6 +28,12 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         description="Chooses uniformly from the legal auction and card actions returned by the backend.",
         factory=lambda player_name: RandomPlayer(player_name),
     ),
+    ReadyBotSpec(
+        id="greedy",
+        label="Greedy",
+        description="Uses a basic algorithm to choose auction and trick actions.",
+        factory=lambda player_name: GreedyPlayer(player_name),
+    )
 )
 
 READY_BOT_MAP = {bot.id: bot for bot in READY_BOTS}

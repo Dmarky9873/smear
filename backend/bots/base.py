@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.models import AuctionState, Player, RoundState, Card
+from backend.models import AuctionEvent, AuctionState, Card, Player, RoundState
 
 
 class BotPlayer(Player):
@@ -9,5 +9,5 @@ class BotPlayer(Player):
     def choose_card(self, round_state: RoundState) -> Card:
         raise NotImplementedError
 
-    def choose_auction_action(self, auction_state: AuctionState):
+    def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
         raise NotImplementedError

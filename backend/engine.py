@@ -87,13 +87,14 @@ class Auction:
             return True
         return len(self._auction_state.active_player_names) > 1
 
-    def legal_actions(self) -> list[dict]:
+    def legal_actions(self) -> list[AuctionEvent]:
+        bidder_name = self.current_bidder_name
         actions = [
-            {"type": "bid", "amount": amount}
+            AuctionEvent(bidder_name=bidder_name, action="bid", amount=amount)
             for amount in self.legal_bid_amounts()
         ]
         if self.can_pass():
-            actions.append({"type": "pass"})
+            actions.append(AuctionEvent(bidder_name=bidder_name, action="pass"))
         return actions
 
     def _next_active_bidder_index(self, start_index: int) -> int:
@@ -154,7 +155,7 @@ class Auction:
 def get_legal_auction_actions(
     auction_state: AuctionState,
     max_bid: int = 6,
-) -> list[dict]:
+) -> list[AuctionEvent]:
     return Auction.from_state(auction_state, max_bid=max_bid).legal_actions()
 
 

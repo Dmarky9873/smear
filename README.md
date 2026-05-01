@@ -11,6 +11,7 @@ Smear is a Canadian prairie card game that I was introduced to by my father's si
 The winner is the team (or individual) which first reaches 21 points. Points are gained or lost after each round of play. For a given round, a team/individual earns a point under the following conditions at the end of a round, for a total of 6 possible points:
 
 - they possess the highest card of trump suit in the functional deck, which is almost always the Ace (for the definition of functional deck, see Dealing Cards).
+- they possess the Jack of trump suit in the functional deck, unless that jack is hiding
 - they possess the lowest card of trump suit in the functional deck
 - one point per number of jokers they possess
 - the "game" condition, calculated via summation over possessed cards where cards are given the following values just for this one point, irrespective of suit: <= 9 = 0, 10 = 10, J = 1, Q = 2, K = 3, A = 4

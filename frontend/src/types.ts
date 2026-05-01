@@ -58,4 +58,42 @@ export type LegalActionsResponse = {
   actions: LegalAction[];
 };
 
-export type Score = Record<string, number>;
+export type ScoreBreakdown = {
+  high: number;
+  jack: number;
+  low: number;
+  jokers: number;
+  game: number;
+};
+
+export type ScoreAward = {
+  unit_name: string | null;
+  player_name: string | null;
+  card: Card | null;
+  game_total: number | null;
+  tied_unit_names: string[] | null;
+  reason: string | null;
+};
+
+export type ScoreResult = {
+  name: string;
+  member_names: string[];
+  breakdown: ScoreBreakdown;
+  joker_count: number;
+  game_total: number;
+  total_points: number;
+  captured_cards: Card[];
+};
+
+export type Score = {
+  trump: string;
+  high_card: Card;
+  low_card: Card;
+  awards: {
+    high: ScoreAward;
+    jack: ScoreAward;
+    low: ScoreAward;
+    game: ScoreAward;
+  };
+  results: ScoreResult[];
+};

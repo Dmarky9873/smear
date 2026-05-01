@@ -77,3 +77,38 @@ class LegalActionResponse(BaseModel):
 
 class LegalActionsResponse(BaseModel):
     actions: list[LegalActionResponse]
+
+
+class ScoreBreakdownResponse(BaseModel):
+    high: int
+    jack: int
+    low: int
+    jokers: int
+    game: int
+
+
+class ScoreResultResponse(BaseModel):
+    name: str
+    member_names: list[str]
+    breakdown: ScoreBreakdownResponse
+    joker_count: int
+    game_total: int
+    total_points: int
+    captured_cards: list[CardResponse]
+
+
+class ScoreAwardResponse(BaseModel):
+    unit_name: str | None
+    player_name: str | None = None
+    card: CardResponse | None = None
+    game_total: int | None = None
+    tied_unit_names: list[str] | None = None
+    reason: str | None = None
+
+
+class RoundScoreResponse(BaseModel):
+    trump: str
+    high_card: CardResponse
+    low_card: CardResponse
+    awards: dict[str, ScoreAwardResponse]
+    results: list[ScoreResultResponse]

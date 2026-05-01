@@ -244,16 +244,54 @@ def get_legal_actions(state: RoundState) -> set[Card]:
 
 
 def score_round(round: RoundState) -> dict[str, int]:
+    details = score_round_details(round)
+    return {
+        result["name"]: result["total_points"]
+        for result in details["results"]
+    }
+
+
+def score_round_details(round: RoundState) -> dict:
     if not round.is_terminal:
         raise ValueError("round is not in terminal state")
 
     if round.trump is None:
         raise ValueError("round trump has not been set")
 
-    player_points = {player.name: 0 for player in round.players}
-    possessed_cards = {
-        player.name: set(player.captured_cards) for player in round.players
-    }
+    player_to_unit: dict[str, str] = {}
+    scoring_units: list[dict] = []
+    for team in round.teams:
+        member_names = [player.name for player in team.constituents]
+        unit_name = " / ".join(member_names)
+        captured_cards = {
+            card
+            for player in team.constituents
+            for card in player.captured_cards
+        }
+        scoring_units.append(
+            {
+                "name": unit_name,
+                "member_names": member_names,
+                "captured_cards": set(captured_cards),
+                "breakdown": {
+                    "high": 0,
+                    "jack": 0,
+                    "low": 0,
+                    "jokers": 0,
+                    "game": 0,
+                },
+                "joker_count": 0,
+                "game_total": 0,
+                "total_points": 0,
+            }
+        )
+        for name in member_names:
+            player_to_unit[name] = unit_name
+
+    if len(scoring_units) != len(round.teams):
+        raise ValueError("failed to construct scoring units")
+
+    unit_by_name = {unit["name"]: unit for unit in scoring_units}
 
     all_completed_plays = [
         play for trick in round.trick_history for play in trick.plays
@@ -275,6 +313,10 @@ def score_round(round: RoundState) -> dict[str, int]:
     low_card = min(visible_trump_cards, key=lambda card: RANK_ORDER[card.rank])
     high_card = max(visible_trump_cards,
                     key=lambda card: RANK_ORDER[card.rank])
+    jack_card = next(
+        (card for card in visible_trump_cards if card.rank == "J"),
+        None,
+    )
 
     # low belongs to whoever was originally dealt / played it
     low_owner = None
@@ -287,46 +329,109 @@ def score_round(round: RoundState) -> dict[str, int]:
         raise ValueError(
             "could not determine owner of low card from completed plays")
 
-    # make sure low is credited to the original owner for scoring purposes
-    for cards in possessed_cards.values():
-        cards.discard(low_card)
-    possessed_cards[low_owner].add(low_card)
-    player_points[low_owner] += 1
+    low_unit_name = player_to_unit[low_owner]
+
+    # make sure low is credited to the original owner's scoring unit
+    for unit in scoring_units:
+        unit["captured_cards"].discard(low_card)
+    unit_by_name[low_unit_name]["captured_cards"].add(low_card)
+    unit_by_name[low_unit_name]["breakdown"]["low"] = 1
 
     # high goes to whoever possesses the highest visible trump
-    high_owner = None
-    for player_name, cards in possessed_cards.items():
-        if high_card in cards:
-            high_owner = player_name
+    high_unit_name = None
+    for unit in scoring_units:
+        if high_card in unit["captured_cards"]:
+            high_unit_name = unit["name"]
             break
 
-    if high_owner is None:
+    if high_unit_name is None:
         raise ValueError(
-            "could not determine owner of high card from possessed cards")
+            "could not determine owner of high card from scoring units")
 
-    player_points[high_owner] += 1
+    unit_by_name[high_unit_name]["breakdown"]["high"] = 1
+
+    jack_unit_name = None
+    jack_reason = None
+    if jack_card is not None:
+        for unit in scoring_units:
+            if jack_card in unit["captured_cards"]:
+                jack_unit_name = unit["name"]
+                break
+
+        if jack_unit_name is None:
+            raise ValueError(
+                "could not determine owner of jack card from scoring units")
+
+        unit_by_name[jack_unit_name]["breakdown"]["jack"] = 1
+    else:
+        jack_reason = "Jack of trump is hiding, so no jack point is awarded."
 
     # one point per joker possessed
-    for player_name, cards in possessed_cards.items():
-        joker_count = sum(1 for card in cards if card.is_joker)
-        player_points[player_name] += joker_count
+    for unit in scoring_units:
+        joker_count = sum(1 for card in unit["captured_cards"] if card.is_joker)
+        unit["joker_count"] = joker_count
+        unit["breakdown"]["jokers"] = joker_count
 
     # game point: unique highest total only
     game_totals = {
-        player_name: sum(GAME_VALUES.get(card.rank, 0) for card in cards)
-        for player_name, cards in possessed_cards.items()
+        unit["name"]: sum(
+            GAME_VALUES.get(card.rank, 0)
+            for card in unit["captured_cards"]
+        )
+        for unit in scoring_units
     }
 
+    game_winner_name = None
+    tied_winners: list[str] = []
+    max_total = 0
     if game_totals:
         max_total = max(game_totals.values())
         winners = [
-            player_name for player_name, total in game_totals.items()
+            unit_name for unit_name, total in game_totals.items()
             if total == max_total
         ]
         if len(winners) == 1 and max_total > 0:
-            player_points[winners[0]] += 1
+            game_winner_name = winners[0]
+            unit_by_name[game_winner_name]["breakdown"]["game"] = 1
+        else:
+            tied_winners = winners
 
-    return player_points
+    for unit in scoring_units:
+        unit["game_total"] = game_totals[unit["name"]]
+        unit["total_points"] = sum(unit["breakdown"].values())
+
+    return {
+        "trump": round.trump,
+        "high_card": high_card,
+        "low_card": low_card,
+        "awards": {
+            "high": {
+                "unit_name": high_unit_name,
+                "card": high_card,
+            },
+            "jack": {
+                "unit_name": jack_unit_name,
+                "card": jack_card,
+                "reason": jack_reason,
+            },
+            "low": {
+                "unit_name": low_unit_name,
+                "player_name": low_owner,
+                "card": low_card,
+            },
+            "game": {
+                "unit_name": game_winner_name,
+                "game_total": max_total,
+                "tied_unit_names": tied_winners,
+                "reason": (
+                    "Game total is tied, so no game point is awarded."
+                    if game_winner_name is None and tied_winners
+                    else None
+                ),
+            },
+        },
+        "results": scoring_units,
+    }
 
 
 def get_trick_winner(trick: TrickState) -> Player:

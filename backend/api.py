@@ -9,8 +9,9 @@ try:
         LegalActionsResponse,
         NewGameRequest,
         PlayCardRequest,
+        RoundScoreResponse,
     )
-    from .serializers import serialize_game, sort_cards
+    from .serializers import serialize_game, serialize_score_details, sort_cards
     from .store import GameNotInitializedError, RoundNotTerminalError, game_store
 except ImportError:
     from schemas import (
@@ -19,8 +20,9 @@ except ImportError:
         LegalActionsResponse,
         NewGameRequest,
         PlayCardRequest,
+        RoundScoreResponse,
     )
-    from serializers import serialize_game, sort_cards
+    from serializers import serialize_game, serialize_score_details, sort_cards
     from store import GameNotInitializedError, RoundNotTerminalError, game_store
 
 
@@ -105,10 +107,10 @@ def play_card(payload: PlayCardRequest) -> dict:
     return serialize_game(game)
 
 
-@router.get("/game/score", response_model=dict[str, int])
-def get_game_score() -> dict[str, int]:
+@router.get("/game/score", response_model=RoundScoreResponse)
+def get_game_score() -> dict:
     try:
-        return game_store.get_score()
+        return serialize_score_details(game_store.get_score())
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except RoundNotTerminalError as exc:

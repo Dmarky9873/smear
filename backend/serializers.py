@@ -103,3 +103,36 @@ def serialize_game(game: Game) -> dict:
         "low": game.low,
         "round": serialize_round_state(game.round_state),
     }
+
+
+def serialize_score_details(score_details: dict) -> dict:
+    return {
+        "trump": score_details["trump"],
+        "high_card": serialize_card(score_details["high_card"]),
+        "low_card": serialize_card(score_details["low_card"]),
+        "awards": {
+            name: {
+                "unit_name": award.get("unit_name"),
+                "player_name": award.get("player_name"),
+                "card": serialize_card(award["card"]) if award.get("card") else None,
+                "game_total": award.get("game_total"),
+                "tied_unit_names": award.get("tied_unit_names"),
+                "reason": award.get("reason"),
+            }
+            for name, award in score_details["awards"].items()
+        },
+        "results": [
+            {
+                "name": result["name"],
+                "member_names": result["member_names"],
+                "breakdown": result["breakdown"],
+                "joker_count": result["joker_count"],
+                "game_total": result["game_total"],
+                "total_points": result["total_points"],
+                "captured_cards": [
+                    serialize_card(card) for card in sort_cards(result["captured_cards"])
+                ],
+            }
+            for result in score_details["results"]
+        ],
+    }

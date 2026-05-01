@@ -205,6 +205,21 @@ button {
   gap: 12px;
 }
 
+.score-awards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.score-award-card {
+  border: 1px solid #d9e2ec;
+  border-radius: 6px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
 .score-cell {
   border: 1px solid #d9e2ec;
   border-radius: 6px;
@@ -212,6 +227,10 @@ button {
   min-width: 120px;
   display: grid;
   gap: 4px;
+}
+
+.score-cell--detailed {
+  min-width: 220px;
 }
 
 .muted {

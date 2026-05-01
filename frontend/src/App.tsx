@@ -291,14 +291,60 @@ export default function App() {
             {!state.round.is_terminal ? (
               <p className="muted">Score is only available once the round is terminal.</p>
             ) : score ? (
-              <div className="score-grid">
-                {Object.entries(score).map(([name, value]) => (
-                  <div key={name} className="score-cell">
-                    <strong>{name}</strong>
-                    <span>{value}</span>
+              <>
+                <div className="score-awards">
+                  <div className="score-award-card">
+                    <strong>High</strong>
+                    <span>
+                      {score.awards.high.unit_name} with {score.high_card.code}
+                    </span>
                   </div>
-                ))}
-              </div>
+                  <div className="score-award-card">
+                    <strong>Jack</strong>
+                    <span>
+                      {score.awards.jack.unit_name && score.awards.jack.card
+                        ? `${score.awards.jack.unit_name} with ${score.awards.jack.card.code}`
+                        : score.awards.jack.reason ?? "No jack point awarded"}
+                    </span>
+                  </div>
+                  <div className="score-award-card">
+                    <strong>Low</strong>
+                    <span>
+                      {score.awards.low.unit_name} via {score.awards.low.player_name} with{" "}
+                      {score.low_card.code}
+                    </span>
+                  </div>
+                  <div className="score-award-card">
+                    <strong>Game</strong>
+                    <span>
+                      {score.awards.game.unit_name
+                        ? `${score.awards.game.unit_name} (${score.awards.game.game_total})`
+                        : score.awards.game.tied_unit_names &&
+                            score.awards.game.tied_unit_names.length > 0
+                          ? `No point awarded, tie at ${score.awards.game.game_total}: ${score.awards.game.tied_unit_names.join(", ")}`
+                          : "No game point awarded"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="score-grid">
+                  {score.results.map((result) => (
+                    <div key={result.name} className="score-cell score-cell--detailed">
+                      <strong>{result.name}</strong>
+                      {result.member_names.length > 1 ? (
+                        <span className="muted">{result.member_names.join(", ")}</span>
+                      ) : null}
+                      <span>Total points: {result.total_points}</span>
+                      <span>High: {result.breakdown.high}</span>
+                      <span>Jack: {result.breakdown.jack}</span>
+                      <span>Low: {result.breakdown.low}</span>
+                      <span>Jokers: {result.breakdown.jokers}</span>
+                      <span>Game: {result.breakdown.game}</span>
+                      <span>Game total: {result.game_total}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
             ) : (
               <p className="muted">No score available.</p>
             )}

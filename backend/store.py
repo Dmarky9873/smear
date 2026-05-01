@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 try:
-    from .engine import Game, get_legal_actions, score_round
+    from .engine import Game, get_legal_actions, score_round_details
     from .models import Card, Play
 except ImportError:
-    from engine import Game, get_legal_actions, score_round
+    from engine import Game, get_legal_actions, score_round_details
     from models import Card, Play
 
 
@@ -96,11 +96,11 @@ class GameStore:
         game.apply_trick_action(play)
         return game
 
-    def get_score(self) -> dict[str, int]:
+    def get_score(self) -> dict:
         game = self.require_game()
         if not game.round_state.is_terminal:
             raise RoundNotTerminalError("Round is not terminal yet.")
-        return score_round(game.round_state)
+        return score_round_details(game.round_state)
 
 
 game_store = GameStore()

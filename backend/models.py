@@ -11,10 +11,65 @@ except ImportError:
 
 # CARDS
 
-def get_max_card(lst: list[Card]) -> Card:
+def get_max_card(lst: list[Card] | set[Card]) -> Card:
+    """Returns the card with the highest rank from a list of cards.
+
+    Args:
+        lst (list[Card]): A non-empty list of cards to evaluate.
+
+    Returns:
+        Card: The card with the highest rank according to RANK_ORDER.
+
+    Raises:
+        ValueError: If the list is empty.
+    """
     if not lst:
         raise ValueError("lst must not be empty")
     return max(lst, key=lambda card: RANK_ORDER.get(card.rank, -1))
+
+
+def would_win(card: Card, trick_state: TrickState) -> bool:
+    """Returns whether the given card would win in the passed trick state.
+
+    If no cards have been played, return true. 
+
+    Args:
+        card (Card): The card that would hypothetically be played.
+        trick_state (TrickState): The trick that the card would be played in.
+
+    Returns:
+        bool: Whether or not the card would win in the trick
+    """
+    if trick_state.plays == []:
+        return True
+    if trick_state.has_trump_played:
+        if card.suit == trick_state.trump:
+            # If a trump card, check if highest-rank trump card
+            trump_cards = set()
+            for play in trick_state.plays:
+                if play.card.suit == trick_state.trump:
+                    trump_cards.add(play.card)
+            trump_cards.add(card)
+            return get_max_card(trump_cards).code == card.code
+        # If it is not a trump card and a trump has been played, return false
+        return False
+    # We know a trump card hasn't been played, so if card is a trump, it will for sure win
+    if card.suit == trick_state.trump:
+        return True
+    # Card isn't a trump card, so if another joker has been played, it cannot win as the first joker always wins
+    if trick_state.has_joker_played:
+        return False
+    # No joker has been played, so if card is a joker, return true
+    if card.is_joker:
+        return True
+
+    sub_round_trump_cards = set()
+    for play in trick_state.plays:
+        if play.card.suit == trick_state.trump_suit:
+            sub_round_trump_cards.add(play.card)
+    sub_round_trump_cards.add(card)
+    # If card is the maximum of the sub-round trumps, it will win
+    return get_max_card(sub_round_trump_cards).code == card.code
 
 
 def get_rank_from_card_code(card_code: str) -> str:
@@ -186,6 +241,29 @@ class TrickState:
     plays: list[Play]
     players: list[Player]
     trump: str | None
+
+    @property
+    def has_trump_played(self):
+        for play in self.plays:
+            if play.card.suit == self.trump:
+                return True
+        return False
+
+    @property
+    def has_joker_played(self):
+        for play in self.plays:
+            if play.card.is_joker:
+                return True
+        return False
+
+    @property
+    def trump_suit(self):
+        if self.has_trump_played:
+            return self.trump
+        for play in self.plays:
+            if not play.card.is_joker:
+                return play.card.suit
+        return None
 
     @property
     def is_terminal(self):

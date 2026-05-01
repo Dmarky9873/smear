@@ -31,7 +31,10 @@ def get_max_card(lst: list[Card] | set[Card]) -> Card:
 def would_win(card: Card, trick_state: TrickState) -> bool:
     """Returns whether the given card would win in the passed trick state.
 
-    If no cards have been played, return true. 
+    This answers whether `card` would currently be the winning card if played
+    next into `trick_state`. It mirrors the same precedence used by
+    `get_trick_winner` in the engine:
+    trump > first joker > lead suit, with rank breaking ties inside a suit.
 
     Args:
         card (Card): The card that would hypothetically be played.
@@ -40,36 +43,44 @@ def would_win(card: Card, trick_state: TrickState) -> bool:
     Returns:
         bool: Whether or not the card would win in the trick
     """
-    if trick_state.plays == []:
-        return True
-    if trick_state.has_trump_played:
-        if card.suit == trick_state.trump:
-            # If a trump card, check if highest-rank trump card
-            trump_cards = set()
-            for play in trick_state.plays:
-                if play.card.suit == trick_state.trump:
-                    trump_cards.add(play.card)
-            trump_cards.add(card)
-            return get_max_card(trump_cards).code == card.code
-        # If it is not a trump card and a trump has been played, return false
-        return False
-    # We know a trump card hasn't been played, so if card is a trump, it will for sure win
-    if card.suit == trick_state.trump:
-        return True
-    # Card isn't a trump card, so if another joker has been played, it cannot win as the first joker always wins
-    if trick_state.has_joker_played:
-        return False
-    # No joker has been played, so if card is a joker, return true
-    if card.is_joker:
+    if not trick_state.plays:
         return True
 
-    sub_round_trump_cards = set()
-    for play in trick_state.plays:
-        if play.card.suit == trick_state.trump_suit:
-            sub_round_trump_cards.add(play.card)
-    sub_round_trump_cards.add(card)
-    # If card is the maximum of the sub-round trumps, it will win
-    return get_max_card(sub_round_trump_cards).code == card.code
+    trump_cards = [
+        play.card
+        for play in trick_state.plays
+        if not play.card.is_joker and play.card.suit == trick_state.trump
+    ]
+    if not card.is_joker and card.suit == trick_state.trump:
+        return not trump_cards or RANK_ORDER[card.rank] > max(
+            RANK_ORDER[trump_card.rank] for trump_card in trump_cards
+        )
+    if trump_cards:
+        return False
+
+    joker_count = sum(1 for play in trick_state.plays if play.card.is_joker)
+    if card.is_joker:
+        return joker_count == 0
+    if joker_count > 0:
+        return False
+
+    lead_suit = next(
+        (play.card.suit for play in trick_state.plays if not play.card.is_joker),
+        None,
+    )
+    if lead_suit is None:
+        return True
+    if card.suit != lead_suit:
+        return False
+
+    lead_suit_cards = [
+        play.card
+        for play in trick_state.plays
+        if not play.card.is_joker and play.card.suit == lead_suit
+    ]
+    return RANK_ORDER[card.rank] > max(
+        RANK_ORDER[lead_suit_card.rank] for lead_suit_card in lead_suit_cards
+    )
 
 
 def get_rank_from_card_code(card_code: str) -> str:

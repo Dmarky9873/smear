@@ -8,7 +8,7 @@ except ImportError:
 
 class Game:
 
-    def __init__(self, num_players: int, player_names: list[str], teams):
+    def __init__(self, num_players: int, player_names: list[str], teams, auction_winner: Player):
 
         if num_players > 8 or num_players < 3:
             raise ValueError(
@@ -28,18 +28,17 @@ class Game:
         for player in players:
             player_dict[player.name] = player
 
-        curr_player = players[0]
-
         teams_to_add = []
         for team in teams:
             new_team = Team([player_dict[name] for name in team], set())
             teams_to_add.append(new_team)
 
-        first_trick = TrickState(players[0], [], players, None)
+        first_trick = TrickState(auction_winner, [], players, None)
 
         self._round_state = RoundState(players,
-                                       curr_player, None, first_trick, set(), [], teams_to_add, Deck(self._low))
-        self._deal_cards()
+                                       auction_winner, None, first_trick, set(), [], teams_to_add, Deck(self._low))
+
+        self.reset_round(auction_winner)
 
         print(f"initialized game with {num_players} players.")
         for player in players:
@@ -175,15 +174,15 @@ class Game:
         self._round_state.deck = deck
         self._round_state.hidden_cards = set(remaining_cards)
 
-    def reset_round(self) -> None:
+    def reset_round(self, auction_winner: Player) -> None:
         players = self._round_state.players
         for team in self._round_state.teams:
             team.captured_cards.clear()
 
-        first_trick = TrickState(players[0], [], players, None)
+        first_trick = TrickState(auction_winner, [], players, None)
 
         self._round_state = RoundState(players,
-                                       players[0], None, first_trick, set(), [], self._round_state.teams, Deck(self._low))
+                                       auction_winner, None, first_trick, set(), [], self._round_state.teams, Deck(self._low))
         self._deal_cards()
 
 
@@ -368,7 +367,8 @@ def score_round_details(round: RoundState) -> dict:
 
     # one point per joker possessed
     for unit in scoring_units:
-        joker_count = sum(1 for card in unit["captured_cards"] if card.is_joker)
+        joker_count = sum(
+            1 for card in unit["captured_cards"] if card.is_joker)
         unit["joker_count"] = joker_count
         unit["breakdown"]["jokers"] = joker_count
 

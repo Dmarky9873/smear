@@ -1,0 +1,12 @@
+{
+  "name": "smear",
+  "private": true,
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace smear-debug-ui",
+    "build": "npm run build --workspace smear-debug-ui",
+    "preview": "npm run preview --workspace smear-debug-ui"
+  }
+}

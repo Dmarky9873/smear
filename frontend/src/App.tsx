@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 import {
   createGame,
@@ -87,7 +87,9 @@ export default function App() {
     try {
       await task();
     } catch (taskError) {
-      setError(taskError instanceof Error ? taskError.message : "Unknown error");
+      setError(
+        taskError instanceof Error ? taskError.message : "Unknown error",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -143,8 +145,7 @@ export default function App() {
           <strong>Trump:</strong> {state?.round.trump ?? "Unset"}
         </div>
         <div>
-          <strong>Terminal:</strong>{" "}
-          {state?.round.is_terminal ? "Yes" : "No"}
+          <strong>Terminal:</strong> {state?.round.is_terminal ? "Yes" : "No"}
         </div>
         <div>
           <strong>Current trick leader:</strong>{" "}
@@ -155,8 +156,7 @@ export default function App() {
           {state?.round.trick_history.length ?? 0}
         </div>
         <div>
-          <strong>Hidden cards:</strong>{" "}
-          {state?.round.hidden_cards_count ?? 0}
+          <strong>Hidden cards:</strong> {state?.round.hidden_cards_count ?? 0}
         </div>
         <div>
           <strong>Deck low:</strong> {state?.low ?? "N/A"}
@@ -218,7 +218,11 @@ export default function App() {
           >
             Reset Round
           </button>
-          <button type="button" onClick={handleRefreshState} disabled={isLoading}>
+          <button
+            type="button"
+            onClick={handleRefreshState}
+            disabled={isLoading}
+          >
             Refresh State
           </button>
         </div>
@@ -234,7 +238,9 @@ export default function App() {
                   key={player.name}
                   player={player}
                   trump={state.round.trump}
-                  isCurrentPlayer={player.name === state.round.current_player_name}
+                  isCurrentPlayer={
+                    player.name === state.round.current_player_name
+                  }
                 />
               ))}
             </div>
@@ -261,7 +267,10 @@ export default function App() {
                 <span className="muted">No completed tricks yet.</span>
               ) : (
                 state.round.trick_history.map((trick, index) => (
-                  <div key={`${trick.leader_name}-${index}`} className="history-block">
+                  <div
+                    key={`${trick.leader_name}-${index}`}
+                    className="history-block"
+                  >
                     <div className="history-block__header">
                       <strong>Trick {index + 1}</strong>
                       <span>
@@ -289,7 +298,9 @@ export default function App() {
           <section className="panel">
             <h2>Score</h2>
             {!state.round.is_terminal ? (
-              <p className="muted">Score is only available once the round is terminal.</p>
+              <p className="muted">
+                Score is only available once the round is terminal.
+              </p>
             ) : score ? (
               <>
                 <div className="score-awards">
@@ -304,14 +315,14 @@ export default function App() {
                     <span>
                       {score.awards.jack.unit_name && score.awards.jack.card
                         ? `${score.awards.jack.unit_name} with ${score.awards.jack.card.code}`
-                        : score.awards.jack.reason ?? "No jack point awarded"}
+                        : (score.awards.jack.reason ?? "No jack point awarded")}
                     </span>
                   </div>
                   <div className="score-award-card">
                     <strong>Low</strong>
                     <span>
-                      {score.awards.low.unit_name} via {score.awards.low.player_name} with{" "}
-                      {score.low_card.code}
+                      {score.awards.low.unit_name} via{" "}
+                      {score.awards.low.player_name} with {score.low_card.code}
                     </span>
                   </div>
                   <div className="score-award-card">
@@ -329,10 +340,15 @@ export default function App() {
 
                 <div className="score-grid">
                   {score.results.map((result) => (
-                    <div key={result.name} className="score-cell score-cell--detailed">
+                    <div
+                      key={result.name}
+                      className="score-cell score-cell--detailed"
+                    >
                       <strong>{result.name}</strong>
                       {result.member_names.length > 1 ? (
-                        <span className="muted">{result.member_names.join(", ")}</span>
+                        <span className="muted">
+                          {result.member_names.join(", ")}
+                        </span>
                       ) : null}
                       <span>Total points: {result.total_points}</span>
                       <span>High: {result.breakdown.high}</span>
@@ -356,7 +372,8 @@ export default function App() {
               {state.round.teams.map((team, index) => (
                 <div key={index} className="list-row list-row--stacked">
                   <span>
-                    <strong>Team {index + 1}:</strong> {team.constituents.join(", ")}
+                    <strong>Team {index + 1}:</strong>{" "}
+                    {team.constituents.join(", ")}
                   </span>
                   <span>Captured cards: {team.captured_count}</span>
                 </div>

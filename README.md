@@ -62,7 +62,14 @@ Useful endpoints:
 
 ### Frontend
 
-In a second terminal, install the frontend dependencies and run Vite:
+In a second terminal, you can either install and run the frontend from the repo root:
+
+```bash
+npm install
+npm run dev
+```
+
+Or run it directly from the frontend workspace:
 
 ```bash
 cd frontend

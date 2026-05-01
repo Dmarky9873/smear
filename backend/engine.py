@@ -2,8 +2,35 @@ try:
     from .models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
     from .constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
 except ImportError:
-    from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
+    from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card, AuctionState, AuctionEvent
     from constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
+
+
+class Auction:
+    def __init__(
+        self,
+        player_names: list[str],
+        dealer: str,
+    ):
+        self._auction_state = AuctionState(player_names.index(
+            dealer), player_names.index(dealer), player_names)
+        self._player_names = player_names
+
+    def bid(self, event: AuctionEvent):
+        if event.bidder_name != self._player_names[self._auction_state.current_bidder_index]:
+            raise ValueError(f"bidder passed is not the current bidder")
+        if event.amount <= self._auction_state.highest_bid:
+            raise ValueError(
+                f"bid is less than or equal to the current highest bid")
+        if event.action == "pass":
+            self._auction_state.passed_player_names.add(event.bidder_name)
+        else:
+            self._auction_state.highest_bid = event.amount
+            self._auction_state.highest_bidder_name = event.bidder_name
+
+        self._auction_state.current_bidder_index = (
+            self._auction_state.current_bidder_index + 1) % len(self._player_names)
+        self._auction_state.bid_history.append(event)
 
 
 class Game:

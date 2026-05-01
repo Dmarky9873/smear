@@ -4,6 +4,7 @@ import {
   createGame,
   fetchGameState,
   fetchLegalActions,
+  nextRound,
   fetchScore,
   passAuction,
   placeBid,
@@ -95,7 +96,10 @@ export default function App() {
     setState(nextState);
     setLegalActions(nextLegalActions.actions);
 
-    if (nextState.phase === "round_complete") {
+    if (
+      nextState.phase === "round_complete" ||
+      nextState.phase === "match_complete"
+    ) {
       setScore(await fetchScore());
     } else {
       setScore(null);
@@ -144,6 +148,13 @@ export default function App() {
     });
   }
 
+  async function handleNextRound() {
+    await runWithErrorHandling(async () => {
+      await nextRound();
+      await loadGameState();
+    });
+  }
+
   async function handleRefreshState() {
     await runWithErrorHandling(loadGameState);
   }
@@ -180,6 +191,9 @@ export default function App() {
       <header className="status-bar panel">
         <div>
           <strong>Phase:</strong> {state?.phase ?? "No game"}
+        </div>
+        <div>
+          <strong>Round:</strong> {state?.match.round_number ?? "N/A"}
         </div>
         <div>
           <strong>Current turn:</strong> {currentTurnName}
@@ -260,7 +274,19 @@ export default function App() {
             onClick={handleResetRound}
             disabled={isLoading || !state}
           >
-            Reset Round
+            Reset Round (Debug)
+          </button>
+          <button
+            type="button"
+            onClick={handleNextRound}
+            disabled={
+              isLoading ||
+              !state ||
+              (state.phase !== "round_complete" && state.phase !== "match_complete") ||
+              state.match.is_complete
+            }
+          >
+            Next Round
           </button>
           <button
             type="button"
@@ -274,6 +300,37 @@ export default function App() {
 
       {state ? (
         <>
+          <section className="panel">
+            <h2>Match Score</h2>
+            <div className="score-awards">
+              <div className="score-award-card">
+                <strong>Target</strong>
+                <span>{state.match.target_score} points</span>
+              </div>
+              <div className="score-award-card">
+                <strong>Round</strong>
+                <span>{state.match.round_number}</span>
+              </div>
+              <div className="score-award-card">
+                <strong>Status</strong>
+                <span>
+                  {state.match.is_complete
+                    ? `Winner: ${state.match.winner_names.join(", ")}`
+                    : "Match in progress"}
+                </span>
+              </div>
+            </div>
+
+            <div className="score-grid">
+              {state.match.scores.map((entry) => (
+                <div key={entry.name} className="score-cell">
+                  <strong>{entry.name}</strong>
+                  <span>{entry.points}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
           <section className="panel">
             <h2>Auction</h2>
             <div className="auction-summary">
@@ -477,6 +534,13 @@ export default function App() {
                     </span>
                   </div>
                 </div>
+
+                {state.match.is_complete ? (
+                  <p className="match-complete-banner">
+                    Match complete. Winner: {state.match.winner_names.join(", ")}.
+                    Start a new game to play again.
+                  </p>
+                ) : null}
 
                 <div className="score-grid">
                   {score.results.map((result) => (

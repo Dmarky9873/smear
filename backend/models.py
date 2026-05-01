@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
 
 try:
@@ -133,6 +133,28 @@ class Team:
 
     def __str__(self):
         return f"team with {[player.name for player in self.constituents]}"
+
+
+@dataclass
+class AuctionEvent:
+    bidder_name: str
+    action: str
+    amount: int | None = None
+
+
+@dataclass
+class AuctionState:
+    dealer_index: int
+    current_bidder_index: int
+    player_names: list[str]
+    highest_bid: int | None = None
+    highest_bidder_name: str | None = None
+    passed_player_names: set[str] = field(default_factory=set)
+    bid_history: list[AuctionEvent] = field(default_factory=list)
+
+    @property
+    def is_terminal(self):
+        return len(self.bid_history) == len(self.players)
 
 
 # GAMEPLAY

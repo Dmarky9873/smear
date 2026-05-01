@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 try:
     from .constants import RANK_ORDER
     from .engine import Game, get_legal_actions, score_round_details
-    from .models import Card, Play
+    from .models import AuctionEvent, AuctionState, Card, Play
 except ImportError:
     from constants import RANK_ORDER
     from engine import Game, get_legal_actions, score_round_details
-    from models import Card, Play
+    from models import AuctionEvent, AuctionState, Card, Play
 
 
 MAX_BID = 6
@@ -25,36 +25,45 @@ class RoundNotTerminalError(RuntimeError):
 
 
 @dataclass
-class AuctionEvent:
-    bidder_name: str
-    action: str
-    amount: int | None = None
-
-
-@dataclass
-class AuctionState:
-    dealer_index: int
-    current_bidder_index: int
-    highest_bid: int | None = None
-    highest_bidder_name: str | None = None
-    passed_player_names: set[str] = field(default_factory=set)
-    bid_history: list[AuctionEvent] = field(default_factory=list)
-    is_complete: bool = False
-
-
-@dataclass
 class GameSession:
     game: Game
     player_names: list[str]
     teams: list[tuple[str, ...]]
     dealer_index: int
     auction: AuctionState
+    match_scores: dict[str, int]
+    target_score: int = 21
+    round_number: int = 1
+    last_round_score: dict | None = None
+
+    @property
+    def score_unit_names(self) -> list[str]:
+        return [" / ".join(team) for team in self.teams]
+
+    @property
+    def match_winner_names(self) -> list[str]:
+        if not self.match_scores:
+            return []
+        max_score = max(self.match_scores.values())
+        if max_score < self.target_score:
+            return []
+        return [
+            unit_name
+            for unit_name, score in self.match_scores.items()
+            if score == max_score
+        ]
+
+    @property
+    def is_match_complete(self) -> bool:
+        return len(self.match_winner_names) > 0
 
     @property
     def phase(self) -> str:
         if not self.auction.is_complete:
             return "auction"
         if self.game.round_state.is_terminal:
+            if self.is_match_complete:
+                return "match_complete"
             return "round_complete"
         return "play"
 
@@ -124,6 +133,12 @@ class GameStore:
             current_bidder_index=(dealer_index + 1) % len(player_names),
         )
 
+    def _build_initial_match_scores(
+        self,
+        teams: list[tuple[str, ...]],
+    ) -> dict[str, int]:
+        return {" / ".join(team): 0 for team in teams}
+
     def _current_bidder_name(self, session: GameSession) -> str:
         return session.player_names[session.auction.current_bidder_index]
 
@@ -192,6 +207,15 @@ class GameStore:
             auction.current_bidder_index,
         )
 
+    def _score_terminal_round_if_needed(self, session: GameSession) -> None:
+        if not session.game.round_state.is_terminal or session.last_round_score is not None:
+            return
+
+        round_score = score_round_details(session.game.round_state)
+        session.last_round_score = round_score
+        for result in round_score["results"]:
+            session.match_scores[result["name"]] += result["total_points"]
+
     def create_game(
         self,
         num_players: int,
@@ -215,11 +239,29 @@ class GameStore:
             teams=normalized_teams,
             dealer_index=dealer_index,
             auction=self._build_auction_state(normalized_names, dealer_index),
+            match_scores=self._build_initial_match_scores(normalized_teams),
         )
         return self._session
 
     def reset_round(self) -> GameSession:
         session = self.require_session()
+        session.game.reset_round()
+        session.last_round_score = None
+        session.auction = self._build_auction_state(
+            session.player_names,
+            session.dealer_index,
+        )
+        return session
+
+    def next_round(self) -> GameSession:
+        session = self.require_session()
+        if not session.game.round_state.is_terminal:
+            raise ValueError("the current round must be complete before starting the next round")
+
+        self._score_terminal_round_if_needed(session)
+        if session.is_match_complete:
+            raise ValueError("the match is complete; start a new game to play again")
+
         next_dealer_index = (session.dealer_index + 1) % len(session.player_names)
         session.game.reset_round()
         session.dealer_index = next_dealer_index
@@ -227,13 +269,18 @@ class GameStore:
             session.player_names,
             next_dealer_index,
         )
+        session.round_number += 1
+        session.last_round_score = None
         return session
 
     def get_state(self) -> GameSession:
-        return self.require_session()
+        session = self.require_session()
+        self._score_terminal_round_if_needed(session)
+        return session
 
     def get_legal_actions(self) -> list[dict]:
         session = self.require_session()
+        self._score_terminal_round_if_needed(session)
         if session.phase == "auction":
             actions = [
                 {"type": "bid", "amount": amount}
@@ -242,7 +289,7 @@ class GameStore:
             if self._can_pass(session):
                 actions.append({"type": "pass"})
             return actions
-        if session.phase == "round_complete":
+        if session.phase in {"round_complete", "match_complete"}:
             return []
         return [
             {"type": "play_card", "card_code": card.code}
@@ -293,6 +340,7 @@ class GameStore:
         card = Card(card_code.upper().strip())
         play = Play(game.curr_player, card)
         game.apply_trick_action(play)
+        self._score_terminal_round_if_needed(session)
         return session
 
     def get_score(self) -> dict:
@@ -300,7 +348,10 @@ class GameStore:
         game = session.game
         if not game.round_state.is_terminal:
             raise RoundNotTerminalError("Round is not terminal yet.")
-        return score_round_details(game.round_state)
+        self._score_terminal_round_if_needed(session)
+        if session.last_round_score is None:
+            raise RoundNotTerminalError("Round score is unavailable.")
+        return session.last_round_score
 
 
 game_store = GameStore()

@@ -85,11 +85,25 @@ class AuctionStateResponse(BaseModel):
     is_complete: bool
 
 
+class MatchScoreEntryResponse(BaseModel):
+    name: str
+    points: int
+
+
+class MatchStateResponse(BaseModel):
+    round_number: int
+    target_score: int
+    scores: list[MatchScoreEntryResponse]
+    is_complete: bool
+    winner_names: list[str]
+
+
 class GameStateResponse(BaseModel):
     num_players: int
     low: str
-    phase: Literal["auction", "play", "round_complete"]
+    phase: Literal["auction", "play", "round_complete", "match_complete"]
     auction: AuctionStateResponse
+    match: MatchStateResponse
     round: RoundStateResponse
 
 

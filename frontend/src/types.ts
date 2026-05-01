@@ -48,10 +48,24 @@ export type GameState = {
   low: string;
   phase: GamePhase;
   auction: AuctionState;
+  match: MatchState;
   round: RoundState;
 };
 
-export type GamePhase = "auction" | "play" | "round_complete";
+export type GamePhase = "auction" | "play" | "round_complete" | "match_complete";
+
+export type MatchScoreEntry = {
+  name: string;
+  points: number;
+};
+
+export type MatchState = {
+  round_number: number;
+  target_score: number;
+  scores: MatchScoreEntry[];
+  is_complete: boolean;
+  winner_names: string[];
+};
 
 export type AuctionEvent = {
   bidder_name: string;

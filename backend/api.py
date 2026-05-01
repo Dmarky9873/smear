@@ -96,6 +96,18 @@ def reset_game() -> dict:
     return serialize_game(game)
 
 
+@router.post("/game/next-round", response_model=GameStateResponse)
+def next_round() -> dict:
+    try:
+        session = game_store.next_round()
+    except GameNotInitializedError as exc:
+        raise _not_found(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    return serialize_game(session)
+
+
 @router.get("/game/state", response_model=GameStateResponse)
 def get_game_state() -> dict:
     try:

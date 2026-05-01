@@ -132,6 +132,19 @@ def serialize_auction(session: GameSession) -> dict:
     }
 
 
+def serialize_match(session: GameSession) -> dict:
+    return {
+        "round_number": session.round_number,
+        "target_score": session.target_score,
+        "scores": [
+            {"name": unit_name, "points": session.match_scores[unit_name]}
+            for unit_name in session.score_unit_names
+        ],
+        "is_complete": session.is_match_complete,
+        "winner_names": session.match_winner_names,
+    }
+
+
 def serialize_game(session: GameSession) -> dict:
     game = session.game
     return {
@@ -139,6 +152,7 @@ def serialize_game(session: GameSession) -> dict:
         "low": game.low,
         "phase": session.phase,
         "auction": serialize_auction(session),
+        "match": serialize_match(session),
         "round": serialize_round_state(game.round_state),
     }
 

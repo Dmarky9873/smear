@@ -56,7 +56,8 @@ Useful endpoints:
 - `POST /game/new`
 - `POST /game/auction/bid`
 - `POST /game/auction/pass`
-- `POST /game/reset`
+- `POST /game/reset` for a debug reset of the current round without advancing the match
+- `POST /game/next-round` to advance the scored match to the next round
 - `GET /game/state`
 - `GET /game/legal-actions`
 - `POST /game/play`

@@ -254,6 +254,14 @@ button {
   min-width: 220px;
 }
 
+.match-complete-banner {
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  background: #eef2ff;
+}
+
 .muted {
   color: #7b8794;
 }

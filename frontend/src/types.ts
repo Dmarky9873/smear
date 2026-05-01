@@ -7,6 +7,8 @@ export type Card = {
 
 export type Player = {
   name: string;
+  bot_id: string | null;
+  bot_label: string | null;
   cards: Card[];
   captured_cards: Card[];
   captured_count: number;
@@ -128,13 +130,26 @@ export type ScoreResult = {
   joker_count: number;
   game_total: number;
   total_points: number;
+  match_delta: number;
+  bid_amount: number | null;
+  made_bid: boolean | null;
   captured_cards: Card[];
+};
+
+export type BidSummary = {
+  bidder_name: string | null;
+  unit_name: string | null;
+  amount: number | null;
+  points_won: number | null;
+  made_bid: boolean | null;
+  match_delta: number | null;
 };
 
 export type Score = {
   trump: string;
   high_card: Card;
   low_card: Card;
+  bid_summary: BidSummary;
   awards: {
     high: ScoreAward;
     jack: ScoreAward;
@@ -142,4 +157,14 @@ export type Score = {
     game: ScoreAward;
   };
   results: ScoreResult[];
+};
+
+export type ReadyBot = {
+  id: string;
+  label: string;
+  description: string;
+};
+
+export type ReadyBotListResponse = {
+  bots: ReadyBot[];
 };

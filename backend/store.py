@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
+    from .bots.base import BotPlayer
+    from .bots.registry import build_ready_bot, get_ready_bot_spec
     from .constants import RANK_ORDER
     from .engine import Auction, Game, get_legal_actions, score_round_details
     from .models import AuctionEvent, Card, Play
 except ImportError:
+    from bots.base import BotPlayer
+    from bots.registry import build_ready_bot, get_ready_bot_spec
     from constants import RANK_ORDER
     from engine import Auction, Game, get_legal_actions, score_round_details
     from models import AuctionEvent, Card, Play
@@ -31,7 +35,9 @@ class GameSession:
     teams: list[tuple[str, ...]]
     dealer_index: int
     auction: Auction
+    player_bot_ids: dict[str, str | None]
     match_scores: dict[str, int]
+    bots: dict[str, BotPlayer] = field(default_factory=dict)
     target_score: int = 21
     round_number: int = 1
     last_round_score: dict | None = None
@@ -114,6 +120,33 @@ def _normalize_teams(
     return normalized
 
 
+def _normalize_player_bots(
+    player_names: list[str],
+    player_bots: list[str | None] | None,
+) -> dict[str, str | None]:
+    if player_bots is None:
+        return {name: None for name in player_names}
+
+    if len(player_bots) != len(player_names):
+        raise ValueError("player_bots must match the number of player_names")
+
+    normalized: dict[str, str | None] = {}
+    for player_name, bot_id in zip(player_names, player_bots):
+        if bot_id is None:
+            normalized[player_name] = None
+            continue
+
+        cleaned_bot_id = bot_id.strip()
+        if not cleaned_bot_id:
+            normalized[player_name] = None
+            continue
+
+        get_ready_bot_spec(cleaned_bot_id)
+        normalized[player_name] = cleaned_bot_id
+
+    return normalized
+
+
 class GameStore:
     def __init__(self):
         self._session: GameSession | None = None
@@ -140,8 +173,88 @@ class GameStore:
     ) -> dict[str, int]:
         return {" / ".join(team): 0 for team in teams}
 
+    def _build_bot_controllers(
+        self,
+        player_bot_ids: dict[str, str | None],
+    ) -> dict[str, BotPlayer]:
+        return {
+            player_name: build_ready_bot(bot_id, player_name)
+            for player_name, bot_id in player_bot_ids.items()
+            if bot_id is not None
+        }
+
     def _current_bidder_name(self, session: GameSession) -> str:
         return session.auction.current_bidder_name
+
+    def _current_bot_name(self, session: GameSession) -> str | None:
+        if session.phase == "auction":
+            return session.auction.current_bidder_name
+        if session.phase == "play":
+            return session.game.curr_player.name
+        return None
+
+    def _run_bot_auction_turn(self, session: GameSession, player_name: str) -> None:
+        bot = session.bots[player_name]
+        action = bot.choose_auction_action(session.auction.state)
+        legal_actions = session.auction.legal_actions()
+        if action not in legal_actions:
+            raise ValueError(
+                f"bot '{player_name}' selected illegal auction action {action}; legal actions are {legal_actions}"
+            )
+
+        if action["type"] == "bid":
+            session.auction.apply_event(
+                AuctionEvent(
+                    bidder_name=player_name,
+                    action="bid",
+                    amount=action["amount"],
+                )
+            )
+        elif action["type"] == "pass":
+            session.auction.apply_event(
+                AuctionEvent(bidder_name=player_name, action="pass")
+            )
+        else:
+            raise ValueError(f"unsupported bot auction action: {action}")
+
+        self._advance_or_finalize_auction(session)
+
+    def _run_bot_play_turn(self, session: GameSession, player_name: str) -> None:
+        bot = session.bots[player_name]
+        legal_cards = get_legal_actions(session.game.round_state)
+        card = bot.choose_card(session.game.round_state)
+        if card not in legal_cards:
+            legal_codes = sorted(legal_card.code for legal_card in legal_cards)
+            raise ValueError(
+                f"bot '{player_name}' selected illegal card {card.code}; legal cards are {legal_codes}"
+            )
+
+        session.game.apply_trick_action(Play(session.game.curr_player, card))
+        self._score_terminal_round_if_needed(session)
+
+    def _run_bot_turns(self, session: GameSession, max_steps: int = 512) -> None:
+        for _ in range(max_steps):
+            if session.phase in {"round_complete", "match_complete"}:
+                return
+
+            player_name = self._current_bot_name(session)
+            if player_name is None:
+                return
+
+            if player_name not in session.bots:
+                return
+
+            if session.phase == "auction":
+                self._run_bot_auction_turn(session, player_name)
+                continue
+
+            if session.phase == "play":
+                self._run_bot_play_turn(session, player_name)
+                continue
+
+            return
+
+        raise ValueError("bot turn loop exceeded the step limit")
 
     def _finalize_auction(self, session: GameSession) -> None:
         auction_state = session.auction.state
@@ -155,20 +268,75 @@ class GameStore:
         if session.auction.state.is_complete:
             self._finalize_auction(session)
 
+    def _apply_bid_penalty(self, session: GameSession, round_score: dict) -> dict:
+        for result in round_score["results"]:
+            result["match_delta"] = result["total_points"]
+            result["bid_amount"] = None
+            result["made_bid"] = None
+
+        auction_state = session.auction.state
+        bidder_name = auction_state.highest_bidder_name
+        bid_amount = auction_state.highest_bid
+        bid_summary = {
+            "bidder_name": bidder_name,
+            "unit_name": None,
+            "amount": bid_amount,
+            "points_won": None,
+            "made_bid": None,
+            "match_delta": None,
+        }
+
+        if bidder_name is None or bid_amount is None:
+            round_score["bid_summary"] = bid_summary
+            return round_score
+
+        bidder_result = next(
+            (
+                result
+                for result in round_score["results"]
+                if bidder_name in result["member_names"]
+            ),
+            None,
+        )
+        if bidder_result is None:
+            raise ValueError("could not map highest bidder to a scoring unit")
+
+        made_bid = bidder_result["total_points"] >= bid_amount
+        bidder_result["bid_amount"] = bid_amount
+        bidder_result["made_bid"] = made_bid
+        bidder_result["match_delta"] = (
+            bidder_result["total_points"] if made_bid else -bid_amount
+        )
+
+        bid_summary.update(
+            {
+                "unit_name": bidder_result["name"],
+                "points_won": bidder_result["total_points"],
+                "made_bid": made_bid,
+                "match_delta": bidder_result["match_delta"],
+            }
+        )
+        round_score["bid_summary"] = bid_summary
+        return round_score
+
     def _score_terminal_round_if_needed(self, session: GameSession) -> None:
         if not session.game.round_state.is_terminal or session.last_round_score is not None:
             return
 
-        round_score = score_round_details(session.game.round_state)
+        round_score = self._apply_bid_penalty(
+            session,
+            score_round_details(session.game.round_state),
+        )
         session.last_round_score = round_score
         for result in round_score["results"]:
-            session.match_scores[result["name"]] += result["total_points"]
+            session.match_scores[result["name"]] += result["match_delta"]
 
     def create_game(
         self,
         num_players: int,
         player_names: list[str],
         teams: list[list[str]] | None,
+        player_bots: list[str | None] | None = None,
     ) -> GameSession:
         normalized_names = [name.strip() for name in player_names]
         if len(normalized_names) != num_players:
@@ -179,6 +347,10 @@ class GameStore:
             raise ValueError("player_names must be unique")
 
         normalized_teams = _normalize_teams(normalized_names, teams)
+        normalized_player_bots = _normalize_player_bots(
+            normalized_names,
+            player_bots,
+        )
         dealer_index = len(normalized_names) - 1
         game = Game(num_players, normalized_names, normalized_teams)
         self._session = GameSession(
@@ -187,8 +359,11 @@ class GameStore:
             teams=normalized_teams,
             dealer_index=dealer_index,
             auction=self._build_auction_state(normalized_names, dealer_index),
+            player_bot_ids=normalized_player_bots,
+            bots=self._build_bot_controllers(normalized_player_bots),
             match_scores=self._build_initial_match_scores(normalized_teams),
         )
+        self._run_bot_turns(self._session)
         return self._session
 
     def reset_round(self) -> GameSession:
@@ -199,6 +374,7 @@ class GameStore:
             session.player_names,
             session.dealer_index,
         )
+        self._run_bot_turns(session)
         return session
 
     def next_round(self) -> GameSession:
@@ -219,6 +395,7 @@ class GameStore:
         )
         session.round_number += 1
         session.last_round_score = None
+        self._run_bot_turns(session)
         return session
 
     def get_state(self) -> GameSession:
@@ -247,6 +424,7 @@ class GameStore:
             AuctionEvent(bidder_name=bidder_name, action="bid", amount=amount)
         )
         self._advance_or_finalize_auction(session)
+        self._run_bot_turns(session)
         return session
 
     def pass_auction(self) -> GameSession:
@@ -256,6 +434,7 @@ class GameStore:
         bidder_name = self._current_bidder_name(session)
         session.auction.apply_event(AuctionEvent(bidder_name=bidder_name, action="pass"))
         self._advance_or_finalize_auction(session)
+        self._run_bot_turns(session)
         return session
 
     def play_card(self, card_code: str) -> GameSession:
@@ -267,6 +446,7 @@ class GameStore:
         play = Play(game.curr_player, card)
         game.apply_trick_action(play)
         self._score_terminal_round_if_needed(session)
+        self._run_bot_turns(session)
         return session
 
     def get_score(self) -> dict:

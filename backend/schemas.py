@@ -13,6 +13,7 @@ class NewGameRequest(BaseModel):
     num_players: int = Field(ge=3, le=8)
     player_names: list[str]
     teams: list[list[str]] | None = None
+    player_bots: list[str | None] | None = None
 
 
 class BidRequest(BaseModel):
@@ -32,6 +33,8 @@ class CardResponse(BaseModel):
 
 class PlayerResponse(BaseModel):
     name: str
+    bot_id: str | None = None
+    bot_label: str | None = None
     cards: list[CardResponse]
     captured_cards: list[CardResponse]
     captured_count: int
@@ -107,6 +110,16 @@ class GameStateResponse(BaseModel):
     round: RoundStateResponse
 
 
+class ReadyBotResponse(BaseModel):
+    id: str
+    label: str
+    description: str
+
+
+class ReadyBotListResponse(BaseModel):
+    bots: list[ReadyBotResponse]
+
+
 class PlayCardActionResponse(BaseModel):
     type: Literal["play_card"]
     card_code: str
@@ -140,6 +153,9 @@ class ScoreResultResponse(BaseModel):
     joker_count: int
     game_total: int
     total_points: int
+    match_delta: int
+    bid_amount: int | None = None
+    made_bid: bool | None = None
     captured_cards: list[CardResponse]
 
 
@@ -152,9 +168,19 @@ class ScoreAwardResponse(BaseModel):
     reason: str | None = None
 
 
+class BidSummaryResponse(BaseModel):
+    bidder_name: str | None
+    unit_name: str | None
+    amount: int | None
+    points_won: int | None
+    made_bid: bool | None
+    match_delta: int | None
+
+
 class RoundScoreResponse(BaseModel):
     trump: str
     high_card: CardResponse
     low_card: CardResponse
+    bid_summary: BidSummaryResponse
     awards: dict[str, ScoreAwardResponse]
     results: list[ScoreResultResponse]

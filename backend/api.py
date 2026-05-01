@@ -10,10 +10,12 @@ try:
         LegalActionsResponse,
         NewGameRequest,
         PlayCardRequest,
+        ReadyBotListResponse,
         RoundScoreResponse,
     )
     from .serializers import serialize_game, serialize_score_details
     from .store import GameNotInitializedError, RoundNotTerminalError, game_store
+    from .bots.registry import list_ready_bot_metadata
 except ImportError:
     from schemas import (
         BidRequest,
@@ -22,10 +24,12 @@ except ImportError:
         LegalActionsResponse,
         NewGameRequest,
         PlayCardRequest,
+        ReadyBotListResponse,
         RoundScoreResponse,
     )
     from serializers import serialize_game, serialize_score_details
     from store import GameNotInitializedError, RoundNotTerminalError, game_store
+    from bots.registry import list_ready_bot_metadata
 
 
 router = APIRouter()
@@ -44,6 +48,11 @@ def health() -> HealthResponse:
     return HealthResponse(ok=True)
 
 
+@router.get("/bots", response_model=ReadyBotListResponse)
+def get_ready_bots() -> dict:
+    return {"bots": list_ready_bot_metadata()}
+
+
 @router.post(
     "/game/new",
     response_model=GameStateResponse,
@@ -55,6 +64,7 @@ def new_game(payload: NewGameRequest) -> dict:
             num_players=payload.num_players,
             player_names=payload.player_names,
             teams=payload.teams,
+            player_bots=payload.player_bots,
         )
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc

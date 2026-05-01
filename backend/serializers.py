@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 try:
+    from .bots.registry import get_ready_bot_spec
     from .constants import RANK_ORDER
     from .engine import Game, get_trick_winner
     from .models import Card, Play, Player, RoundState, Team, TrickState
     from .store import GameSession
 except ImportError:
+    from bots.registry import get_ready_bot_spec
     from constants import RANK_ORDER
     from engine import Game, get_trick_winner
     from models import Card, Play, Player, RoundState, Team, TrickState
@@ -36,10 +38,14 @@ def serialize_card(card: Card) -> dict:
     }
 
 
-def serialize_player(player: Player) -> dict:
+def serialize_player(player: Player, session: GameSession) -> dict:
     captured_cards = sort_cards(player.captured_cards)
+    bot_id = session.player_bot_ids.get(player.name)
+    bot_label = get_ready_bot_spec(bot_id).label if bot_id is not None else None
     return {
         "name": player.name,
+        "bot_id": bot_id,
+        "bot_label": bot_label,
         "cards": [serialize_card(card) for card in sort_cards(player.cards)],
         "captured_cards": [serialize_card(card) for card in captured_cards],
         "captured_count": len(captured_cards),
@@ -82,10 +88,11 @@ def serialize_team(team: Team) -> dict:
     }
 
 
-def serialize_round_state(round_state: RoundState) -> dict:
+def serialize_round_state(session: GameSession) -> dict:
+    round_state = session.game.round_state
     hidden_cards = sort_cards(round_state.hidden_cards)
     return {
-        "players": [serialize_player(player) for player in round_state.players],
+        "players": [serialize_player(player, session) for player in round_state.players],
         "current_player_name": round_state.current_player.name,
         "trump": round_state.trump,
         "current_trick": serialize_trick(round_state.current_trick),
@@ -145,7 +152,7 @@ def serialize_game(session: GameSession) -> dict:
         "phase": session.phase,
         "auction": serialize_auction(session),
         "match": serialize_match(session),
-        "round": serialize_round_state(game.round_state),
+        "round": serialize_round_state(session),
     }
 
 
@@ -154,6 +161,14 @@ def serialize_score_details(score_details: dict) -> dict:
         "trump": score_details["trump"],
         "high_card": serialize_card(score_details["high_card"]),
         "low_card": serialize_card(score_details["low_card"]),
+        "bid_summary": {
+            "bidder_name": score_details["bid_summary"].get("bidder_name"),
+            "unit_name": score_details["bid_summary"].get("unit_name"),
+            "amount": score_details["bid_summary"].get("amount"),
+            "points_won": score_details["bid_summary"].get("points_won"),
+            "made_bid": score_details["bid_summary"].get("made_bid"),
+            "match_delta": score_details["bid_summary"].get("match_delta"),
+        },
         "awards": {
             name: {
                 "unit_name": award.get("unit_name"),
@@ -173,6 +188,9 @@ def serialize_score_details(score_details: dict) -> dict:
                 "joker_count": result["joker_count"],
                 "game_total": result["game_total"],
                 "total_points": result["total_points"],
+                "match_delta": result["match_delta"],
+                "bid_amount": result.get("bid_amount"),
+                "made_bid": result.get("made_bid"),
                 "captured_cards": [
                     serialize_card(card) for card in sort_cards(result["captured_cards"])
                 ],

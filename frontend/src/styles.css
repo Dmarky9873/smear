@@ -15,7 +15,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -68,11 +69,17 @@ button {
 }
 
 .setup-grid input,
-.setup-grid textarea {
+.setup-grid textarea,
+.setup-grid select {
   width: 100%;
   padding: 8px;
   border: 1px solid #bcccdc;
   border-radius: 6px;
+}
+
+.setup-player-card {
+  display: grid;
+  gap: 8px;
 }
 
 .button-row {
@@ -115,8 +122,24 @@ button {
   align-items: baseline;
 }
 
+.player-panel__title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .player-panel__header h3 {
   margin: 0;
+}
+
+.player-panel__bot-badge {
+  border: 1px solid #bfdcfb;
+  background: #eff6ff;
+  color: #0b4f88;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
 }
 
 .player-panel__group {

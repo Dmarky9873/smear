@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 import {
   createGame,
+  fetchBots,
   fetchGameState,
   fetchLegalActions,
   nextRound,
@@ -16,7 +17,14 @@ import { DebugJsonPanel } from "./components/DebugJsonPanel";
 import { LegalActionsPanel } from "./components/LegalActionsPanel";
 import { PlayingCard } from "./components/PlayingCard";
 import { PlayerPanel } from "./components/PlayerPanel";
-import type { BidAction, GameState, LegalAction, PlayCardAction, Score } from "./types";
+import type {
+  BidAction,
+  GameState,
+  LegalAction,
+  PlayCardAction,
+  ReadyBot,
+  Score,
+} from "./types";
 
 function buildDefaultPlayerNames(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `Player ${index + 1}`);
@@ -45,7 +53,11 @@ export default function App() {
   const [playerNames, setPlayerNames] = useState<string[]>(() =>
     buildDefaultPlayerNames(4),
   );
+  const [playerBots, setPlayerBots] = useState<(string | null)[]>(() =>
+    Array.from({ length: 4 }, () => null),
+  );
   const [teamsInput, setTeamsInput] = useState("");
+  const [availableBots, setAvailableBots] = useState<ReadyBot[]>([]);
   const [state, setState] = useState<GameState | null>(null);
   const [legalActions, setLegalActions] = useState<LegalAction[]>([]);
   const [score, setScore] = useState<Score | null>(null);
@@ -56,6 +68,13 @@ export default function App() {
     setPlayerNames((current) => {
       const next = buildDefaultPlayerNames(numPlayers);
       return next.map((fallbackName, index) => current[index] ?? fallbackName);
+    });
+  }, [numPlayers]);
+
+  useEffect(() => {
+    setPlayerBots((current) => {
+      const next = Array.from({ length: numPlayers }, () => null);
+      return next.map((fallbackBot, index) => current[index] ?? fallbackBot);
     });
   }, [numPlayers]);
 
@@ -124,6 +143,28 @@ export default function App() {
     void runWithErrorHandling(loadGameState);
   }, []);
 
+  useEffect(() => {
+    let isActive = true;
+
+    void fetchBots()
+      .then((payload) => {
+        if (isActive) {
+          setAvailableBots(payload.bots);
+        }
+      })
+      .catch((botError) => {
+        if (isActive) {
+          setError(
+            botError instanceof Error ? botError.message : "Failed to load bots",
+          );
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
   async function handleNewGame() {
     await runWithErrorHandling(async () => {
       const normalizedNames = playerNames.map((name, index) => {
@@ -135,6 +176,7 @@ export default function App() {
         num_players: numPlayers,
         player_names: normalizedNames,
         teams: parseTeams(teamsInput),
+        player_bots: playerBots,
       });
 
       await loadGameState();
@@ -240,18 +282,48 @@ export default function App() {
           </label>
 
           {playerNames.map((playerName, index) => (
-            <label key={index}>
-              Player {index + 1}
-              <input
-                type="text"
-                value={playerName}
-                onChange={(event) => {
-                  const nextNames = [...playerNames];
-                  nextNames[index] = event.target.value;
-                  setPlayerNames(nextNames);
-                }}
-              />
-            </label>
+            <div key={index} className="setup-player-card">
+              <label>
+                Player {index + 1}
+                <input
+                  type="text"
+                  value={playerName}
+                  onChange={(event) => {
+                    const nextNames = [...playerNames];
+                    nextNames[index] = event.target.value;
+                    setPlayerNames(nextNames);
+                  }}
+                />
+              </label>
+              <label>
+                Controller
+                <select
+                  value={playerBots[index] ?? ""}
+                  onChange={(event) => {
+                    const nextBots = [...playerBots];
+                    nextBots[index] = event.target.value || null;
+                    setPlayerBots(nextBots);
+                  }}
+                >
+                  <option value="">Human</option>
+                  {availableBots.map((bot) => (
+                    <option key={bot.id} value={bot.id}>
+                      {bot.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {playerBots[index] ? (
+                <span className="muted">
+                  {
+                    availableBots.find((bot) => bot.id === playerBots[index])
+                      ?.description
+                  }
+                </span>
+              ) : (
+                <span className="muted">Human-controlled player.</span>
+              )}
+            </div>
           ))}
 
           <label className="setup-grid__full">
@@ -264,6 +336,11 @@ export default function App() {
             />
           </label>
         </div>
+
+        <p className="muted">
+          Bot turns run automatically until the next human turn or terminal
+          state.
+        </p>
 
         <div className="button-row">
           <button type="button" onClick={handleNewGame} disabled={isLoading}>
@@ -502,6 +579,19 @@ export default function App() {
               <>
                 <div className="score-awards">
                   <div className="score-award-card">
+                    <strong>Bid</strong>
+                    <span>
+                      {score.bid_summary.bidder_name &&
+                      score.bid_summary.amount !== null &&
+                      score.bid_summary.points_won !== null &&
+                      score.bid_summary.match_delta !== null
+                        ? score.bid_summary.made_bid
+                          ? `${score.bid_summary.unit_name} made ${score.bid_summary.amount} with ${score.bid_summary.points_won} and gains ${score.bid_summary.match_delta}`
+                          : `${score.bid_summary.unit_name} missed ${score.bid_summary.amount} with ${score.bid_summary.points_won} and loses ${Math.abs(score.bid_summary.match_delta)}`
+                        : "No bid summary available"}
+                    </span>
+                  </div>
+                  <div className="score-award-card">
                     <strong>High</strong>
                     <span>
                       {score.awards.high.unit_name} with {score.high_card.code}
@@ -554,7 +644,16 @@ export default function App() {
                           {result.member_names.join(", ")}
                         </span>
                       ) : null}
-                      <span>Total points: {result.total_points}</span>
+                      <span>Round points: {result.total_points}</span>
+                      <span>Match delta: {result.match_delta}</span>
+                      {result.bid_amount !== null ? (
+                        <span>
+                          Bid outcome:{" "}
+                          {result.made_bid
+                            ? `made ${result.bid_amount}`
+                            : `missed ${result.bid_amount}`}
+                        </span>
+                      ) : null}
                       <span>High: {result.breakdown.high}</span>
                       <span>Jack: {result.breakdown.jack}</span>
                       <span>Low: {result.breakdown.low}</span>

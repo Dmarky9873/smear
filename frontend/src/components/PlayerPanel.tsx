@@ -15,7 +15,12 @@ export function PlayerPanel({
   return (
     <section className={`player-panel ${isCurrentPlayer ? "player-panel--current" : ""}`}>
       <div className="player-panel__header">
-        <h3>{player.name}</h3>
+        <div className="player-panel__title">
+          <h3>{player.name}</h3>
+          {player.bot_label ? (
+            <span className="player-panel__bot-badge">{player.bot_label} bot</span>
+          ) : null}
+        </div>
         <span>{isCurrentPlayer ? "Current player" : "Waiting"}</span>
       </div>
 

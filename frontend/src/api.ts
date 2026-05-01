@@ -1,4 +1,9 @@
-import type { GameState, LegalActionsResponse, Score } from "./types";
+import type {
+  GameState,
+  LegalActionsResponse,
+  ReadyBotListResponse,
+  Score,
+} from "./types";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -28,7 +33,12 @@ export type NewGamePayload = {
   num_players: number;
   player_names: string[];
   teams: string[][] | null;
+  player_bots: (string | null)[];
 };
+
+export function fetchBots(): Promise<ReadyBotListResponse> {
+  return request<ReadyBotListResponse>("/bots");
+}
 
 export function createGame(payload: NewGamePayload): Promise<GameState> {
   return request<GameState>("/game/new", {

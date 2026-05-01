@@ -28,6 +28,16 @@ def get_max_card(lst: list[Card] | set[Card]) -> Card:
     return max(lst, key=lambda card: RANK_ORDER.get(card.rank, -1))
 
 
+def get_cards_value(cards: list[Card] | set[Card]) -> int:
+    """Returns the value of the cards passed. I.e., if passed a joker, jack, and an ace, return 3."""
+    valuable_ranks = {'J', 'A'}
+    count = 0
+    for card in cards:
+        if card.is_joker or card.rank in valuable_ranks:
+            count += 1
+    return count
+
+
 def would_win(card: Card, trick_state: TrickState) -> bool:
     """Returns whether the given card would win in the passed trick state.
 

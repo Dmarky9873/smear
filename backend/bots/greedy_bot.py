@@ -1,7 +1,7 @@
 from random import choice
 
 from backend.engine import get_legal_actions, get_legal_auction_actions
-from backend.models import AuctionState, RoundState, Card, would_win
+from backend.models import AuctionState, RoundState, Card, would_win, get_cards_value
 
 try:
     from .base import BotPlayer
@@ -11,12 +11,22 @@ except ImportError:
 
 class GreedyPlayer(BotPlayer):
     def choose_card(self, round_state: RoundState) -> Card:
-        """For the greedy player, always play the highest (most trumpy) card in legal moves.
-        That is:
-            - If trump in hand, pick the highest ranked trump card
-            - If joker in hand, play a joker
-            - If sub-round trump in hand, play the highest ranked sub-round trump card
-            - Play the highest ranked card in hand
+        """For the greedy player, play the card with the highest expected value
         """
-        legal_cards = get_legal_actions(round_state, self.cards)
-        return legal_cards[0]
+        val_dict = dict()
+        for card in get_legal_actions(round_state):
+            val_dict[card] = 0
+        for card in val_dict.keys():
+            if would_win(card, round_state.current_trick):
+                val_dict[card] += get_cards_value(
+                    {play.card for play in round_state.current_trick.plays}.union({card}))
+            else:
+                val_dict[card] -= get_cards_value({card})
+        max_value = max(val_dict.values())
+        best_cards = [card for card, value in val_dict.items()
+                      if value == max_value]
+        return choice(best_cards)
+
+    def choose_auction_action(self, auction_state):
+        """For the greedy player, always bid one higher than the previous, if possible."""
+        return auction_state.highest_bid + 1

@@ -13,5 +13,5 @@ class RandomPlayer(BotPlayer):
     def choose_card(self, round_state: RoundState) -> Card:
         return choice(list(get_legal_actions(round_state)))
 
-    def choose_auction_action(self, auction_state: AuctionState):
+    def choose_auction_action(self, auction_state: AuctionState) -> int:
         return choice(get_legal_auction_actions(auction_state))

@@ -46,13 +46,45 @@ export type RoundState = {
 export type GameState = {
   num_players: number;
   low: string;
+  phase: GamePhase;
+  auction: AuctionState;
   round: RoundState;
 };
 
-export type LegalAction = {
+export type GamePhase = "auction" | "play" | "round_complete";
+
+export type AuctionEvent = {
+  bidder_name: string;
+  action: "bid" | "pass";
+  amount: number | null;
+};
+
+export type AuctionState = {
+  dealer_name: string;
+  current_bidder_name: string;
+  current_high_bid: number | null;
+  highest_bidder_name: string | null;
+  passed_player_names: string[];
+  active_player_names: string[];
+  bid_history: AuctionEvent[];
+  is_complete: boolean;
+};
+
+export type PlayCardAction = {
   type: "play_card";
   card_code: string;
 };
+
+export type BidAction = {
+  type: "bid";
+  amount: number;
+};
+
+export type PassAction = {
+  type: "pass";
+};
+
+export type LegalAction = PlayCardAction | BidAction | PassAction;
 
 export type LegalActionsResponse = {
   actions: LegalAction[];

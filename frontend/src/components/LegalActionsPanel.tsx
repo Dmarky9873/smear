@@ -1,8 +1,8 @@
 import { PlayingCard } from "./PlayingCard";
-import type { Card, LegalAction, Player } from "../types";
+import type { Card, PlayCardAction, Player } from "../types";
 
 type LegalActionsPanelProps = {
-  actions: LegalAction[];
+  actions: PlayCardAction[];
   currentPlayer: Player | null;
   trump: string | null;
   isTerminal: boolean;
@@ -33,7 +33,7 @@ export function LegalActionsPanel({
 }: LegalActionsPanelProps) {
   return (
     <section className="panel">
-      <h2>Legal Actions</h2>
+      <h2>Card Actions</h2>
       {isTerminal ? (
         <p className="muted">The round is terminal. No more actions are available.</p>
       ) : null}

@@ -212,6 +212,27 @@ button {
   margin-bottom: 12px;
 }
 
+.auction-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.auction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.auction-actions button {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #52606d;
+  background: #ffffff;
+}
+
 .score-award-card {
   border: 1px solid #d9e2ec;
   border-radius: 6px;

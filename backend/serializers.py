@@ -4,10 +4,12 @@ try:
     from .constants import RANK_ORDER
     from .engine import Game, get_trick_winner
     from .models import Card, Play, Player, RoundState, Team, TrickState
+    from .store import GameSession
 except ImportError:
     from constants import RANK_ORDER
     from engine import Game, get_trick_winner
     from models import Card, Play, Player, RoundState, Team, TrickState
+    from store import GameSession
 
 
 SUIT_ORDER = {"C": 0, "D": 1, "H": 2, "S": 3}
@@ -97,10 +99,46 @@ def serialize_round_state(round_state: RoundState) -> dict:
     }
 
 
-def serialize_game(game: Game) -> dict:
+def serialize_auction(session: GameSession) -> dict:
+    player_order = session.player_names
+    auction = session.auction
+    active_player_names = [
+        name
+        for name in player_order
+        if name not in auction.passed_player_names
+    ]
+    passed_player_names = [
+        name
+        for name in player_order
+        if name in auction.passed_player_names
+    ]
+
+    return {
+        "dealer_name": player_order[auction.dealer_index],
+        "current_bidder_name": player_order[auction.current_bidder_index],
+        "current_high_bid": auction.highest_bid,
+        "highest_bidder_name": auction.highest_bidder_name,
+        "passed_player_names": passed_player_names,
+        "active_player_names": active_player_names,
+        "bid_history": [
+            {
+                "bidder_name": event.bidder_name,
+                "action": event.action,
+                "amount": event.amount,
+            }
+            for event in auction.bid_history
+        ],
+        "is_complete": auction.is_complete,
+    }
+
+
+def serialize_game(session: GameSession) -> dict:
+    game = session.game
     return {
         "num_players": game.num_players,
         "low": game.low,
+        "phase": session.phase,
+        "auction": serialize_auction(session),
         "round": serialize_round_state(game.round_state),
     }
 

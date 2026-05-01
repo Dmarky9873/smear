@@ -54,6 +54,8 @@ Useful endpoints:
 
 - `GET /health`
 - `POST /game/new`
+- `POST /game/auction/bid`
+- `POST /game/auction/pass`
 - `POST /game/reset`
 - `GET /game/state`
 - `GET /game/legal-actions`

@@ -8,7 +8,13 @@ except ImportError:
 
 class Game:
 
-    def __init__(self, num_players: int, player_names: list[str], teams, auction_winner: Player):
+    def __init__(
+        self,
+        num_players: int,
+        player_names: list[str],
+        teams,
+        starting_player_name: str | None = None,
+    ):
 
         if num_players > 8 or num_players < 3:
             raise ValueError(
@@ -33,12 +39,29 @@ class Game:
             new_team = Team([player_dict[name] for name in team], set())
             teams_to_add.append(new_team)
 
-        first_trick = TrickState(auction_winner, [], players, None)
+        if starting_player_name is None:
+            starting_player = players[0]
+        else:
+            starting_player = player_dict.get(starting_player_name)
+            if starting_player is None:
+                raise ValueError(
+                    f"starting player {starting_player_name} is not part of this game"
+                )
 
-        self._round_state = RoundState(players,
-                                       auction_winner, None, first_trick, set(), [], teams_to_add, Deck(self._low))
+        first_trick = TrickState(starting_player, [], players, None)
 
-        self.reset_round(auction_winner)
+        self._round_state = RoundState(
+            players,
+            starting_player,
+            None,
+            first_trick,
+            set(),
+            [],
+            teams_to_add,
+            Deck(self._low),
+        )
+
+        self.reset_round(starting_player.name)
 
         print(f"initialized game with {num_players} players.")
         for player in players:
@@ -84,6 +107,12 @@ class Game:
     @property
     def num_players(self) -> int:
         return len(self._round_state.players)
+
+    def get_player_by_name(self, player_name: str) -> Player:
+        for player in self._round_state.players:
+            if player.name == player_name:
+                return player
+        raise ValueError(f"player {player_name} is not part of this game")
 
     def set_starting_player(self, starting_player: Player) -> None:
         self._round_state.current_player = starting_player
@@ -174,15 +203,28 @@ class Game:
         self._round_state.deck = deck
         self._round_state.hidden_cards = set(remaining_cards)
 
-    def reset_round(self, auction_winner: Player) -> None:
+    def reset_round(self, starting_player_name: str | None = None) -> None:
         players = self._round_state.players
         for team in self._round_state.teams:
             team.captured_cards.clear()
 
-        first_trick = TrickState(auction_winner, [], players, None)
+        if starting_player_name is None:
+            starting_player = players[0]
+        else:
+            starting_player = self.get_player_by_name(starting_player_name)
 
-        self._round_state = RoundState(players,
-                                       auction_winner, None, first_trick, set(), [], self._round_state.teams, Deck(self._low))
+        first_trick = TrickState(starting_player, [], players, None)
+
+        self._round_state = RoundState(
+            players,
+            starting_player,
+            None,
+            first_trick,
+            set(),
+            [],
+            self._round_state.teams,
+            Deck(self._low),
+        )
         self._deal_cards()
 
 

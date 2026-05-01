@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, status
 
 try:
     from .schemas import (
+        BidRequest,
         GameStateResponse,
         HealthResponse,
         LegalActionsResponse,
@@ -11,10 +12,11 @@ try:
         PlayCardRequest,
         RoundScoreResponse,
     )
-    from .serializers import serialize_game, serialize_score_details, sort_cards
+    from .serializers import serialize_game, serialize_score_details
     from .store import GameNotInitializedError, RoundNotTerminalError, game_store
 except ImportError:
     from schemas import (
+        BidRequest,
         GameStateResponse,
         HealthResponse,
         LegalActionsResponse,
@@ -22,7 +24,7 @@ except ImportError:
         PlayCardRequest,
         RoundScoreResponse,
     )
-    from serializers import serialize_game, serialize_score_details, sort_cards
+    from serializers import serialize_game, serialize_score_details
     from store import GameNotInitializedError, RoundNotTerminalError, game_store
 
 
@@ -60,6 +62,30 @@ def new_game(payload: NewGameRequest) -> dict:
     return serialize_game(game)
 
 
+@router.post("/game/auction/bid", response_model=GameStateResponse)
+def place_bid(payload: BidRequest) -> dict:
+    try:
+        session = game_store.place_bid(payload.amount)
+    except GameNotInitializedError as exc:
+        raise _not_found(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    return serialize_game(session)
+
+
+@router.post("/game/auction/pass", response_model=GameStateResponse)
+def pass_auction() -> dict:
+    try:
+        session = game_store.pass_auction()
+    except GameNotInitializedError as exc:
+        raise _not_found(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    return serialize_game(session)
+
+
 @router.post("/game/reset", response_model=GameStateResponse)
 def reset_game() -> dict:
     try:
@@ -83,16 +109,11 @@ def get_game_state() -> dict:
 @router.get("/game/legal-actions", response_model=LegalActionsResponse)
 def get_game_legal_actions() -> dict:
     try:
-        cards = sort_cards(game_store.get_legal_actions())
+        actions = game_store.get_legal_actions()
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
-    return {
-        "actions": [
-            {"type": "play_card", "card_code": card.code}
-            for card in cards
-        ]
-    }
+    return {"actions": actions}
 
 
 @router.post("/game/play", response_model=GameStateResponse)

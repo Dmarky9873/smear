@@ -43,6 +43,19 @@ export function resetRound(): Promise<GameState> {
   });
 }
 
+export function placeBid(amount: number): Promise<GameState> {
+  return request<GameState>("/game/auction/bid", {
+    method: "POST",
+    body: JSON.stringify({ amount }),
+  });
+}
+
+export function passAuction(): Promise<GameState> {
+  return request<GameState>("/game/auction/pass", {
+    method: "POST",
+  });
+}
+
 export function fetchGameState(): Promise<GameState> {
   return request<GameState>("/game/state");
 }

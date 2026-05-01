@@ -5,6 +5,8 @@ import {
   fetchGameState,
   fetchLegalActions,
   fetchScore,
+  passAuction,
+  placeBid,
   playCard,
   resetRound,
 } from "./api";
@@ -13,7 +15,7 @@ import { DebugJsonPanel } from "./components/DebugJsonPanel";
 import { LegalActionsPanel } from "./components/LegalActionsPanel";
 import { PlayingCard } from "./components/PlayingCard";
 import { PlayerPanel } from "./components/PlayerPanel";
-import type { GameState, Score } from "./types";
+import type { BidAction, GameState, LegalAction, PlayCardAction, Score } from "./types";
 
 function buildDefaultPlayerNames(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `Player ${index + 1}`);
@@ -44,7 +46,7 @@ export default function App() {
   );
   const [teamsInput, setTeamsInput] = useState("");
   const [state, setState] = useState<GameState | null>(null);
-  const [legalActions, setLegalActions] = useState<string[]>([]);
+  const [legalActions, setLegalActions] = useState<LegalAction[]>([]);
   const [score, setScore] = useState<Score | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -57,7 +59,7 @@ export default function App() {
   }, [numPlayers]);
 
   const currentPlayer = useMemo(() => {
-    if (!state) {
+    if (!state || state.phase === "auction") {
       return null;
     }
 
@@ -68,13 +70,32 @@ export default function App() {
     );
   }, [state]);
 
+  const playActions = useMemo(
+    () =>
+      legalActions.filter(
+        (action): action is PlayCardAction => action.type === "play_card",
+      ),
+    [legalActions],
+  );
+
+  const bidActions = useMemo(
+    () =>
+      legalActions.filter((action): action is BidAction => action.type === "bid"),
+    [legalActions],
+  );
+
+  const canPassAuction = useMemo(
+    () => legalActions.some((action) => action.type === "pass"),
+    [legalActions],
+  );
+
   async function loadGameState() {
     const nextState = await fetchGameState();
     const nextLegalActions = await fetchLegalActions();
     setState(nextState);
-    setLegalActions(nextLegalActions.actions.map((action) => action.card_code));
+    setLegalActions(nextLegalActions.actions);
 
-    if (nextState.round.is_terminal) {
+    if (nextState.phase === "round_complete") {
       setScore(await fetchScore());
     } else {
       setScore(null);
@@ -134,32 +155,55 @@ export default function App() {
     });
   }
 
+  async function handleBid(amount: number) {
+    await runWithErrorHandling(async () => {
+      await placeBid(amount);
+      await loadGameState();
+    });
+  }
+
+  async function handlePassAuction() {
+    await runWithErrorHandling(async () => {
+      await passAuction();
+      await loadGameState();
+    });
+  }
+
+  const currentTurnName = state
+    ? state.phase === "auction"
+      ? state.auction.current_bidder_name
+      : state.round.current_player_name
+    : "No game";
+
   return (
     <main className="app-shell">
       <header className="status-bar panel">
         <div>
-          <strong>Current player:</strong>{" "}
-          {state?.round.current_player_name ?? "No game"}
+          <strong>Phase:</strong> {state?.phase ?? "No game"}
+        </div>
+        <div>
+          <strong>Current turn:</strong> {currentTurnName}
         </div>
         <div>
           <strong>Trump:</strong> {state?.round.trump ?? "Unset"}
         </div>
         <div>
-          <strong>Terminal:</strong> {state?.round.is_terminal ? "Yes" : "No"}
+          <strong>Highest bid:</strong>{" "}
+          {state?.auction.current_high_bid ?? "No bid yet"}
         </div>
         <div>
-          <strong>Current trick leader:</strong>{" "}
-          {state?.round.current_trick.leader_name ?? "N/A"}
+          <strong>High bidder:</strong>{" "}
+          {state?.auction.highest_bidder_name ?? "None"}
         </div>
         <div>
-          <strong>Completed tricks:</strong>{" "}
-          {state?.round.trick_history.length ?? 0}
+          <strong>Dealer:</strong> {state?.auction.dealer_name ?? "N/A"}
         </div>
         <div>
           <strong>Hidden cards:</strong> {state?.round.hidden_cards_count ?? 0}
         </div>
         <div>
-          <strong>Deck low:</strong> {state?.low ?? "N/A"}
+          <strong>Completed tricks:</strong>{" "}
+          {state?.round.trick_history.length ?? 0}
         </div>
       </header>
 
@@ -231,6 +275,101 @@ export default function App() {
       {state ? (
         <>
           <section className="panel">
+            <h2>Auction</h2>
+            <div className="auction-summary">
+              <div className="score-award-card">
+                <strong>Dealer</strong>
+                <span>{state.auction.dealer_name}</span>
+              </div>
+              <div className="score-award-card">
+                <strong>Current bidder</strong>
+                <span>{state.auction.current_bidder_name}</span>
+              </div>
+              <div className="score-award-card">
+                <strong>Current high bid</strong>
+                <span>
+                  {state.auction.current_high_bid !== null
+                    ? state.auction.current_high_bid
+                    : "No bid yet"}
+                </span>
+              </div>
+              <div className="score-award-card">
+                <strong>High bidder</strong>
+                <span>{state.auction.highest_bidder_name ?? "None"}</span>
+              </div>
+            </div>
+
+            <div className="list-block">
+              <div className="list-row list-row--stacked">
+                <span>
+                  <strong>Active bidders:</strong>{" "}
+                  {state.auction.active_player_names.join(", ")}
+                </span>
+                <span>
+                  <strong>Passed:</strong>{" "}
+                  {state.auction.passed_player_names.length > 0
+                    ? state.auction.passed_player_names.join(", ")
+                    : "Nobody has passed"}
+                </span>
+              </div>
+            </div>
+
+            {state.phase === "auction" ? (
+              <div className="auction-actions">
+                {bidActions.map((action) => (
+                  <button
+                    key={action.amount}
+                    type="button"
+                    onClick={() => handleBid(action.amount)}
+                    disabled={isLoading}
+                  >
+                    Bid {action.amount}
+                  </button>
+                ))}
+                {canPassAuction ? (
+                  <button
+                    type="button"
+                    onClick={handlePassAuction}
+                    disabled={isLoading}
+                  >
+                    Pass
+                  </button>
+                ) : (
+                  <span className="muted">
+                    At least one player must bid before the auction can end.
+                  </span>
+                )}
+              </div>
+            ) : (
+              <p className="muted">
+                Auction complete. {state.auction.highest_bidder_name} won at{" "}
+                {state.auction.current_high_bid}.
+              </p>
+            )}
+
+            <div className="list-block">
+              <strong>Bid history</strong>
+              {state.auction.bid_history.length === 0 ? (
+                <span className="muted">No bids or passes yet.</span>
+              ) : (
+                state.auction.bid_history.map((event, index) => (
+                  <div
+                    key={`${event.bidder_name}-${event.action}-${index}`}
+                    className="list-row"
+                  >
+                    <span>{event.bidder_name}</span>
+                    <span>
+                      {event.action === "bid"
+                        ? `bid ${event.amount}`
+                        : "passed"}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
             <h2>Players</h2>
             <div className="players-grid">
               {state.round.players.map((player) => (
@@ -238,7 +377,7 @@ export default function App() {
                   key={player.name}
                   player={player}
                   trump={state.round.trump}
-                  isCurrentPlayer={
+                  isCurrentPlayer={state.phase === "play" &&
                     player.name === state.round.current_player_name
                   }
                 />
@@ -246,19 +385,20 @@ export default function App() {
             </div>
           </section>
 
-          <CurrentTrickPanel trick={state.round.current_trick} />
+          {state.phase !== "auction" ? (
+            <>
+              <CurrentTrickPanel trick={state.round.current_trick} />
 
-          <LegalActionsPanel
-            actions={legalActions.map((cardCode) => ({
-              type: "play_card" as const,
-              card_code: cardCode,
-            }))}
-            currentPlayer={currentPlayer}
-            trump={state.round.trump}
-            isTerminal={state.round.is_terminal}
-            disabled={isLoading}
-            onPlay={handlePlay}
-          />
+              <LegalActionsPanel
+                actions={playActions}
+                currentPlayer={currentPlayer}
+                trump={state.round.trump}
+                isTerminal={state.round.is_terminal}
+                disabled={isLoading}
+                onPlay={handlePlay}
+              />
+            </>
+          ) : null}
 
           <section className="panel">
             <h2>Trick History</h2>

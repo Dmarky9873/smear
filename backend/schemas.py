@@ -15,6 +15,10 @@ class NewGameRequest(BaseModel):
     teams: list[list[str]] | None = None
 
 
+class BidRequest(BaseModel):
+    amount: int = Field(ge=1, le=6)
+
+
 class PlayCardRequest(BaseModel):
     card_code: str
 
@@ -64,19 +68,47 @@ class RoundStateResponse(BaseModel):
     is_terminal: bool
 
 
+class AuctionEventResponse(BaseModel):
+    bidder_name: str
+    action: Literal["bid", "pass"]
+    amount: int | None = None
+
+
+class AuctionStateResponse(BaseModel):
+    dealer_name: str
+    current_bidder_name: str
+    current_high_bid: int | None
+    highest_bidder_name: str | None
+    passed_player_names: list[str]
+    active_player_names: list[str]
+    bid_history: list[AuctionEventResponse]
+    is_complete: bool
+
+
 class GameStateResponse(BaseModel):
     num_players: int
     low: str
+    phase: Literal["auction", "play", "round_complete"]
+    auction: AuctionStateResponse
     round: RoundStateResponse
 
 
-class LegalActionResponse(BaseModel):
+class PlayCardActionResponse(BaseModel):
     type: Literal["play_card"]
     card_code: str
 
 
+class BidActionResponse(BaseModel):
+    type: Literal["bid"]
+    amount: int
+
+
+class PassActionResponse(BaseModel):
+    type: Literal["pass"]
+
+
 class LegalActionsResponse(BaseModel):
-    actions: list[LegalActionResponse]
+    actions: list[PlayCardActionResponse | BidActionResponse | PassActionResponse]
 
 
 class ScoreBreakdownResponse(BaseModel):

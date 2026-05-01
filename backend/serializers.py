@@ -101,25 +101,17 @@ def serialize_round_state(round_state: RoundState) -> dict:
 
 def serialize_auction(session: GameSession) -> dict:
     player_order = session.player_names
-    auction = session.auction
-    active_player_names = [
-        name
-        for name in player_order
-        if name not in auction.passed_player_names
-    ]
-    passed_player_names = [
-        name
-        for name in player_order
-        if name in auction.passed_player_names
-    ]
+    auction = session.auction.state
 
     return {
-        "dealer_name": player_order[auction.dealer_index],
-        "current_bidder_name": player_order[auction.current_bidder_index],
+        "dealer_name": auction.dealer_name,
+        "current_bidder_name": auction.current_bidder_name,
         "current_high_bid": auction.highest_bid,
         "highest_bidder_name": auction.highest_bidder_name,
-        "passed_player_names": passed_player_names,
-        "active_player_names": active_player_names,
+        "passed_player_names": [
+            name for name in player_order if name in auction.passed_player_names
+        ],
+        "active_player_names": auction.active_player_names,
         "bid_history": [
             {
                 "bidder_name": event.bidder_name,

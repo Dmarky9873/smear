@@ -151,10 +151,22 @@ class AuctionState:
     highest_bidder_name: str | None = None
     passed_player_names: set[str] = field(default_factory=set)
     bid_history: list[AuctionEvent] = field(default_factory=list)
+    is_complete: bool = False
 
     @property
-    def is_terminal(self):
-        return len(self.bid_history) == len(self.players)
+    def dealer_name(self) -> str:
+        return self.player_names[self.dealer_index]
+
+    @property
+    def current_bidder_name(self) -> str:
+        return self.player_names[self.current_bidder_index]
+
+    @property
+    def active_player_names(self) -> list[str]:
+        return [
+            name for name in self.player_names
+            if name not in self.passed_player_names
+        ]
 
 
 # GAMEPLAY

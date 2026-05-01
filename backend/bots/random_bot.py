@@ -1,10 +1,17 @@
-from backend.engine import get_legal_actions
 from random import choice
-from base import BotPlayer
+
+from backend.engine import get_legal_actions, get_legal_auction_actions
+from backend.models import AuctionState, RoundState
+
+try:
+    from .base import BotPlayer
+except ImportError:
+    from base import BotPlayer
 
 
 class RandomPlayer(BotPlayer):
-    def choose_card(self, round_state):
-        return choice(get_legal_actions(round_state))
+    def choose_card(self, round_state: RoundState):
+        return choice(list(get_legal_actions(round_state)))
 
-    # def auction
+    def choose_auction_action(self, auction_state: AuctionState):
+        return choice(get_legal_auction_actions(auction_state))

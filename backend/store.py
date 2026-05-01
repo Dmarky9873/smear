@@ -4,12 +4,12 @@ from dataclasses import dataclass
 
 try:
     from .constants import RANK_ORDER
-    from .engine import Game, get_legal_actions, score_round_details
-    from .models import AuctionEvent, AuctionState, Card, Play
+    from .engine import Auction, Game, get_legal_actions, score_round_details
+    from .models import AuctionEvent, Card, Play
 except ImportError:
     from constants import RANK_ORDER
-    from engine import Game, get_legal_actions, score_round_details
-    from models import AuctionEvent, AuctionState, Card, Play
+    from engine import Auction, Game, get_legal_actions, score_round_details
+    from models import AuctionEvent, Card, Play
 
 
 MAX_BID = 6
@@ -30,7 +30,7 @@ class GameSession:
     player_names: list[str]
     teams: list[tuple[str, ...]]
     dealer_index: int
-    auction: AuctionState
+    auction: Auction
     match_scores: dict[str, int]
     target_score: int = 21
     round_number: int = 1
@@ -59,7 +59,7 @@ class GameSession:
 
     @property
     def phase(self) -> str:
-        if not self.auction.is_complete:
+        if not self.auction.state.is_complete:
             return "auction"
         if self.game.round_state.is_terminal:
             if self.is_match_complete:
@@ -127,10 +127,11 @@ class GameStore:
         self,
         player_names: list[str],
         dealer_index: int,
-    ) -> AuctionState:
-        return AuctionState(
-            dealer_index=dealer_index,
-            current_bidder_index=(dealer_index + 1) % len(player_names),
+    ) -> Auction:
+        return Auction(
+            player_names=player_names,
+            dealer=player_names[dealer_index],
+            max_bid=MAX_BID,
         )
 
     def _build_initial_match_scores(
@@ -140,72 +141,19 @@ class GameStore:
         return {" / ".join(team): 0 for team in teams}
 
     def _current_bidder_name(self, session: GameSession) -> str:
-        return session.player_names[session.auction.current_bidder_index]
-
-    def _active_player_names(self, session: GameSession) -> list[str]:
-        return [
-            name
-            for name in session.player_names
-            if name not in session.auction.passed_player_names
-        ]
-
-    def _legal_bid_amounts(self, session: GameSession) -> list[int]:
-        auction = session.auction
-        if auction.is_complete:
-            return []
-        minimum_bid = 1 if auction.highest_bid is None else auction.highest_bid + 1
-        if minimum_bid > MAX_BID:
-            return []
-        return list(range(minimum_bid, MAX_BID + 1))
-
-    def _can_pass(self, session: GameSession) -> bool:
-        auction = session.auction
-        if auction.is_complete:
-            return False
-        if auction.highest_bidder_name is not None:
-            return True
-        return len(self._active_player_names(session)) > 1
-
-    def _next_active_bidder_index(
-        self,
-        session: GameSession,
-        start_index: int,
-    ) -> int:
-        total_players = len(session.player_names)
-        for offset in range(1, total_players + 1):
-            next_index = (start_index + offset) % total_players
-            if session.player_names[next_index] not in session.auction.passed_player_names:
-                return next_index
-        raise ValueError("no active bidders remain in the auction")
+        return session.auction.current_bidder_name
 
     def _finalize_auction(self, session: GameSession) -> None:
-        auction = session.auction
-        if auction.highest_bidder_name is None:
+        auction_state = session.auction.state
+        if auction_state.highest_bidder_name is None:
             raise ValueError("auction cannot complete without a winning bid")
-        auction.is_complete = True
-        auction.current_bidder_index = session.player_names.index(
-            auction.highest_bidder_name
-        )
         session.game.set_starting_player(
-            session.game.get_player_by_name(auction.highest_bidder_name)
+            session.game.get_player_by_name(auction_state.highest_bidder_name)
         )
 
     def _advance_or_finalize_auction(self, session: GameSession) -> None:
-        auction = session.auction
-        active_player_names = self._active_player_names(session)
-
-        if auction.highest_bidder_name is not None:
-            if (
-                auction.highest_bid == MAX_BID
-                or active_player_names == [auction.highest_bidder_name]
-            ):
-                self._finalize_auction(session)
-                return
-
-        auction.current_bidder_index = self._next_active_bidder_index(
-            session,
-            auction.current_bidder_index,
-        )
+        if session.auction.state.is_complete:
+            self._finalize_auction(session)
 
     def _score_terminal_round_if_needed(self, session: GameSession) -> None:
         if not session.game.round_state.is_terminal or session.last_round_score is not None:
@@ -282,13 +230,7 @@ class GameStore:
         session = self.require_session()
         self._score_terminal_round_if_needed(session)
         if session.phase == "auction":
-            actions = [
-                {"type": "bid", "amount": amount}
-                for amount in self._legal_bid_amounts(session)
-            ]
-            if self._can_pass(session):
-                actions.append({"type": "pass"})
-            return actions
+            return session.auction.legal_actions()
         if session.phase in {"round_complete", "match_complete"}:
             return []
         return [
@@ -300,20 +242,9 @@ class GameStore:
         session = self.require_session()
         if session.phase != "auction":
             raise ValueError("auction is not active")
-        legal_amounts = self._legal_bid_amounts(session)
-        if amount not in legal_amounts:
-            raise ValueError(
-                f"illegal bid amount {amount}; legal bids are {legal_amounts}"
-            )
         bidder_name = self._current_bidder_name(session)
-        session.auction.highest_bid = amount
-        session.auction.highest_bidder_name = bidder_name
-        session.auction.bid_history.append(
-            AuctionEvent(
-                bidder_name=bidder_name,
-                action="bid",
-                amount=amount,
-            )
+        session.auction.apply_event(
+            AuctionEvent(bidder_name=bidder_name, action="bid", amount=amount)
         )
         self._advance_or_finalize_auction(session)
         return session
@@ -322,13 +253,8 @@ class GameStore:
         session = self.require_session()
         if session.phase != "auction":
             raise ValueError("auction is not active")
-        if not self._can_pass(session):
-            raise ValueError("at least one player must bid before the auction can end")
         bidder_name = self._current_bidder_name(session)
-        session.auction.passed_player_names.add(bidder_name)
-        session.auction.bid_history.append(
-            AuctionEvent(bidder_name=bidder_name, action="pass")
-        )
+        session.auction.apply_event(AuctionEvent(bidder_name=bidder_name, action="pass"))
         self._advance_or_finalize_auction(session)
         return session
 

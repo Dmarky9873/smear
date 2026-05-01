@@ -1,8 +1,30 @@
 try:
-    from .models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card
+    from .models import (
+        AuctionEvent,
+        AuctionState,
+        Player,
+        Team,
+        Card,
+        Deck,
+        RoundState,
+        TrickState,
+        Play,
+        get_max_card,
+    )
     from .constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
 except ImportError:
-    from models import Player, Team, Card, Deck, RoundState, TrickState, Play, get_max_card, AuctionState, AuctionEvent
+    from models import (
+        AuctionEvent,
+        AuctionState,
+        Player,
+        Team,
+        Card,
+        Deck,
+        RoundState,
+        TrickState,
+        Play,
+        get_max_card,
+    )
     from constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
 
 
@@ -11,26 +33,129 @@ class Auction:
         self,
         player_names: list[str],
         dealer: str,
+        max_bid: int = 6,
+        auction_state: AuctionState | None = None,
     ):
-        self._auction_state = AuctionState(player_names.index(
-            dealer), player_names.index(dealer), player_names)
         self._player_names = player_names
-
-    def bid(self, event: AuctionEvent):
-        if event.bidder_name != self._player_names[self._auction_state.current_bidder_index]:
-            raise ValueError(f"bidder passed is not the current bidder")
-        if event.amount <= self._auction_state.highest_bid:
-            raise ValueError(
-                f"bid is less than or equal to the current highest bid")
-        if event.action == "pass":
-            self._auction_state.passed_player_names.add(event.bidder_name)
+        self._max_bid = max_bid
+        if auction_state is None:
+            dealer_index = player_names.index(dealer)
+            self._auction_state = AuctionState(
+                dealer_index=dealer_index,
+                current_bidder_index=(dealer_index + 1) % len(player_names),
+                player_names=player_names,
+            )
         else:
+            self._auction_state = auction_state
+
+    @classmethod
+    def from_state(
+        cls,
+        auction_state: AuctionState,
+        max_bid: int = 6,
+    ) -> "Auction":
+        return cls(
+            player_names=auction_state.player_names,
+            dealer=auction_state.dealer_name,
+            max_bid=max_bid,
+            auction_state=auction_state,
+        )
+
+    @property
+    def state(self) -> AuctionState:
+        return self._auction_state
+
+    @property
+    def current_bidder_name(self) -> str:
+        return self._auction_state.current_bidder_name
+
+    def legal_bid_amounts(self) -> list[int]:
+        if self._auction_state.is_complete:
+            return []
+        minimum_bid = (
+            1 if self._auction_state.highest_bid is None
+            else self._auction_state.highest_bid + 1
+        )
+        if minimum_bid > self._max_bid:
+            return []
+        return list(range(minimum_bid, self._max_bid + 1))
+
+    def can_pass(self) -> bool:
+        if self._auction_state.is_complete:
+            return False
+        if self._auction_state.highest_bidder_name is not None:
+            return True
+        return len(self._auction_state.active_player_names) > 1
+
+    def legal_actions(self) -> list[dict]:
+        actions = [
+            {"type": "bid", "amount": amount}
+            for amount in self.legal_bid_amounts()
+        ]
+        if self.can_pass():
+            actions.append({"type": "pass"})
+        return actions
+
+    def _next_active_bidder_index(self, start_index: int) -> int:
+        total_players = len(self._player_names)
+        for offset in range(1, total_players + 1):
+            next_index = (start_index + offset) % total_players
+            if self._player_names[next_index] not in self._auction_state.passed_player_names:
+                return next_index
+        raise ValueError("no active bidders remain in the auction")
+
+    def _finalize_if_needed(self) -> None:
+        if self._auction_state.highest_bidder_name is None:
+            return
+        active_player_names = self._auction_state.active_player_names
+        if (
+            self._auction_state.highest_bid == self._max_bid
+            or active_player_names == [self._auction_state.highest_bidder_name]
+        ):
+            self._auction_state.is_complete = True
+            self._auction_state.current_bidder_index = self._player_names.index(
+                self._auction_state.highest_bidder_name
+            )
+
+    def apply_event(self, event: AuctionEvent) -> AuctionState:
+        if self._auction_state.is_complete:
+            raise ValueError("auction is already complete")
+        if event.bidder_name != self.current_bidder_name:
+            raise ValueError("bidder passed is not the current bidder")
+
+        if event.action == "pass":
+            if not self.can_pass():
+                raise ValueError(
+                    "at least one player must bid before the auction can end"
+                )
+            self._auction_state.passed_player_names.add(event.bidder_name)
+        elif event.action == "bid":
+            if event.amount is None:
+                raise ValueError("bid events require an amount")
+            legal_amounts = self.legal_bid_amounts()
+            if event.amount not in legal_amounts:
+                raise ValueError(
+                    f"illegal bid amount {event.amount}; legal bids are {legal_amounts}"
+                )
             self._auction_state.highest_bid = event.amount
             self._auction_state.highest_bidder_name = event.bidder_name
+        else:
+            raise ValueError(f"unsupported auction action: {event.action}")
 
-        self._auction_state.current_bidder_index = (
-            self._auction_state.current_bidder_index + 1) % len(self._player_names)
         self._auction_state.bid_history.append(event)
+        self._finalize_if_needed()
+        if not self._auction_state.is_complete:
+            self._auction_state.current_bidder_index = self._next_active_bidder_index(
+                self._auction_state.current_bidder_index
+            )
+        return self._auction_state
+
+
+def get_legal_auction_actions(
+    auction_state: AuctionState,
+    max_bid: int = 6,
+) -> list[dict]:
+    return Auction.from_state(auction_state, max_bid=max_bid).legal_actions()
 
 
 class Game:

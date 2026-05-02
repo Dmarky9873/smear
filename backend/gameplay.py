@@ -6,19 +6,18 @@ from typing import Sequence
 try:
     from .bots.base import BotPlayer
     from .bots.registry import build_ready_bot, get_ready_bot_spec
-    from .constants import RANK_ORDER
+    from .card_utils import sort_cards
     from .engine import Auction, Game, get_legal_actions, score_round_details
     from .models import AuctionEvent, Card, Play
 except ImportError:
     from bots.base import BotPlayer
     from bots.registry import build_ready_bot, get_ready_bot_spec
-    from constants import RANK_ORDER
+    from card_utils import sort_cards
     from engine import Auction, Game, get_legal_actions, score_round_details
     from models import AuctionEvent, Card, Play
 
 
 MAX_BID = 6
-SUIT_ORDER = {"C": 0, "D": 1, "H": 2, "S": 3}
 
 
 class RoundNotTerminalError(RuntimeError):
@@ -77,19 +76,6 @@ class MatchResult:
     is_draw: bool
     winner_names: list[str]
     final_scores: dict[str, int]
-
-
-def sort_cards(cards: list[Card] | set[Card]) -> list[Card]:
-    return sorted(
-        cards,
-        key=lambda card: (
-            1 if card.is_joker else 0,
-            SUIT_ORDER.get(card.suit or "", 99),
-            RANK_ORDER.get(card.rank or "", 99),
-            card.code,
-        ),
-    )
-
 
 def serialize_auction_event(event: AuctionEvent) -> dict:
     payload = {"type": event.action}

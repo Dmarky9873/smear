@@ -6,12 +6,14 @@ from backend.simulator import benchmark_models
 
 
 class SimulatorTeamSizeTests(unittest.TestCase):
+    @patch("backend.simulator.time.perf_counter", side_effect=[10.0, 12.5])
     @patch("backend.simulator.Simulator.run_match")
     @patch("backend.simulator.MatchController.create")
     def test_team_size_builds_same_model_pairs(
         self,
         create_mock,
         run_match_mock,
+        perf_counter_mock,
     ):
         captured_create_kwargs = {}
 
@@ -53,6 +55,11 @@ class SimulatorTeamSizeTests(unittest.TestCase):
         )
         self.assertEqual(result["team_size"], 2)
         self.assertEqual(result["players_per_game"], 4)
+        self.assertEqual(result["elapsed_seconds"], 2.5)
+        self.assertEqual(result["average_seconds_per_game"], 2.5)
+        self.assertEqual(result["average_seconds_per_round"], 2.5 / 3)
+        self.assertEqual(result["games_per_second"], 0.4)
+        self.assertEqual(result["rounds_per_second"], 1.2)
         self.assertEqual(result["models"]["random"]["games_won"], 1.0)
         self.assertEqual(result["models"]["greedy"]["games_won"], 0.0)
         self.assertEqual(
@@ -72,6 +79,7 @@ class SimulatorTeamSizeTests(unittest.TestCase):
                 },
             ],
         )
+        self.assertEqual(perf_counter_mock.call_count, 2)
 
     def test_team_size_rejects_more_than_eight_total_players(self):
         with self.assertRaisesRegex(ValueError, "exceeds the 8-player limit"):

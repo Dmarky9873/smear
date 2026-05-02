@@ -2,31 +2,16 @@ from __future__ import annotations
 
 try:
     from .bots.registry import get_ready_bot_spec
-    from .constants import RANK_ORDER
+    from .card_utils import sort_cards
     from .engine import Game, get_trick_winner
     from .gameplay import GameSession
     from .models import Card, Play, Player, RoundState, Team, TrickState
 except ImportError:
     from bots.registry import get_ready_bot_spec
-    from constants import RANK_ORDER
+    from card_utils import sort_cards
     from engine import Game, get_trick_winner
     from gameplay import GameSession
     from models import Card, Play, Player, RoundState, Team, TrickState
-
-
-SUIT_ORDER = {"C": 0, "D": 1, "H": 2, "S": 3}
-
-
-def sort_cards(cards: list[Card] | set[Card]) -> list[Card]:
-    return sorted(
-        cards,
-        key=lambda card: (
-            1 if card.is_joker else 0,
-            SUIT_ORDER.get(card.suit or "", 99),
-            RANK_ORDER.get(card.rank or "", 99),
-            card.code,
-        ),
-    )
 
 
 def serialize_card(card: Card) -> dict:

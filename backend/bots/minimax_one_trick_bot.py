@@ -37,7 +37,7 @@ except ImportError:
 
 
 class MinimaxOneTrickPlayer(BotPlayer):
-    preferred_suit = "H"
+    _preferred_suit = "H"
 
     def _estimate_hand_strength(self, trump_suit: str) -> int:
         estimate = 0
@@ -217,14 +217,14 @@ class MinimaxOneTrickPlayer(BotPlayer):
 
     def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
         """Bid only when the next required bid fits the hand's best trump estimate."""
-        preferred_suit = self._select_preferred_suit()
+        self._preferred_suit = self._select_preferred_suit()
         legal_actions = get_legal_auction_actions(auction_state)
         next_bid = (
             1 if auction_state.highest_bid is None
             else auction_state.highest_bid + 1
         )
         best_estimated_strength = self._estimate_hand_strength(
-            preferred_suit)
+            self._preferred_suit)
 
         if next_bid <= best_estimated_strength:
             for action in legal_actions:

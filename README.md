@@ -173,6 +173,8 @@ python -m backend.simulator --team-size 2 1000 50 greedy random
 
 The simulator still caps games at 8 total seats, so `--team-size 2` allows up to four supplied models.
 
+Simulator output now includes wall-clock timing metrics such as `elapsed_seconds`, `average_seconds_per_game`, `average_seconds_per_round`, `games_per_second`, and `rounds_per_second` so you can compare algorithm changes directly.
+
 ### Frontend
 
 In a second terminal, you can either install and run the frontend from the repo root:

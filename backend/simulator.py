@@ -4,6 +4,7 @@ import argparse
 import inspect
 import json
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -219,6 +220,8 @@ def benchmark_models(
     if show_progress:
         _render_progress_bar(0, n)
 
+    started_at = time.perf_counter()
+
     for simulation_index in range(n):
         controllers = {
             player_name: model_spec.factory(player_name)
@@ -262,6 +265,12 @@ def benchmark_models(
         if show_progress:
             _render_progress_bar(simulation_index + 1, n)
 
+    elapsed_seconds = time.perf_counter() - started_at
+    games_per_second = n / elapsed_seconds if elapsed_seconds > 0 else None
+    rounds_per_second = (
+        total_rounds / elapsed_seconds if elapsed_seconds > 0 else None
+    )
+
     for model_key, stats in model_results.items():
         stats["win_percentage"] = (stats["games_won"] / n) * 100
 
@@ -270,6 +279,13 @@ def benchmark_models(
         "alpha": alpha,
         "team_size": team_size,
         "players_per_game": len(model_specs),
+        "elapsed_seconds": elapsed_seconds,
+        "average_seconds_per_game": elapsed_seconds / n,
+        "average_seconds_per_round": (
+            elapsed_seconds / total_rounds if total_rounds > 0 else None
+        ),
+        "games_per_second": games_per_second,
+        "rounds_per_second": rounds_per_second,
         "seat_models": [
             {
                 "player_name": player_name,

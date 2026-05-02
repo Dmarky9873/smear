@@ -258,8 +258,8 @@ button {
 }
 
 .playing-card {
-  width: 128px;
-  min-width: 128px;
+  width: 136px;
+  min-width: 136px;
   aspect-ratio: 5 / 7;
   border: 2px solid var(--card-border);
   border-radius: 6px;
@@ -279,8 +279,8 @@ button {
 }
 
 .playing-card--compact {
-  width: 88px;
-  min-width: 88px;
+  width: 94px;
+  min-width: 94px;
 }
 
 .playing-card--trump {
@@ -842,7 +842,7 @@ button {
 }
 
 .play-seat__table-slot {
-  min-height: 112px;
+  min-height: 120px;
   padding: 10px;
   border: 2px dashed var(--border-soft);
   border-radius: 10px;
@@ -853,13 +853,13 @@ button {
 }
 
 .play-seat__table-card.playing-card {
-  width: 92px;
-  min-width: 92px;
+  width: 100px;
+  min-width: 100px;
 }
 
 .play-seat__table-empty {
-  width: 92px;
-  height: 112px;
+  width: 100px;
+  height: 120px;
   border: 2px dashed var(--placeholder-border);
   border-radius: 12px;
   background: var(--surface-empty);
@@ -879,8 +879,8 @@ button {
 }
 
 .play-seat__cards .playing-card--compact {
-  width: 70px;
-  min-width: 70px;
+  width: 76px;
+  min-width: 76px;
 }
 
 .play-board-grid {
@@ -1027,13 +1027,13 @@ button {
 }
 
 .play-hand-card--sticky .play-hand-grid {
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   gap: 8px;
 }
 
 .play-hand-card--sticky .play-hand-card__item.playing-card {
-  width: 100px;
-  min-width: 100px;
+  width: 108px;
+  min-width: 108px;
 }
 
 .play-hand-empty {

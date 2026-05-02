@@ -1,3 +1,4 @@
+import { sortCardsHighToLow } from "../cardSort";
 import { PlayingCard } from "./PlayingCard";
 import type { Player } from "../types";
 
@@ -12,6 +13,8 @@ export function PlayerPanel({
   trump,
   isCurrentPlayer,
 }: PlayerPanelProps) {
+  const orderedCards = sortCardsHighToLow(player.cards);
+
   return (
     <section className={`player-panel ${isCurrentPlayer ? "player-panel--current" : ""}`}>
       <div className="player-panel__header">
@@ -27,7 +30,7 @@ export function PlayerPanel({
       <div className="player-panel__group">
         <strong>Hand</strong>
         <div className="card-row">
-          {player.cards.map((card) => (
+          {orderedCards.map((card) => (
             <PlayingCard
               key={card.code}
               card={card}

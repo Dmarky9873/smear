@@ -266,7 +266,8 @@ def _build_team_model_specs(
     for team in teams:
         first_spec = spec_by_player[team[0]]
         if any(spec_by_player[player_name].key != first_spec.key for player_name in team):
-            raise ValueError("each simulated team must use a single model in fair mode")
+            raise ValueError(
+                "each simulated team must use a single model in fair mode")
         team_model_specs.append(first_spec)
 
     return team_model_specs
@@ -382,7 +383,8 @@ def benchmark_models(
         team_size,
     )
     team_members_by_name = {" / ".join(team): team for team in teams}
-    model_label_by_key = {model_spec.key: model_spec.label for model_spec in model_specs}
+    model_label_by_key = {
+        model_spec.key: model_spec.label for model_spec in model_specs}
     seat_counts: dict[str, int] = {}
     for model_spec in model_specs:
         seat_counts[model_spec.key] = seat_counts.get(model_spec.key, 0) + 1
@@ -399,7 +401,8 @@ def benchmark_models(
 
     draws = 0
     total_rounds = 0
-    team_model_specs = _build_team_model_specs(player_names, model_specs, teams)
+    team_model_specs = _build_team_model_specs(
+        player_names, model_specs, teams)
 
     if fair:
         fair_assignments = _build_fair_team_assignments(team_model_specs)
@@ -444,7 +447,8 @@ def benchmark_models(
         team_assignment = fair_assignments[assignment_index]
         if effective_seed is not None:
             if fair:
-                game_seed = effective_seed + (simulation_index // len(fair_assignments))
+                game_seed = effective_seed + \
+                    (simulation_index // len(fair_assignments))
             else:
                 game_seed = effective_seed + simulation_index
             random.seed(game_seed)
@@ -645,3 +649,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+"""python simulator.py --fair --seed 0 60 50 3-trick-minmax greedy"""

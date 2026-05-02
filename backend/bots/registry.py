@@ -95,7 +95,7 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         factory=lambda player_name: StupidBot(player_name),
     ),
     ReadyBotSpec(
-        id="one-trick-minmax",
+        id="1-trick-minmax",
         label="L-1 Minmax",
         description="Searches the current trick over sampled hidden-information worlds.",
         factory=lambda player_name: HumanInformationMinimaxOneTrickPlayer(
@@ -106,7 +106,8 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         id="o-one-trick-minmax",
         label="Omniscient L-1 Minmax",
         description="Chooses the mathematically perfect card for this current trick.",
-        factory=lambda player_name: OmniscientMinimaxOneTrickPlayer(player_name),
+        factory=lambda player_name: OmniscientMinimaxOneTrickPlayer(
+            player_name),
     ),
     *_build_n_trick_specs(),
 )

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { sortCardsHighToLow } from "../cardSort";
 import { PlayingCard } from "./PlayingCard";
 import type {
   BotProgress,
@@ -126,6 +127,9 @@ export function PlayModeView({
     0,
     Math.min(100, botProgress?.percent_complete ?? 0),
   );
+  const orderedTurnCards = turnPlayer
+    ? sortCardsHighToLow(turnPlayer.cards)
+    : [];
 
   useEffect(() => {
     setShowHistory(false);
@@ -317,7 +321,7 @@ export function PlayModeView({
 
             {canShowCurrentHand && turnPlayer ? (
               <div className="play-hand-grid">
-                {turnPlayer.cards.map((card) => (
+                {orderedTurnCards.map((card) => (
                   <PlayingCard
                     key={card.code}
                     card={card}

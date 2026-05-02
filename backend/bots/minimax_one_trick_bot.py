@@ -1,10 +1,11 @@
 try:
     from backend.constants import GAME_VALUES, RANK_ORDER
     from backend.engine import (
-        apply_trick_action_to_state,
+        apply_trick_action_for_search,
         get_legal_actions,
         get_legal_auction_actions,
         get_trick_winner,
+        undo_trick_action_for_search,
     )
     from backend.models import (
         AuctionEvent,
@@ -19,10 +20,11 @@ try:
 except ImportError:
     from constants import GAME_VALUES, RANK_ORDER
     from engine import (
-        apply_trick_action_to_state,
+        apply_trick_action_for_search,
         get_legal_actions,
         get_legal_auction_actions,
         get_trick_winner,
+        undo_trick_action_for_search,
     )
     from models import (
         AuctionEvent,
@@ -112,18 +114,6 @@ class MinimaxOneTrickPlayer(BotPlayer):
             total_rank,
         )
 
-    def _apply_action(self, round_state: RoundState, action: Play) -> RoundState:
-        """Takes a round state and action and returns a new roundstate with that action applied
-
-        Args:
-            round_state (RoundState): The original round state
-            action (Play): The action to be applied
-
-        Returns:
-            RoundState: The new round state with that action applied
-        """
-        return apply_trick_action_to_state(round_state, action)
-
     def _team_member_names(self, round_state: RoundState) -> set[str]:
         for team in round_state.teams:
             member_names = {player.name for player in team.constituents}
@@ -180,8 +170,11 @@ class MinimaxOneTrickPlayer(BotPlayer):
                 value = float("-inf")
                 for card in get_legal_actions(r):
                     play = Play(r.current_player, card)
-                    child = self._apply_action(r, play)
-                    value = max(value, _choose_card_helper(child, alpha, beta))
+                    undo = apply_trick_action_for_search(r, play)
+                    try:
+                        value = max(value, _choose_card_helper(r, alpha, beta))
+                    finally:
+                        undo_trick_action_for_search(r, undo)
                     alpha = max(alpha, value)
                     if beta <= alpha:
                         break
@@ -190,8 +183,11 @@ class MinimaxOneTrickPlayer(BotPlayer):
             value = float("inf")
             for card in get_legal_actions(r):
                 play = Play(r.current_player, card)
-                child = self._apply_action(r, play)
-                value = min(value, _choose_card_helper(child, alpha, beta))
+                undo = apply_trick_action_for_search(r, play)
+                try:
+                    value = min(value, _choose_card_helper(r, alpha, beta))
+                finally:
+                    undo_trick_action_for_search(r, undo)
                 beta = min(beta, value)
                 if beta <= alpha:
                     break
@@ -204,8 +200,11 @@ class MinimaxOneTrickPlayer(BotPlayer):
 
         for card in get_legal_actions(round_state):
             play = Play(round_state.current_player, card)
-            child = self._apply_action(round_state, play)
-            score = _choose_card_helper(child, alpha, beta)
+            undo = apply_trick_action_for_search(round_state, play)
+            try:
+                score = _choose_card_helper(round_state, alpha, beta)
+            finally:
+                undo_trick_action_for_search(round_state, undo)
 
             if score > best_score:
                 best_score = score

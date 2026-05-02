@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import dataclass
 
 try:
     from .models import (
@@ -28,6 +29,19 @@ except ImportError:
         get_max_card,
     )
     from constants import RANKS, HAND_SIZE, GAME_VALUES, RANK_ORDER
+
+
+@dataclass
+class SearchTrickUndo:
+    previous_current_player: Player
+    previous_trump: str | None
+    previous_trick_trump: str | None
+    trick: TrickState
+    acting_player: Player
+    played_card: Card
+    completed_trick: bool
+    next_trick: TrickState | None = None
+    trick_winner: Player | None = None
 
 
 class Auction:
@@ -430,6 +444,96 @@ def _apply_trick_action_in_place(state: RoundState, action: Play) -> bool:
 
     state.current_player = players[(players.index(curr_player) + 1) % len(players)]
     return False
+
+
+def apply_trick_action_for_search(
+    state: RoundState,
+    action: Play,
+) -> SearchTrickUndo:
+    """Mutate a round state for search and return an undo record.
+
+    Unlike `apply_trick_action_to_state`, this does not clone the state.
+    Call `undo_trick_action_for_search` after exploring the child node.
+    """
+    if action.player.name != state.current_player.name:
+        raise ValueError(
+            f"action with player {action.player} was attempted despite {state.current_player} being the current player"
+        )
+
+    if action.card not in get_legal_actions(state):
+        raise ValueError(
+            f"action with card {action.card} attempted despite card not being in legal moves"
+        )
+
+    curr_player = state.current_player
+    curr_trick = state.current_trick
+    undo = SearchTrickUndo(
+        previous_current_player=curr_player,
+        previous_trump=state.trump,
+        previous_trick_trump=curr_trick.trump,
+        trick=curr_trick,
+        acting_player=curr_player,
+        played_card=action.card,
+        completed_trick=False,
+    )
+
+    applied_action = Play(curr_player, action.card)
+    curr_player.play_card(action.card)
+    curr_trick.plays.append(applied_action)
+
+    if len(state.trick_history) == 0 and len(curr_trick.plays) == 1:
+        if not action.card.is_joker:
+            curr_trick.trump = action.card.suit
+            state.trump = action.card.suit
+
+    players = state.players
+
+    if curr_trick.is_terminal:
+        trick_winner = get_trick_winner(curr_trick)
+        undo.completed_trick = True
+        undo.trick_winner = trick_winner
+        state.current_player = trick_winner
+
+        for play in curr_trick.plays:
+            trick_winner.capture(play)
+
+        next_trick = TrickState(
+            trick_winner, [], curr_trick.players, state.trump
+        )
+        state.current_trick = next_trick
+        state.trick_history.append(curr_trick)
+        undo.next_trick = next_trick
+        return undo
+
+    state.current_player = players[(players.index(curr_player) + 1) % len(players)]
+    return undo
+
+
+def undo_trick_action_for_search(
+    state: RoundState,
+    undo: SearchTrickUndo,
+) -> None:
+    """Undo a search mutation created by `apply_trick_action_for_search`."""
+    if undo.completed_trick:
+        if not state.trick_history or state.trick_history[-1] is not undo.trick:
+            raise ValueError("search undo expected the completed trick at history tail")
+        state.trick_history.pop()
+
+        if undo.trick_winner is None:
+            raise ValueError("search undo is missing the trick winner")
+
+        for play in undo.trick.plays:
+            undo.trick_winner.captured_plays.remove(play)
+
+    if not undo.trick.plays or undo.trick.plays[-1].card != undo.played_card:
+        raise ValueError("search undo expected the played card at the trick tail")
+    undo.trick.plays.pop()
+
+    undo.acting_player.cards.add(undo.played_card)
+    undo.trick.trump = undo.previous_trick_trump
+    state.current_trick = undo.trick
+    state.current_player = undo.previous_current_player
+    state.trump = undo.previous_trump
 
 
 def apply_trick_action_to_state(round_state: RoundState, action: Play) -> RoundState:

@@ -1,6 +1,11 @@
 import unittest
 
-from backend.engine import Game, apply_trick_action_to_state
+from backend.engine import (
+    Game,
+    apply_trick_action_for_search,
+    apply_trick_action_to_state,
+    undo_trick_action_for_search,
+)
 from backend.models import Card, Deck, Play, Player, RoundState, Team, TrickState
 
 
@@ -85,6 +90,36 @@ class RoundStateTransitionTests(unittest.TestCase):
             [("A", "AH")],
         )
         self.assertNotIn(Card("AH"), next_state.players[0].cards)
+
+    def test_search_apply_and_undo_restore_non_terminal_state(self):
+        round_state = self._build_opening_state()
+        original_snapshot = self._state_snapshot(round_state)
+
+        undo = apply_trick_action_for_search(
+            round_state,
+            Play(round_state.current_player, Card("AH")),
+        )
+
+        self.assertNotEqual(self._state_snapshot(round_state), original_snapshot)
+
+        undo_trick_action_for_search(round_state, undo)
+
+        self.assertEqual(self._state_snapshot(round_state), original_snapshot)
+
+    def test_search_apply_and_undo_restore_terminal_trick_state(self):
+        round_state = self._build_terminal_trick_state()
+        original_snapshot = self._state_snapshot(round_state)
+
+        undo = apply_trick_action_for_search(
+            round_state,
+            Play(round_state.current_player, Card("AH")),
+        )
+
+        self.assertNotEqual(self._state_snapshot(round_state), original_snapshot)
+
+        undo_trick_action_for_search(round_state, undo)
+
+        self.assertEqual(self._state_snapshot(round_state), original_snapshot)
 
     def test_game_apply_trick_action_matches_pure_helper(self):
         round_state = self._build_terminal_trick_state()

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from backend.models import AuctionEvent, AuctionState, Card, Player, RoundState
+try:
+    from backend.models import AuctionEvent, AuctionState, Card, Player, RoundState
+except ImportError:
+    from models import AuctionEvent, AuctionState, Card, Player, RoundState
 
 
 class BotPlayer(Player):

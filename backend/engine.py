@@ -85,7 +85,7 @@ class Auction:
             return False
         if self._auction_state.highest_bidder_name is not None:
             return True
-        return len(self._auction_state.active_player_names) > 1
+        return len(self._auction_state.bid_history) < len(self._player_names) - 1
 
     def legal_actions(self) -> list[AuctionEvent]:
         bidder_name = self.current_bidder_name
@@ -97,26 +97,18 @@ class Auction:
             actions.append(AuctionEvent(bidder_name=bidder_name, action="pass"))
         return actions
 
-    def _next_active_bidder_index(self, start_index: int) -> int:
-        total_players = len(self._player_names)
-        for offset in range(1, total_players + 1):
-            next_index = (start_index + offset) % total_players
-            if self._player_names[next_index] not in self._auction_state.passed_player_names:
-                return next_index
-        raise ValueError("no active bidders remain in the auction")
+    def _next_bidder_index(self, start_index: int) -> int:
+        return (start_index + 1) % len(self._player_names)
 
     def _finalize_if_needed(self) -> None:
-        if self._auction_state.highest_bidder_name is None:
+        if len(self._auction_state.bid_history) < len(self._player_names):
             return
-        active_player_names = self._auction_state.active_player_names
-        if (
-            self._auction_state.highest_bid == self._max_bid
-            or active_player_names == [self._auction_state.highest_bidder_name]
-        ):
-            self._auction_state.is_complete = True
-            self._auction_state.current_bidder_index = self._player_names.index(
-                self._auction_state.highest_bidder_name
-            )
+        if self._auction_state.highest_bidder_name is None:
+            raise ValueError("auction cannot complete without a winning bid")
+        self._auction_state.is_complete = True
+        self._auction_state.current_bidder_index = self._player_names.index(
+            self._auction_state.highest_bidder_name
+        )
 
     def apply_event(self, event: AuctionEvent) -> AuctionState:
         if self._auction_state.is_complete:
@@ -146,7 +138,7 @@ class Auction:
         self._auction_state.bid_history.append(event)
         self._finalize_if_needed()
         if not self._auction_state.is_complete:
-            self._auction_state.current_bidder_index = self._next_active_bidder_index(
+            self._auction_state.current_bidder_index = self._next_bidder_index(
                 self._auction_state.current_bidder_index
             )
         return self._auction_state
@@ -175,8 +167,6 @@ class Game:
 
         self._low, self._num_hiding, self._num_dealt = self._calculate_low(
             num_players)
-
-        print(f"creating a game with a low of {self._low}...")
 
         if len(player_names) != num_players:
             raise ValueError(
@@ -215,10 +205,6 @@ class Game:
         )
 
         self.reset_round(starting_player.name)
-
-        print(f"initialized game with {num_players} players.")
-        for player in players:
-            print(player)
 
     def _calculate_low(self, num_players) -> tuple[str, int, int]:
         dealt = HAND_SIZE * num_players

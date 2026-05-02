@@ -4,14 +4,14 @@ try:
     from .bots.registry import get_ready_bot_spec
     from .constants import RANK_ORDER
     from .engine import Game, get_trick_winner
+    from .gameplay import GameSession
     from .models import Card, Play, Player, RoundState, Team, TrickState
-    from .store import GameSession
 except ImportError:
     from bots.registry import get_ready_bot_spec
     from constants import RANK_ORDER
     from engine import Game, get_trick_winner
+    from gameplay import GameSession
     from models import Card, Play, Player, RoundState, Team, TrickState
-    from store import GameSession
 
 
 SUIT_ORDER = {"C": 0, "D": 1, "H": 2, "S": 3}

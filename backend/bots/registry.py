@@ -7,10 +7,12 @@ try:
     from .base import BotPlayer
     from .greedy_bot import GreedyPlayer
     from .random_bot import RandomPlayer
+    from .stupid_bot import StupidBot
 except ImportError:
-    from base import BotPlayer
-    from greedy_bot import GreedyPlayer
-    from random_bot import RandomPlayer
+    from bots.base import BotPlayer
+    from bots.greedy_bot import GreedyPlayer
+    from bots.random_bot import RandomPlayer
+    from bots.stupid_bot import StupidBot
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,13 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         label="Greedy",
         description="Uses a basic algorithm to choose auction and trick actions.",
         factory=lambda player_name: GreedyPlayer(player_name),
-    )
+    ),
+    ReadyBotSpec(
+        id="stupid",
+        label="Stupid",
+        description="Auctions very stupidly; always bids one higher than the previous highest bid. Hard when you're about to go out.",
+        factory=lambda player_name: StupidBot(player_name),
+    ),
 )
 
 READY_BOT_MAP = {bot.id: bot for bot in READY_BOTS}

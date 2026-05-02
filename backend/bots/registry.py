@@ -6,15 +6,17 @@ from typing import Callable
 try:
     from .base import BotPlayer
     from .greedy_bot import GreedyPlayer
+    from .minimax_one_trick_bot import MinimaxOneTrickPlayer
     from .random_bot import RandomPlayer
     from .stupid_bot import StupidBot
-    from .minimax_one_trick_bot import MinimaxOneTrickPlayer
+    from .o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 except ImportError:
     from bots.base import BotPlayer
     from bots.greedy_bot import GreedyPlayer
+    from bots.minimax_one_trick_bot import MinimaxOneTrickPlayer
     from bots.random_bot import RandomPlayer
     from bots.stupid_bot import StupidBot
-    from bots.minimax_one_trick_bot import MinimaxOneTrickPlayer
+    from bots.o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 
 
 @dataclass(frozen=True)
@@ -47,8 +49,15 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
     ReadyBotSpec(
         id="one-trick-minmax",
         label="L-1 Minmax",
+        description="Searches the current trick over sampled hidden-information worlds.",
+        factory=lambda player_name: MinimaxOneTrickPlayer(player_name),
+    ),
+    ReadyBotSpec(
+        id="o-one-trick-minmax",
+        label="Omniscient L-1 Minmax",
         description="Chooses the mathematically perfect card for this current trick.",
-        factory=lambda player_name: MinimaxOneTrickPlayer(player_name)
+        factory=lambda player_name: OMNISCIENT_MinimaxOneTrickPlayer(
+            player_name)
     ),
 )
 

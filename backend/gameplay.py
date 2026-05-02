@@ -211,6 +211,13 @@ class MatchController:
         bot = self.session.bots[player_name]
         game_player = self.session.game.get_player_by_name(player_name)
         bot._cards = set(game_player.cards)
+        if hasattr(bot, "set_match_context"):
+            bot.set_match_context(
+                player_names=self.session.player_names,
+                teams=self.session.teams,
+                match_scores=self.session.match_scores,
+                target_score=self.session.target_score,
+            )
 
     def _sync_all_bot_hands(self) -> None:
         for player_name in self.session.bots:

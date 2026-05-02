@@ -51,6 +51,42 @@ class MatchControllerBotStepTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "human-controlled player 'B'"):
             controller.advance_bot_turn()
 
+    def test_greedy_bot_can_take_an_auction_turn(self):
+        controller = MatchController.create(
+            num_players=3,
+            player_names=["A", "B", "C"],
+            teams=None,
+            player_bot_ids=["greedy", None, None],
+            auto_run_bots=False,
+        )
+
+        controller.advance_bot_turn()
+
+        self.assertEqual(controller.session.auction.current_bidder_name, "B")
+        self.assertEqual(len(controller.session.auction.state.bid_history), 1)
+        self.assertEqual(
+            controller.session.auction.state.bid_history[0].bidder_name,
+            "A",
+        )
+
+    def test_omniscient_bot_can_take_an_auction_turn(self):
+        controller = MatchController.create(
+            num_players=3,
+            player_names=["A", "B", "C"],
+            teams=None,
+            player_bot_ids=["o-one-trick-minmax", None, None],
+            auto_run_bots=False,
+        )
+
+        controller.advance_bot_turn()
+
+        self.assertEqual(controller.session.auction.current_bidder_name, "B")
+        self.assertEqual(len(controller.session.auction.state.bid_history), 1)
+        self.assertEqual(
+            controller.session.auction.state.bid_history[0].bidder_name,
+            "A",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,241 +1,307 @@
+from __future__ import annotations
+
+from hashlib import sha256
+from random import Random
+
 try:
-    from backend.constants import GAME_VALUES, RANK_ORDER
     from backend.engine import (
         apply_trick_action_for_search,
         get_legal_actions,
-        get_legal_auction_actions,
-        get_trick_winner,
         undo_trick_action_for_search,
     )
-    from backend.models import (
-        AuctionEvent,
-        AuctionState,
-        Card,
-        Play,
-        RoundState,
-        get_cards_value,
-        TrickState,
-    )
-    from .base import BotPlayer
+    from backend.models import Card, Play, RoundState, Team, TrickState
+    from .o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 except ImportError:
-    from constants import GAME_VALUES, RANK_ORDER
     from engine import (
         apply_trick_action_for_search,
         get_legal_actions,
-        get_legal_auction_actions,
-        get_trick_winner,
         undo_trick_action_for_search,
     )
-    from models import (
-        AuctionEvent,
-        AuctionState,
-        Card,
-        Play,
-        RoundState,
-        get_cards_value,
-        TrickState,
-    )
-    from bots.base import BotPlayer
+    from models import Card, Play, RoundState, Team, TrickState
+    from .o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 
 
-class MinimaxOneTrickPlayer(BotPlayer):
-    _preferred_suit = "H"
+class MinimaxOneTrickPlayer(OMNISCIENT_MinimaxOneTrickPlayer):
+    """One-trick minimax that reasons from public information only.
 
-    def _estimate_hand_strength(self, trump_suit: str) -> int:
-        estimate = 0
-        if self._has_high_trump(trump_suit):
-            estimate += 1
-        if self._has_low_trump_candidate(trump_suit):
-            estimate += 1
-        estimate += self._count_jokers()
-        if self._has_game_strength():
-            estimate += 1
-        if self._has_trump_control(trump_suit):
-            estimate += 1
-        return max(0, min(6, estimate))
+    The search never reads opponent hands from the live round state. Instead it
+    samples determinizations of the unseen cards that are consistent with the
+    cards this player can actually observe, then averages the one-trick minimax
+    value across those sampled worlds.
+    """
 
-    def _select_preferred_suit(self) -> str:
-        candidate_suits = ("H", "D", "C", "S")
-        return max(candidate_suits, key=self._preferred_suit_key)
+    DETERMINIZATION_SAMPLES = 12
 
-    def _trump_cards(self, trump_suit: str) -> list[Card]:
-        return [
-            card for card in self.cards
-            if not card.is_joker and card.suit == trump_suit
-        ]
+    def set_match_context(
+        self,
+        *,
+        player_names: list[str],
+        teams: list[tuple[str, ...]],
+        match_scores: dict[str, int],
+        target_score: int,
+    ) -> None:
+        self._context_player_names = list(player_names)
+        self._context_teams = [tuple(team) for team in teams]
+        self._context_match_scores = dict(match_scores)
+        self._context_target_score = target_score
 
-    def _has_high_trump(self, trump_suit: str) -> bool:
-        return any(card.rank == "A" for card in self._trump_cards(trump_suit))
-
-    def _has_low_trump_candidate(self, trump_suit: str) -> bool:
-        trump_cards = self._trump_cards(trump_suit)
-        if not trump_cards:
-            return False
-        lowest_trump = min(trump_cards, key=lambda card: RANK_ORDER[card.rank])
-        return RANK_ORDER[lowest_trump.rank] <= RANK_ORDER["10"]
-
-    def _count_jokers(self) -> int:
-        return sum(1 for card in self.cards if card.is_joker)
-
-    def _has_game_strength(self) -> bool:
-        game_total = sum(
-            GAME_VALUES.get(card.rank, 0)
-            for card in self.cards
-            if not card.is_joker
-        )
-        valuable_card_count = sum(
-            1
-            for card in self.cards
-            if not card.is_joker and GAME_VALUES.get(card.rank, 0) > 0
-        )
-        return game_total >= 16 or valuable_card_count >= 4
-
-    def _has_trump_control(self, trump_suit: str) -> bool:
-        trump_cards = self._trump_cards(trump_suit)
-        if len(trump_cards) >= 2:
-            return True
-        if not trump_cards:
-            return False
-        if self._count_jokers() > 0:
-            return True
-        return any(card.rank in {"A", "K", "Q", "J"} for card in trump_cards)
-
-    def _preferred_suit_key(self, trump_suit: str) -> tuple[int, int, int, int]:
-        trump_cards = self._trump_cards(trump_suit)
-        highest_rank = max(
-            (RANK_ORDER[card.rank] for card in trump_cards),
-            default=-1,
-        )
-        total_rank = sum(RANK_ORDER[card.rank] for card in trump_cards)
+    def _public_visible_cards(
+        self,
+        round_state: RoundState,
+        known_hand: set[Card],
+    ) -> set[Card]:
         return (
-            self._estimate_hand_strength(trump_suit),
-            highest_rank,
-            len(trump_cards),
-            total_rank,
+            set(known_hand)
+            | {
+                play.card
+                for trick in round_state.trick_history
+                for play in trick.plays
+            }
+            | {play.card for play in round_state.current_trick.plays}
         )
 
-    def _team_member_names(self, round_state: RoundState) -> set[str]:
-        for team in round_state.teams:
-            member_names = {player.name for player in team.constituents}
-            if self.name in member_names:
-                return member_names
-        return {self.name}
+    def _determinization_seed_payload(
+        self,
+        round_state: RoundState,
+        known_hand: set[Card],
+    ) -> str:
+        completed_tricks = ";".join(
+            ",".join(f"{play.player.name}:{play.card.code}" for play in trick.plays)
+            for trick in round_state.trick_history
+        )
+        current_trick = ",".join(
+            f"{play.player.name}:{play.card.code}"
+            for play in round_state.current_trick.plays
+        )
+        remaining_counts = ",".join(
+            f"{player.name}:{len(player.cards)}" for player in round_state.players
+        )
+        team_signature = ";".join(
+            ",".join(player.name for player in team.constituents)
+            for team in round_state.teams
+        )
+        return "|".join(
+            [
+                self.name,
+                ",".join(sorted(card.code for card in known_hand)),
+                round_state.current_player.name,
+                round_state.current_trick.leader.name,
+                str(round_state.trump),
+                remaining_counts,
+                team_signature,
+                completed_tricks,
+                current_trick,
+            ]
+        )
 
-    def _evaluate_trick(self, trick: TrickState, team_member_names: set[str]) -> int:
-        """Return the signed value of a completed trick from this bot's perspective."""
-        winner_name = get_trick_winner(trick).name
-        trick_value = get_cards_value({play.card for play in trick.plays})
-        if winner_name in team_member_names:
-            return trick_value
-        return -trick_value
+    def _clone_trick(
+        self,
+        trick: TrickState,
+        cloned_players_by_name: dict[str, object],
+    ) -> TrickState:
+        return TrickState(
+            leader=cloned_players_by_name[trick.leader.name],
+            plays=[
+                Play(cloned_players_by_name[play.player.name], play.card)
+                for play in trick.plays
+            ],
+            players=[
+                cloned_players_by_name[player.name] for player in trick.players
+            ],
+            trump=trick.trump,
+        )
 
-    def _evaluate_state(
+    def _build_determinized_states(
+        self,
+        round_state: RoundState,
+        known_hand: set[Card],
+    ) -> list[RoundState]:
+        deck_cards = round_state.deck.get_copy()
+        visible_cards = self._public_visible_cards(round_state, known_hand)
+        unseen_cards = [card for card in deck_cards if card not in visible_cards]
+        unseen_count = sum(
+            len(player.cards)
+            for player in round_state.players
+            if player.name != self.name
+        )
+        hidden_count = len(unseen_cards) - unseen_count
+        if hidden_count < 0:
+            raise ValueError(
+                "public state is inconsistent with the deck and remaining card counts"
+            )
+
+        seed_bytes = sha256(
+            self._determinization_seed_payload(round_state, known_hand).encode("utf-8")
+        ).digest()
+        base_seed = int.from_bytes(seed_bytes[:8], "big")
+        determinizations: list[RoundState] = []
+
+        for sample_index in range(self.DETERMINIZATION_SAMPLES):
+            rng = Random(base_seed + sample_index)
+            shuffled_cards = unseen_cards.copy()
+            rng.shuffle(shuffled_cards)
+            cursor = 0
+            cloned_players_by_name = {}
+
+            for player in round_state.players:
+                if player.name == self.name:
+                    hand = set(known_hand)
+                else:
+                    hand_size = len(player.cards)
+                    hand = set(shuffled_cards[cursor: cursor + hand_size])
+                    cursor += hand_size
+                cloned_players_by_name[player.name] = player.__class__(
+                    player.name,
+                    hand,
+                )
+
+            cloned_players = [
+                cloned_players_by_name[player.name] for player in round_state.players
+            ]
+            cloned_current_trick = self._clone_trick(
+                round_state.current_trick,
+                cloned_players_by_name,
+            )
+            cloned_trick_history = [
+                self._clone_trick(trick, cloned_players_by_name)
+                for trick in round_state.trick_history
+            ]
+            cloned_teams = [
+                Team(
+                    [
+                        cloned_players_by_name[player.name]
+                        for player in team.constituents
+                    ],
+                    set(),
+                )
+                for team in round_state.teams
+            ]
+
+            determinizations.append(
+                RoundState(
+                    players=cloned_players,
+                    current_player=cloned_players_by_name[
+                        round_state.current_player.name
+                    ],
+                    trump=round_state.trump,
+                    current_trick=cloned_current_trick,
+                    hidden_cards=set(shuffled_cards[cursor: cursor + hidden_count]),
+                    trick_history=cloned_trick_history,
+                    teams=cloned_teams,
+                    deck=round_state.deck,
+                )
+            )
+
+        return determinizations
+
+    def _search_one_trick_value(
         self,
         round_state: RoundState,
         starting_trick_count: int,
         team_member_names: set[str],
+        alpha: float,
+        beta: float,
     ) -> int:
-        """Return the current trick value once the searched trick completes.
+        if len(round_state.trick_history) > starting_trick_count:
+            return self._evaluate_state(
+                round_state,
+                starting_trick_count,
+                team_member_names,
+            )
 
-        Args:
-            round_state (RoundState): The current round state after search actions.
-            starting_trick_count (int): Trick count before the search started.
-            team_member_names (set[str]): The bot's team by player name.
+        maximizing = round_state.current_player.name in team_member_names
 
-        Returns:
-            int: Signed trick value for this bot's team.
-        """
-        if len(round_state.trick_history) <= starting_trick_count:
-            raise ValueError("searched trick has not completed")
-        return self._evaluate_trick(
-            round_state.trick_history[-1],
-            team_member_names,
-        )
-
-    def choose_card(self, round_state: RoundState) -> Card:
-        team_member_names = self._team_member_names(round_state)
-        starting_trick_count = len(round_state.trick_history)
-
-        def _choose_card_helper(r: RoundState, alpha: float, beta: float) -> int:
-            if len(r.trick_history) > starting_trick_count:
-                return self._evaluate_state(
-                    r,
-                    starting_trick_count,
-                    team_member_names,
-                )
-
-            maximizing = r.current_player.name in team_member_names
-
-            if maximizing:
-                value = float("-inf")
-                for card in get_legal_actions(r):
-                    play = Play(r.current_player, card)
-                    undo = apply_trick_action_for_search(r, play)
-                    try:
-                        value = max(value, _choose_card_helper(r, alpha, beta))
-                    finally:
-                        undo_trick_action_for_search(r, undo)
-                    alpha = max(alpha, value)
-                    if beta <= alpha:
-                        break
-                return value
-
-            value = float("inf")
-            for card in get_legal_actions(r):
-                play = Play(r.current_player, card)
-                undo = apply_trick_action_for_search(r, play)
+        if maximizing:
+            value = float("-inf")
+            for card in get_legal_actions(round_state):
+                play = Play(round_state.current_player, card)
+                undo = apply_trick_action_for_search(round_state, play)
                 try:
-                    value = min(value, _choose_card_helper(r, alpha, beta))
+                    value = max(
+                        value,
+                        self._search_one_trick_value(
+                            round_state,
+                            starting_trick_count,
+                            team_member_names,
+                            alpha,
+                            beta,
+                        ),
+                    )
                 finally:
-                    undo_trick_action_for_search(r, undo)
-                beta = min(beta, value)
+                    undo_trick_action_for_search(round_state, undo)
+                alpha = max(alpha, value)
                 if beta <= alpha:
                     break
             return value
 
-        best_card = None
-        best_score = float("-inf")
-        alpha = float("-inf")
-        beta = float("inf")
-
+        value = float("inf")
         for card in get_legal_actions(round_state):
             play = Play(round_state.current_player, card)
             undo = apply_trick_action_for_search(round_state, play)
             try:
-                score = _choose_card_helper(round_state, alpha, beta)
+                value = min(
+                    value,
+                    self._search_one_trick_value(
+                        round_state,
+                        starting_trick_count,
+                        team_member_names,
+                        alpha,
+                        beta,
+                    ),
+                )
             finally:
                 undo_trick_action_for_search(round_state, undo)
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
 
-            if score > best_score:
-                best_score = score
+    def choose_card(self, round_state: RoundState) -> Card:
+        if round_state.current_player.name != self.name:
+            raise ValueError(
+                f"{self.name} cannot choose a card for {round_state.current_player.name}"
+            )
+
+        known_hand = set(round_state.current_player.cards)
+        team_member_names = self._team_member_names(round_state)
+        starting_trick_count = len(round_state.trick_history)
+        determinizations = self._build_determinized_states(round_state, known_hand)
+
+        legal_actions = sorted(get_legal_actions(round_state), key=lambda card: card.code)
+        opening_suit_override = getattr(self, "_opening_suit_override", None)
+        if round_state.trump is None and opening_suit_override is not None:
+            suited_actions = [
+                card for card in legal_actions if card.suit == opening_suit_override
+            ]
+            if suited_actions:
+                legal_actions = suited_actions
+        else:
+            self._opening_suit_override = None
+
+        best_card = None
+        best_score = float("-inf")
+
+        for card in legal_actions:
+            total_score = 0.0
+            for determinized_state in determinizations:
+                play = Play(determinized_state.current_player, card)
+                undo = apply_trick_action_for_search(determinized_state, play)
+                try:
+                    total_score += self._search_one_trick_value(
+                        determinized_state,
+                        starting_trick_count,
+                        team_member_names,
+                        float("-inf"),
+                        float("inf"),
+                    )
+                finally:
+                    undo_trick_action_for_search(determinized_state, undo)
+
+            average_score = total_score / len(determinizations)
+            if average_score > best_score:
+                best_score = average_score
                 best_card = card
 
-            alpha = max(alpha, best_score)
-
+        if best_card is None:
+            raise ValueError("minimax bot could not find a legal card to play")
         return best_card
-
-    def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
-        """Bid only when the next required bid fits the hand's best trump estimate."""
-        self._preferred_suit = self._select_preferred_suit()
-        legal_actions = get_legal_auction_actions(auction_state)
-        next_bid = (
-            1 if auction_state.highest_bid is None
-            else auction_state.highest_bid + 1
-        )
-        best_estimated_strength = self._estimate_hand_strength(
-            self._preferred_suit)
-
-        if next_bid <= best_estimated_strength:
-            for action in legal_actions:
-                if action.action == "bid" and action.amount == next_bid:
-                    return action
-
-        for action in legal_actions:
-            if action.action == "pass":
-                return action
-
-        for action in legal_actions:
-            if action.action == "bid" and action.amount == next_bid:
-                return action
-
-        raise ValueError("greedy bot could not find a legal auction action")

@@ -2,31 +2,125 @@
 
 ## Abstract
 
-Smear is a Canadian prairie card game that I was introduced to by my father's side of the family. It can be played with 3–8 people, but is optimally played with 4. [This](<https://en.wikipedia.org/wiki/Smear_(card_game)>) Wikipedia article and [this](https://gamerules.com/rules/canadian-smear/) GameRules article outline the general rules of the game; however, the way my family plays is slightly idiosyncratic: we, for example, do not include the _trey_, which is something referred to in the Wikipedia page. A full outline of the rules we play by is seen in the Rules section. This report attempts to find and describe optimal play based on a [minimax](https://en.wikipedia.org/wiki/Minimax) algorithm. Given the relative lack of popularity of the game (at least compared to other solved games like chess), there is not a large—or frankly any-sized—dataset of games played, which made analysis of the model difficult.
+Smear is a Canadian prairie card game that I was introduced to by my father's side of the family. It can be played with 3–8 people, but is optimally played with 4. [This](<https://en.wikipedia.org/wiki/Smear_(card_game)>) Wikipedia article and [this](https://gamerules.com/rules/canadian-smear/) GameRules article outline the general rules of the game; however, the implementation in this repository follows a specific house-ruled variant. The Rules section below documents that implemented ruleset exactly. This report attempts to find and describe optimal play based on a [minimax](https://en.wikipedia.org/wiki/Minimax) algorithm. Given the relative lack of popularity of the game (at least compared to other solved games like chess), there is not a large—or frankly any-sized—dataset of games played, which made analysis of the model difficult.
 
 ## Rules
 
-### Win conditions
+The rules below describe the game as it is currently implemented in this repository. Where family or regional variants differ, treat this section as the source of truth for the engine.
 
-The winner is the team (or individual) which first reaches 21 points. Points are gained or lost after each round of play. For a given round, a team/individual earns a point under the following conditions at the end of a round, for a total of 6 possible points:
+### Setup
 
-- they possess the highest card of trump suit in the functional deck, which is almost always the Ace (for the definition of functional deck, see Dealing Cards).
-- they possess the Jack of trump suit in the functional deck, unless that jack is hiding
-- they possess the lowest card of trump suit in the functional deck
-- one point per number of jokers they possess
-- the "game" condition, calculated via summation over possessed cards where cards are given the following values just for this one point, irrespective of suit: <= 9 = 0, 10 = 10, J = 1, Q = 2, K = 3, A = 4
+- The engine supports 3-8 players.
+- Each player is dealt 6 cards every round.
+- The full deck is 52 standard cards plus 2 jokers.
+- The match target score is 21.
+- The engine supports arbitrary team groupings, although a 4-player 2v2 game is the most natural version of smear.
+- Card rank order is `2 < 3 < 4 < 5 < 6 < 7 < 8 < 9 < 10 < J < Q < K < A`.
 
-### Dealing Cards
+### Functional Deck and Hiding Cards
 
-Smear is played with a standard deck of 52 cards + 2 jokers (making the total size of the deck 54). Each player receives 6 cards no matter how many people are playing. Because of the fact that, inevitably, some cards will be "hiding" (cards that, after dealing 6 to each player, don't show up in anyone's hand), the deck is often truncated into a **functional deck** in such a way that the number of cards that are hiding is as close to 2 as possible. It is, however, important that some cards are hiding, as it adds an extra random element to the game. The size of the deck is typically denoted by its "low;" for example, a deck with a "low" of 9—a deck which has had all cards < 9 removed—is optimal for 4 players, as the number of hiding cards is exactly 2. Each round, players are dealt new cards. Cards are then dealt clockwise.
+The game does not always use the full 54-card deck. Instead it builds a **functional deck** by removing all cards below a chosen rank, called the deck's **low**, so that the number of undealt hiding cards is as close to 2 as possible after dealing 6 cards per player.
 
-### Auction / Trump
+The current implementation picks the following low by player count:
 
-The importance of the trump suit in smear cannot be overstated. The individual who decides the current round's trump suit is the player who goes first, which implies there is incredible value in going first in smear. The auction decides who goes first, and is where most of Smear's strategy comes from (most of post-auction play is fairly intuitive). As mentioned before, there are 6 possible points to earn in a given round. The auction is where players take turns "betting" on how many points they think their hands can score, with the player who bet the highest number first earning the privilege of going first in a round. Players can only increase the bid, not bid the same amount. If the current "price" is too high, players can pass. As mentioned, for players who want to bid the same size, the one who goes first wins; this implies the order in which people place these bets is important, and is decided by starting with the player after the dealer and moving clockwise, making the dealer go last. This way, similar to poker, everyone gets the first-better advantage.
+| Players | Low | Hiding cards |
+| --- | --- | --- |
+| 3 | 10 | 4 |
+| 4 | 9 | 2 |
+| 5 | 7 | 4 |
+| 6 | 6 | 2 |
+| 7 | 4 | 4 |
+| 8 | 3 | 2 |
 
-### Post-Auction Play
+The deck is shuffled fresh every round. After dealing, any remaining cards are hidden and are not part of anyone's hand, but they still matter when deciding whether a trump jack exists and which trump cards count as high and low.
 
-As mentioned, post-auction play is relatively formulaic. There are 6 sub-rounds within a round (which means that all cards in your hand will leave and all that will be left will be captured cards). Starting with the winner of the previous sub-round and proceeding clockwise (the winner of the auction if in the first round), each player places a card down onto the table. Trump is as follows: trump suit > jokers > sub-round trump > any other suit (in the event of a tie, the higher card value wins; in the event of a tie between jokers, the first-placed joker wins). Notice in our version of Smear, jokers are below trump suit. Sub-round trump is the suit of the first played card in the sub-round, if that card wasn't of overall trump suit. The winner of a sub-round is the player with the "best" card (i.e. highest-priority trump). The winner keeps all played cards except for the "low;" no matter what, the individual/team who was dealt "low" keeps it. When deciding on what cards to play, a further advantage is given to the player who plays first in the "following trump" rule: if the first card played was a trump, you _must_ play a trump when it comes your turn (if you have one). If the first card played was not of trump suit or a joker (i.e., we are playing with a sub-round trump), this rule becomes a "following suit" rule: you are only required to play a card of the same suit if you have it—you do not have to play a joker or an overall trump if you deem it unstrategic.
+### Round Structure
+
+Each round has two phases:
+
+1. An auction to decide who leads the round.
+2. Six tricks of card play, one per card in hand.
+
+The winner of the auction leads the first card of the round. The winner of each trick leads the next trick.
+
+### Auction
+
+- The dealer rotates one seat clockwise each round.
+- Bidding starts with the player to the dealer's left and proceeds clockwise, with the dealer acting last.
+- Legal bids are integers from 1 through 6.
+- Bids must strictly increase the current highest bid. Ties are not allowed.
+- The auction is a single lap around the table: each player acts exactly once.
+- If at least one player has already bid, later players may either overbid or pass.
+- If nobody has bid yet, players may pass until the final player in the order. The final player is not allowed to pass; they must open the bidding with some value from 1 through 6.
+- A bid of 6 does not end the auction early. Remaining players still get their one chance to act, but if 6 is already high their only legal move is to pass.
+- After every player has acted once, the highest bidder wins the auction and leads the first trick.
+
+### Trump and Leading the Round
+
+- Trump is not chosen in a separate declaration step.
+- Instead, the first card led in the round determines trump: the suit of that card becomes the round's trump suit.
+- Because trump is not set until that first lead, the opening leader may not play a joker as the first card of the round.
+- Once trump has been established, later trick leaders may lead any card in hand, including jokers.
+
+### Trick Resolution
+
+Each trick is won using the following priority:
+
+1. Highest card in the round trump suit.
+2. If no trump suit card was played, the first joker played.
+3. If neither trump nor jokers were played, the highest card in the suit that was first led in the trick.
+
+Additional details:
+
+- Within a suit, higher rank wins using the normal rank order up to Ace.
+- If multiple jokers are played and no trump suit card appears, the first joker played wins the trick.
+- The trick winner captures every card in the trick, with one scoring exception described under low.
+
+### Legal Plays During a Trick
+
+The play restrictions in the engine are:
+
+- If you are leading a trick after trump has already been established, any card is legal.
+- If a trump suit card or a joker has already been played into the current trick, every later player must play either a trump suit card or a joker if they have one. If they have neither, they may play any card.
+- If no trump suit card or joker has yet been played and the lead card is a non-trump suit card, a later player must play one of the following if possible:
+  - a card in the led suit
+  - a trump suit card
+  - a joker
+- Only if the player has none of those options may they discard any other card.
+
+This means the engine allows trumping in or playing a joker on a non-trump lead, and once a trump suit card or joker appears, the remainder of the trick is forced into the trump-or-joker rule.
+
+### Round Scoring
+
+At the end of the round, up to 6 raw points are available:
+
+- `high`: 1 point for the scoring unit that possesses the highest visible trump card in the functional deck.
+- `jack`: 1 point for the scoring unit that possesses the jack of trump, if that jack is not hidden.
+- `low`: 1 point for the scoring unit that was originally dealt the lowest visible trump card in the functional deck.
+- `jokers`: 1 point for each joker possessed by the scoring unit.
+- `game`: 1 point for the unique highest total of game-value cards captured.
+
+Important scoring details:
+
+- "Visible trump" means trump cards that exist in the functional deck and are not among the hidden undealt cards.
+- If the jack of trump is hidden, nobody gets the jack point.
+- Low is special: even if another player captures the trick containing low, the low point still belongs to the player or team that originally played that lowest visible trump card.
+- Game-value totals are computed from captured cards using `10 = 10`, `J = 1`, `Q = 2`, `K = 3`, `A = 4`, and `2-9 = 0`.
+- The game point is awarded only for a unique highest total. If the highest game total is tied, nobody receives the game point.
+
+### Match Scoring
+
+After raw round points are computed, the auction winner's bid is checked:
+
+- If the auction winner's scoring unit made its bid, it adds its full round point total to its match score.
+- If the auction winner's scoring unit failed to make its bid, it loses match points equal to the amount bid, not merely the amount it scored in the round.
+- Every non-bidding scoring unit adds its raw round point total to its match score.
+
+The implementation also applies one important match rule:
+
+- Non-bidding scoring units are capped at `target_score - 1`, which is 20 in a standard game to 21.
+
+In other words, only the scoring unit that won the auction can win the match at the end of a round. Everyone else can improve their score, but they cannot cross the finish line unless they were the bidder for that round.
 
 ## Local Debug Harness
 

@@ -8,11 +8,13 @@ try:
     from .greedy_bot import GreedyPlayer
     from .random_bot import RandomPlayer
     from .stupid_bot import StupidBot
+    from .minimax_one_trick_bot import MinimaxOneTrickPlayer
 except ImportError:
     from bots.base import BotPlayer
     from bots.greedy_bot import GreedyPlayer
     from bots.random_bot import RandomPlayer
     from bots.stupid_bot import StupidBot
+    from bots.minimax_one_trick_bot import MinimaxOneTrickPlayer
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,12 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         label="Stupid",
         description="Auctions very stupidly; always bids one higher than the previous highest bid. Hard when you're about to go out.",
         factory=lambda player_name: StupidBot(player_name),
+    ),
+    ReadyBotSpec(
+        id="one-trick-minmax",
+        label="L-1 Minmax",
+        description="Chooses the mathematically perfect card for this current trick.",
+        factory=lambda player_name: MinimaxOneTrickPlayer(player_name)
     ),
 )
 

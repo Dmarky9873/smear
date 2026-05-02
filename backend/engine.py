@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 try:
     from .models import (
         AuctionEvent,
@@ -94,7 +96,8 @@ class Auction:
             for amount in self.legal_bid_amounts()
         ]
         if self.can_pass():
-            actions.append(AuctionEvent(bidder_name=bidder_name, action="pass"))
+            actions.append(AuctionEvent(
+                bidder_name=bidder_name, action="pass"))
         return actions
 
     def _next_bidder_index(self, start_index: int) -> int:
@@ -279,47 +282,7 @@ class Game:
             bool: Whether the action resulted in a terminal trick state.
         """
 
-        if action.player != self._round_state.current_player:
-            raise ValueError(
-                f"action with player {action.player} was attempted despite {self._round_state.current_player} being the current player")
-
-        if action.card not in get_legal_actions(self._round_state):
-            raise ValueError(
-                f"action with card {action.card} attempted despite card not being in legal moves")
-
-        curr_player = self._round_state.current_player
-        curr_trick = self._round_state.current_trick
-        curr_player.play_card(action.card)
-        curr_trick.plays.append(action)
-
-        # If this is the first play of the entire round, set trump to the suit of this card
-        if len(self._round_state.trick_history) == 0 and len(curr_trick.plays) == 1:
-            if not action.card.is_joker:
-                self.set_trump(action.card.suit)
-
-        players = self._round_state.players
-
-        if self._round_state.current_trick.is_terminal:
-
-            trick_winner = get_trick_winner(curr_trick)
-
-            self._round_state.current_player = trick_winner
-
-            for play in curr_trick.plays:
-                trick_winner.capture(play)
-
-            self._round_state.current_trick = TrickState(
-                trick_winner, [], curr_trick.players, self._round_state.trump)
-            self._round_state.trick_history.append(
-                curr_trick)
-
-            return True
-
-        else:
-            self._round_state.current_player = players[(
-                players.index(curr_player) + 1) % len(players)]
-
-            return False
+        return _apply_trick_action_in_place(self._round_state, action)
 
     @property
     def curr_player(self):
@@ -421,6 +384,62 @@ def get_legal_actions(state: RoundState) -> set[Card]:
 
     # If a joker was led and is the only card played, anything may be played.
     return set(hand)
+
+
+def _apply_trick_action_in_place(state: RoundState, action: Play) -> bool:
+    """Mutate a round state by applying a legal play.
+
+    Returns whether the action completed the current trick.
+    """
+    if action.player.name != state.current_player.name:
+        raise ValueError(
+            f"action with player {action.player} was attempted despite {state.current_player} being the current player"
+        )
+
+    if action.card not in get_legal_actions(state):
+        raise ValueError(
+            f"action with card {action.card} attempted despite card not being in legal moves"
+        )
+
+    curr_player = state.current_player
+    curr_trick = state.current_trick
+    applied_action = Play(curr_player, action.card)
+    curr_player.play_card(action.card)
+    curr_trick.plays.append(applied_action)
+
+    # If this is the first play of the entire round, set trump to the suit of this card.
+    if len(state.trick_history) == 0 and len(curr_trick.plays) == 1:
+        if not action.card.is_joker:
+            curr_trick.trump = action.card.suit
+            state.trump = action.card.suit
+
+    players = state.players
+
+    if curr_trick.is_terminal:
+        trick_winner = get_trick_winner(curr_trick)
+        state.current_player = trick_winner
+
+        for play in curr_trick.plays:
+            trick_winner.capture(play)
+
+        state.current_trick = TrickState(
+            trick_winner, [], curr_trick.players, state.trump
+        )
+        state.trick_history.append(curr_trick)
+        return True
+
+    state.current_player = players[(players.index(curr_player) + 1) % len(players)]
+    return False
+
+
+def apply_trick_action_to_state(round_state: RoundState, action: Play) -> RoundState:
+    """Return a new round state with the action applied.
+
+    The input state is left unchanged.
+    """
+    new_state = deepcopy(round_state)
+    _apply_trick_action_in_place(new_state, action)
+    return new_state
 
 
 def score_round(round: RoundState) -> dict[str, int]:

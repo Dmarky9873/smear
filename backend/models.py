@@ -210,6 +210,9 @@ class Team:
     def __str__(self):
         return f"team with {[player.name for player in self.constituents]}"
 
+    def __contains__(self, player: Player) -> bool:
+        return player in self.constituents
+
 
 @dataclass
 class AuctionEvent:

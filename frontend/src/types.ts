@@ -168,3 +168,13 @@ export type ReadyBot = {
 export type ReadyBotListResponse = {
   bots: ReadyBot[];
 };
+
+export type BotProgress = {
+  active: boolean;
+  player_name: string | null;
+  label: string | null;
+  detail: string | null;
+  completed_units: number | null;
+  total_units: number | null;
+  percent_complete: number | null;
+};

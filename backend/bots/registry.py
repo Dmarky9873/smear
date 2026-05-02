@@ -4,19 +4,33 @@ from dataclasses import dataclass
 from typing import Callable
 
 try:
+    from ..constants import HAND_SIZE
     from .base import BotPlayer
     from .greedy_bot import GreedyPlayer
-    from .minimax_one_trick_bot import MinimaxOneTrickPlayer
+    from .human_information_minimax_n_trick_bot import (
+        HumanInformationMinimaxNTrickPlayer,
+    )
+    from .human_information_minimax_one_trick_bot import (
+        HumanInformationMinimaxOneTrickPlayer,
+    )
+    from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from .omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from .random_bot import RandomPlayer
     from .stupid_bot import StupidBot
-    from .o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 except ImportError:
+    from constants import HAND_SIZE
     from bots.base import BotPlayer
     from bots.greedy_bot import GreedyPlayer
-    from bots.minimax_one_trick_bot import MinimaxOneTrickPlayer
+    from bots.human_information_minimax_n_trick_bot import (
+        HumanInformationMinimaxNTrickPlayer,
+    )
+    from bots.human_information_minimax_one_trick_bot import (
+        HumanInformationMinimaxOneTrickPlayer,
+    )
+    from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from bots.random_bot import RandomPlayer
     from bots.stupid_bot import StupidBot
-    from bots.o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 
 
 @dataclass(frozen=True)
@@ -25,6 +39,40 @@ class ReadyBotSpec:
     label: str
     description: str
     factory: Callable[[str], BotPlayer]
+
+
+def _build_n_trick_specs() -> tuple[ReadyBotSpec, ...]:
+    specs: list[ReadyBotSpec] = []
+    for depth in range(2, HAND_SIZE + 1):
+        specs.append(
+            ReadyBotSpec(
+                id=f"{depth}-trick-minmax",
+                label=f"L-{depth} Minmax",
+                description=(
+                    f"Searches the next {depth} completed tricks over sampled "
+                    "hidden-information worlds."
+                ),
+                factory=lambda player_name, depth=depth: HumanInformationMinimaxNTrickPlayer(
+                    player_name,
+                    depth=depth,
+                ),
+            )
+        )
+        specs.append(
+            ReadyBotSpec(
+                id=f"o-{depth}-trick-minmax",
+                label=f"Omniscient L-{depth} Minmax",
+                description=(
+                    f"Chooses the mathematically perfect card over the next {depth} "
+                    "completed tricks."
+                ),
+                factory=lambda player_name, depth=depth: OmniscientMinimaxNTrickPlayer(
+                    player_name,
+                    depth=depth,
+                ),
+            )
+        )
+    return tuple(specs)
 
 
 READY_BOTS: tuple[ReadyBotSpec, ...] = (
@@ -50,15 +98,17 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         id="one-trick-minmax",
         label="L-1 Minmax",
         description="Searches the current trick over sampled hidden-information worlds.",
-        factory=lambda player_name: MinimaxOneTrickPlayer(player_name),
+        factory=lambda player_name: HumanInformationMinimaxOneTrickPlayer(
+            player_name
+        ),
     ),
     ReadyBotSpec(
         id="o-one-trick-minmax",
         label="Omniscient L-1 Minmax",
         description="Chooses the mathematically perfect card for this current trick.",
-        factory=lambda player_name: OMNISCIENT_MinimaxOneTrickPlayer(
-            player_name)
+        factory=lambda player_name: OmniscientMinimaxOneTrickPlayer(player_name),
     ),
+    *_build_n_trick_specs(),
 )
 
 READY_BOT_MAP = {bot.id: bot for bot in READY_BOTS}

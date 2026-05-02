@@ -72,5 +72,8 @@ class GameStore:
     def get_score(self) -> dict:
         return self.require_controller().get_score()
 
+    def get_bot_progress(self) -> dict:
+        return self.require_controller().get_bot_progress()
+
 
 game_store = GameStore()

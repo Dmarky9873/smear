@@ -1,7 +1,13 @@
 import unittest
 
+from backend.bots.human_information_minimax_one_trick_bot import (
+    HumanInformationMinimaxOneTrickPlayer,
+)
 from backend.bots.minimax_one_trick_bot import MinimaxOneTrickPlayer
 from backend.bots.o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
+from backend.bots.omniscient_minimax_one_trick_bot import (
+    OmniscientMinimaxOneTrickPlayer,
+)
 from backend.bots.registry import build_ready_bot
 from backend.engine import get_legal_actions
 from backend.models import Card, Deck, Player, RoundState, Team, TrickState
@@ -25,7 +31,7 @@ class MinimaxOneTrickBotTests(unittest.TestCase):
             deck=Deck("10"),
         )
 
-        bot = OMNISCIENT_MinimaxOneTrickPlayer("A")
+        bot = OmniscientMinimaxOneTrickPlayer("A")
         chosen_card = bot.choose_card(round_state)
 
         self.assertIn(chosen_card, get_legal_actions(round_state))
@@ -70,7 +76,7 @@ class MinimaxOneTrickBotTests(unittest.TestCase):
             player_c_card=Card("KD"),
         )
 
-        bot = MinimaxOneTrickPlayer(
+        bot = HumanInformationMinimaxOneTrickPlayer(
             "A",
             cards=set(public_state_a.current_player.cards),
         )
@@ -82,7 +88,18 @@ class MinimaxOneTrickBotTests(unittest.TestCase):
 
     def test_registry_builds_hidden_information_bot_for_default_minimax_id(self):
         bot = build_ready_bot("one-trick-minmax", "A")
-        self.assertIsInstance(bot, MinimaxOneTrickPlayer)
+        self.assertIsInstance(bot, HumanInformationMinimaxOneTrickPlayer)
+
+    def test_registry_builds_omniscient_bot_for_omniscient_minimax_id(self):
+        bot = build_ready_bot("o-one-trick-minmax", "A")
+        self.assertIsInstance(bot, OmniscientMinimaxOneTrickPlayer)
+
+    def test_legacy_import_paths_remain_compatible(self):
+        self.assertIs(MinimaxOneTrickPlayer, HumanInformationMinimaxOneTrickPlayer)
+        self.assertIs(
+            OMNISCIENT_MinimaxOneTrickPlayer,
+            OmniscientMinimaxOneTrickPlayer,
+        )
 
 
 if __name__ == "__main__":

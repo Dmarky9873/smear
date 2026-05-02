@@ -1,4 +1,5 @@
 import type {
+  BotProgress,
   GameState,
   LegalActionsResponse,
   ReadyBotListResponse,
@@ -128,4 +129,8 @@ export function stepBotTurn(): Promise<GameState> {
   return request<GameState>("/game/bots/step", {
     method: "POST",
   });
+}
+
+export function fetchBotProgress(): Promise<BotProgress> {
+  return request<BotProgress>("/game/bots/progress");
 }

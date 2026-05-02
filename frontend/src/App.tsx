@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createGame,
+  fetchBotProgress,
   fetchBots,
   fetchGameState,
   fetchLegalActions,
@@ -16,6 +17,7 @@ import {
 import { DebugModeView } from "./components/DebugModeView";
 import { PlayModeView } from "./components/PlayModeView";
 import type {
+  BotProgress,
   BidAction,
   GameState,
   LegalAction,
@@ -136,6 +138,7 @@ export default function App() {
   );
   const [teamsInput, setTeamsInput] = useState("");
   const [availableBots, setAvailableBots] = useState<ReadyBot[]>([]);
+  const [botProgress, setBotProgress] = useState<BotProgress | null>(null);
   const [state, setState] = useState<GameState | null>(null);
   const [legalActions, setLegalActions] = useState<LegalAction[]>([]);
   const [score, setScore] = useState<Score | null>(null);
@@ -232,6 +235,7 @@ export default function App() {
     botSequenceRef.current += 1;
     setAwaitingNextTrick(false);
     setBotThinkingName(null);
+    setBotProgress(null);
     setRevealedTrick(null);
     setIsLoading(false);
   }
@@ -265,6 +269,7 @@ export default function App() {
         setRevealedTrick(completedTrick);
         setAwaitingNextTrick(true);
         setBotThinkingName(null);
+        setBotProgress(null);
         return true;
       }
 
@@ -279,6 +284,7 @@ export default function App() {
           setRevealedTrick(completedTrick);
         }
         setBotThinkingName(null);
+        setBotProgress(null);
         await delay(botActionDelayMs);
 
         if (sequenceId !== botSequenceRef.current) {
@@ -291,6 +297,7 @@ export default function App() {
 
     if (sequenceId === botSequenceRef.current) {
       setBotThinkingName(null);
+      setBotProgress(null);
       setRevealedTrick(null);
     }
 
@@ -332,6 +339,7 @@ export default function App() {
       if (completedTrick && shouldWaitForNextTrick(previousState, nextState)) {
         setRevealedTrick(completedTrick);
         setBotThinkingName(null);
+        setBotProgress(null);
         setAwaitingNextTrick(true);
         preserveRevealedTrick = true;
         return;
@@ -345,6 +353,7 @@ export default function App() {
     } finally {
       if (botSequenceRef.current === sequenceId) {
         setBotThinkingName(null);
+        setBotProgress(null);
         if (!preserveRevealedTrick) {
           setRevealedTrick(null);
         }
@@ -388,6 +397,42 @@ export default function App() {
   }, [mode]);
 
   useEffect(() => {
+    if (mode !== "play" || !botThinkingName || awaitingNextTrick) {
+      setBotProgress(null);
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    async function pollProgress() {
+      try {
+        const progress = await fetchBotProgress();
+        if (!cancelled) {
+          setBotProgress(progress.active ? progress : null);
+        }
+      } catch {
+        if (!cancelled) {
+          setBotProgress(null);
+        }
+      } finally {
+        if (!cancelled) {
+          timeoutId = window.setTimeout(pollProgress, 150);
+        }
+      }
+    }
+
+    void pollProgress();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [awaitingNextTrick, botThinkingName, mode]);
+
+  useEffect(() => {
     if (
       mode !== "play" ||
       !state ||
@@ -402,6 +447,7 @@ export default function App() {
   }, [awaitingNextTrick, botActionDelayMs, isLoading, mode, state]);
 
   function handleAdvanceToNextTrick() {
+    setRevealedTrick(null);
     setAwaitingNextTrick(false);
   }
 
@@ -560,6 +606,7 @@ export default function App() {
           playerBots={playerBots}
           teamsInput={teamsInput}
           availableBots={availableBots}
+          botProgress={botProgress}
           state={state}
           score={score}
           error={error}
@@ -600,6 +647,7 @@ export default function App() {
           playerBots={playerBots}
           teamsInput={teamsInput}
           availableBots={availableBots}
+          botProgress={botProgress}
           state={state}
           score={score}
           error={error}

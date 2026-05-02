@@ -173,6 +173,14 @@ python -m backend.simulator --team-size 2 1000 50 greedy random
 
 The simulator still caps games at 8 total seats, so `--team-size 2` allows up to four supplied models.
 
+To override minimax search depth without changing bot ids, set `--depth`. For example, this runs the human-information and omniscient minimax bots at a 3-trick search depth:
+
+```bash
+python -m backend.simulator --depth 3 1000 50 one-trick-minmax o-one-trick-minmax
+```
+
+The simulator reports the applied override as `minimax_depth` in its JSON output.
+
 Simulator output now includes wall-clock timing metrics such as `elapsed_seconds`, `average_seconds_per_game`, `average_seconds_per_round`, `games_per_second`, and `rounds_per_second` so you can compare algorithm changes directly.
 
 ### Frontend

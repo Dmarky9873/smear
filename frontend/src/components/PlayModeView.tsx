@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { PlayingCard } from "./PlayingCard";
 import type {
+  BotProgress,
   BidAction,
   Card,
   GameState,
@@ -19,6 +20,7 @@ type PlayModeViewProps = {
   playerBots: (string | null)[];
   teamsInput: string;
   availableBots: ReadyBot[];
+  botProgress: BotProgress | null;
   state: GameState | null;
   score: Score | null;
   error: string | null;
@@ -61,28 +63,11 @@ function getRoundBanner(state: GameState, currentTurnName: string): string {
   return "Round over";
 }
 
-function getMostRecentPlayForPlayer(
-  state: GameState,
+function getVisiblePlayForPlayer(
+  trick: TrickState | null,
   playerName: string,
 ): Play | null {
-  const currentPlay = [...state.round.current_trick.plays]
-    .reverse()
-    .find((play) => play.player_name === playerName);
-  if (currentPlay) {
-    return currentPlay;
-  }
-
-  for (let index = state.round.trick_history.length - 1; index >= 0; index -= 1) {
-    const trick = state.round.trick_history[index];
-    const match = [...trick.plays]
-      .reverse()
-      .find((play) => play.player_name === playerName);
-    if (match) {
-      return match;
-    }
-  }
-
-  return null;
+  return trick?.plays.find((play) => play.player_name === playerName) ?? null;
 }
 
 function getCompletedTricks(state: GameState): TrickState[] {
@@ -95,6 +80,7 @@ export function PlayModeView({
   playerBots,
   teamsInput,
   availableBots,
+  botProgress,
   state,
   score,
   error,
@@ -135,6 +121,11 @@ export function PlayModeView({
     Boolean(turnPlayer) &&
     !turnPlayer?.bot_id &&
     (state?.phase === "auction" || state?.phase === "play");
+  const showBotProgress = Boolean(botThinkingName) && !awaitingNextTrick;
+  const progressPercent = Math.max(
+    0,
+    Math.min(100, botProgress?.percent_complete ?? 0),
+  );
 
   useEffect(() => {
     setShowHistory(false);
@@ -242,6 +233,45 @@ export function PlayModeView({
 
       {!state ? null : (
         <>
+          {showBotProgress ? (
+            <section className="play-progress-card" aria-live="polite">
+              <div className="play-progress-card__header">
+                <span>Bot thinking</span>
+                <strong>{botThinkingName}</strong>
+              </div>
+              <div
+                className={[
+                  "play-progress-track",
+                  botProgress ? "" : "is-indeterminate",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                role="progressbar"
+                aria-label={`${botThinkingName} is evaluating moves`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={botProgress ? progressPercent : undefined}
+                aria-valuetext={
+                  botProgress
+                    ? `${Math.round(progressPercent)} percent complete`
+                    : "Search in progress"
+                }
+              >
+                <div
+                  className="play-progress-bar"
+                  style={botProgress ? { width: `${progressPercent}%` } : undefined}
+                />
+              </div>
+              <p className="play-progress-copy">
+                {botProgress
+                  ? `${botProgress.label ?? "Search in progress"}: ${botProgress.completed_units ?? 0}/${botProgress.total_units ?? 0}${
+                      botProgress.detail ? `, ${botProgress.detail}` : ""
+                    }`
+                  : "Higher-depth minimax searches can take a while."}
+              </p>
+            </section>
+          ) : null}
+
           <section className="play-status-row">
             <div className="play-score-pill">
               <span>Round</span>
@@ -320,11 +350,13 @@ export function PlayModeView({
               {state.round.players.map((player) => {
                 const isCurrentPlayer = player.name === turnPlayer?.name;
                 const isBot = Boolean(player.bot_id);
-                const recentPlay = getMostRecentPlayForPlayer(state, player.name);
-                const showCardSummary =
-                  state.phase !== "auction" ||
-                  player.captured_cards.length > 0 ||
-                  recentPlay !== null;
+                const tablePlay = getVisiblePlayForPlayer(visibleTrick, player.name);
+                const isAuctionWinner =
+                  state.auction.highest_bidder_name === player.name &&
+                  state.auction.current_high_bid !== null;
+                const showTableCardSection = state.phase !== "auction";
+                const showCapturedCards =
+                  state.phase !== "auction" || player.captured_cards.length > 0;
 
                 return (
                   <article
@@ -336,6 +368,11 @@ export function PlayModeView({
                       .filter(Boolean)
                       .join(" ")}
                   >
+                    {isAuctionWinner ? (
+                      <div className="play-seat__bid-badge">
+                        Bid {state.auction.current_high_bid}
+                      </div>
+                    ) : null}
                     <div className="play-seat__header">
                       <h3>
                         {player.name}
@@ -350,28 +387,34 @@ export function PlayModeView({
                       <span>{player.captured_count} won</span>
                     </div>
 
-                    {showCardSummary ? (
+                    {showTableCardSection ? (
+                      <div className="play-seat__section">
+                        <span className="play-seat__label">Table</span>
+                        <div className="play-seat__table-slot">
+                          {tablePlay ? (
+                            <PlayingCard
+                              card={tablePlay.card}
+                              compact
+                              isTrump={
+                                !tablePlay.card.is_joker &&
+                                state.round.trump === tablePlay.card.suit
+                              }
+                              className="play-seat__table-card"
+                            />
+                          ) : (
+                            <div
+                              className="play-seat__table-empty"
+                              aria-label={`${player.name} has not played this trick`}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {showCapturedCards ? (
                       <>
                         <div className="play-seat__section">
-                          <span className="play-seat__label">Last played</span>
-                          <div className="play-seat__cards">
-                            {recentPlay ? (
-                              <PlayingCard
-                                card={recentPlay.card}
-                                compact
-                                isTrump={
-                                  !recentPlay.card.is_joker &&
-                                  state.round.trump === recentPlay.card.suit
-                                }
-                              />
-                            ) : (
-                              <span className="muted">-</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="play-seat__section">
-                          <span className="play-seat__label">Captured</span>
+                          <span className="play-seat__label">Won</span>
                           <div className="play-seat__cards">
                             {player.captured_cards.length > 0 ? (
                               player.captured_cards.map((card: Card, index) => (
@@ -448,24 +491,31 @@ export function PlayModeView({
                   <>
                     <div className="play-centerboard__header">
                       <h3>Table</h3>
-                      <strong>{visibleTrick?.leader_name ?? "-"}</strong>
+                      <strong>
+                        {visibleTrick?.winner_name
+                          ? `Won by ${visibleTrick.winner_name}`
+                          : visibleTrick?.leader_name
+                            ? `Lead ${visibleTrick.leader_name}`
+                            : "-"}
+                      </strong>
                     </div>
 
-                    <div className="play-trick-grid">
+                    <div className="play-table-summary">
+                      <div className="play-table-summary__item">
+                        <span>Lead</span>
+                        <strong>{visibleTrick?.leader_name ?? "-"}</strong>
+                      </div>
+                      <div className="play-table-summary__item">
+                        <span>Winner</span>
+                        <strong>{visibleTrick?.winner_name ?? "-"}</strong>
+                      </div>
+                    </div>
+
+                    <div className="play-table-empty-wrap">
                       {visibleTrick && visibleTrick.plays.length > 0 ? (
-                        visibleTrick.plays.map((play, index) => (
-                          <div
-                            key={`${play.player_name}-${play.card.code}-${index}`}
-                            className="play-trick-card"
-                          >
-                            <span>{play.player_name}</span>
-                            <PlayingCard
-                              card={play.card}
-                              compact
-                              className="play-trick-card__face"
-                            />
-                          </div>
-                        ))
+                        <div className="play-table-note">
+                          Cards stay under each player.
+                        </div>
                       ) : (
                         <div className="play-hand-empty">Waiting for the next card</div>
                       )}

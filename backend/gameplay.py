@@ -538,6 +538,25 @@ class MatchController:
             raise RoundNotTerminalError("Round score is unavailable.")
         return self.session.last_round_score
 
+    def get_bot_progress(self) -> dict:
+        player_name = self._current_bot_name()
+        if player_name is None or player_name not in self.session.bots:
+            return {"active": False}
+
+        bot = self.session.bots[player_name]
+        snapshot = bot.get_progress_snapshot()
+        if snapshot is None:
+            return {
+                "active": False,
+                "player_name": player_name,
+            }
+
+        return {
+            "active": True,
+            "player_name": player_name,
+            **snapshot,
+        }
+
     def run_match(self, alpha: int) -> MatchResult:
         if alpha <= 0:
             raise ValueError("alpha must be positive")

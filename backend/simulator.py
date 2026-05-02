@@ -10,10 +10,26 @@ from typing import Callable
 
 try:
     from .bots.base import BotPlayer
+    from .bots.human_information_minimax_n_trick_bot import (
+        HumanInformationMinimaxNTrickPlayer,
+    )
+    from .bots.human_information_minimax_one_trick_bot import (
+        HumanInformationMinimaxOneTrickPlayer,
+    )
+    from .bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from .bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from .bots.registry import build_ready_bot, get_ready_bot_spec
     from .gameplay import MatchController, MatchResult
 except ImportError:
     from bots.base import BotPlayer
+    from bots.human_information_minimax_n_trick_bot import (
+        HumanInformationMinimaxNTrickPlayer,
+    )
+    from bots.human_information_minimax_one_trick_bot import (
+        HumanInformationMinimaxOneTrickPlayer,
+    )
+    from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from bots.registry import build_ready_bot, get_ready_bot_spec
     from gameplay import MatchController, MatchResult
 
@@ -32,8 +48,80 @@ class ResolvedModelSpec:
     factory: BotFactory
 
 
-def _resolve_model_spec(model: PlayerModelArg) -> ResolvedModelSpec:
+def _parse_minimax_bot_id(bot_id: str) -> tuple[str, int] | None:
+    if bot_id == "one-trick-minmax":
+        return ("human", 1)
+    if bot_id == "o-one-trick-minmax":
+        return ("omniscient", 1)
+
+    omniscient = bot_id.startswith("o-")
+    normalized_id = bot_id[2:] if omniscient else bot_id
+    suffix = "-trick-minmax"
+    if not normalized_id.endswith(suffix):
+        return None
+
+    depth_token = normalized_id[: -len(suffix)]
+    if not depth_token.isdigit():
+        return None
+
+    family = "omniscient" if omniscient else "human"
+    return family, int(depth_token)
+
+
+def _build_minimax_resolved_spec(family: str, depth: int) -> ResolvedModelSpec:
+    if depth <= 0:
+        raise ValueError("depth must be positive")
+
+    if family == "human":
+        if depth == 1:
+            return ResolvedModelSpec(
+                key="one-trick-minmax",
+                label="L-1 Minmax",
+                factory=lambda player_name: HumanInformationMinimaxOneTrickPlayer(
+                    player_name
+                ),
+            )
+        return ResolvedModelSpec(
+            key=f"{depth}-trick-minmax",
+            label=f"L-{depth} Minmax",
+            factory=lambda player_name, depth=depth: HumanInformationMinimaxNTrickPlayer(
+                player_name,
+                depth=depth,
+            ),
+        )
+
+    if family == "omniscient":
+        if depth == 1:
+            return ResolvedModelSpec(
+                key="o-one-trick-minmax",
+                label="Omniscient L-1 Minmax",
+                factory=lambda player_name: OmniscientMinimaxOneTrickPlayer(
+                    player_name
+                ),
+            )
+        return ResolvedModelSpec(
+            key=f"o-{depth}-trick-minmax",
+            label=f"Omniscient L-{depth} Minmax",
+            factory=lambda player_name, depth=depth: OmniscientMinimaxNTrickPlayer(
+                player_name,
+                depth=depth,
+            ),
+        )
+
+    raise ValueError(f"unsupported minimax family: {family}")
+
+
+def _resolve_model_spec(
+    model: PlayerModelArg,
+    *,
+    depth: int | None = None,
+) -> ResolvedModelSpec:
     if isinstance(model, str):
+        minimax_spec = _parse_minimax_bot_id(model)
+        if minimax_spec is not None and depth is not None:
+            family, _ = minimax_spec
+            return _build_minimax_resolved_spec(family, depth)
+
         spec = get_ready_bot_spec(model)
         return ResolvedModelSpec(
             key=spec.id,
@@ -84,6 +172,8 @@ def _resolve_model_specs(
     model6: PlayerModelArg | None = None,
     model7: PlayerModelArg | None = None,
     model8: PlayerModelArg | None = None,
+    *,
+    depth: int | None = None,
 ) -> list[ResolvedModelSpec]:
     provided_models = [
         model
@@ -96,7 +186,7 @@ def _resolve_model_specs(
     if len(provided_models) > MAX_PLAYERS:
         raise ValueError(f"no more than {MAX_PLAYERS} models may be provided")
 
-    return [_resolve_model_spec(model) for model in provided_models]
+    return [_resolve_model_spec(model, depth=depth) for model in provided_models]
 
 
 def _build_simulation_roster(
@@ -174,11 +264,14 @@ def benchmark_models(
     model8: PlayerModelArg | None = None,
     show_progress: bool = True,
     team_size: int = 1,
+    depth: int | None = None,
 ) -> dict:
     if n <= 0:
         raise ValueError("n must be positive")
     if alpha <= 0:
         raise ValueError("alpha must be positive")
+    if depth is not None and depth <= 0:
+        raise ValueError("depth must be positive")
 
     base_model_specs = _resolve_model_specs(
         model1,
@@ -189,6 +282,7 @@ def benchmark_models(
         model6,
         model7,
         model8,
+        depth=depth,
     )
     player_names, model_specs, teams = _build_simulation_roster(
         base_model_specs,
@@ -278,6 +372,7 @@ def benchmark_models(
         "games_played": n,
         "alpha": alpha,
         "team_size": team_size,
+        "minimax_depth": depth,
         "players_per_game": len(model_specs),
         "elapsed_seconds": elapsed_seconds,
         "average_seconds_per_game": elapsed_seconds / n,
@@ -332,6 +427,15 @@ def main() -> None:
             "for example, --team-size 2 with two models simulates a 2v2 match"
         ),
     )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        help=(
+            "override minimax bot search depth for minimax model ids; "
+            "for example, --depth 3 with one-trick-minmax uses the 3-trick variant"
+        ),
+    )
     parser.add_argument("model1", help="first ready bot id")
     parser.add_argument("model2", help="second ready bot id")
     parser.add_argument(
@@ -351,6 +455,7 @@ def main() -> None:
         args.model2,
         *args.models,
         team_size=args.team_size,
+        depth=args.depth,
     )
     print(json.dumps(result, indent=2))
 

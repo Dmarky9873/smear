@@ -1,6 +1,10 @@
 import unittest
 from unittest.mock import patch
 
+from backend.bots.human_information_minimax_n_trick_bot import (
+    HumanInformationMinimaxNTrickPlayer,
+)
+from backend.bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
 from backend.gameplay import MatchResult
 from backend.simulator import benchmark_models
 
@@ -93,6 +97,69 @@ class SimulatorTeamSizeTests(unittest.TestCase):
                 "random",
                 show_progress=False,
                 team_size=2,
+            )
+
+    @patch("backend.simulator.time.perf_counter", side_effect=[1.0, 2.0])
+    @patch("backend.simulator.Simulator.run_match")
+    @patch("backend.simulator.MatchController.create")
+    def test_depth_overrides_minimax_ready_bot_ids(
+        self,
+        create_mock,
+        run_match_mock,
+        perf_counter_mock,
+    ):
+        captured_create_kwargs = {}
+
+        def fake_create(**kwargs):
+            captured_create_kwargs.update(kwargs)
+            return object()
+
+        create_mock.side_effect = fake_create
+        run_match_mock.return_value = MatchResult(
+            rounds_played=1,
+            is_draw=False,
+            winner_names=["Player 1"],
+            final_scores={
+                "Player 1": 21,
+                "Player 2": 0,
+                "Player 3": 0,
+            },
+        )
+
+        result = benchmark_models(
+            1,
+            10,
+            "one-trick-minmax",
+            "o-one-trick-minmax",
+            show_progress=False,
+            depth=3,
+        )
+
+        controllers = captured_create_kwargs["bots"]
+        self.assertIsInstance(
+            controllers["Player 1"],
+            HumanInformationMinimaxNTrickPlayer,
+        )
+        self.assertEqual(controllers["Player 1"].depth, 3)
+        self.assertIsInstance(
+            controllers["Player 2"],
+            OmniscientMinimaxNTrickPlayer,
+        )
+        self.assertEqual(controllers["Player 2"].depth, 3)
+        self.assertEqual(result["minimax_depth"], 3)
+        self.assertIn("3-trick-minmax", result["models"])
+        self.assertIn("o-3-trick-minmax", result["models"])
+        self.assertEqual(perf_counter_mock.call_count, 2)
+
+    def test_depth_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "depth must be positive"):
+            benchmark_models(
+                1,
+                10,
+                "one-trick-minmax",
+                "random",
+                show_progress=False,
+                depth=0,
             )
 
 

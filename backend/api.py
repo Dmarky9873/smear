@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, status
 try:
     from .schemas import (
         BidRequest,
+        BotProgressResponse,
         GameStateResponse,
         HealthResponse,
         LegalActionsResponse,
@@ -19,6 +20,7 @@ try:
 except ImportError:
     from schemas import (
         BidRequest,
+        BotProgressResponse,
         GameStateResponse,
         HealthResponse,
         LegalActionsResponse,
@@ -167,6 +169,14 @@ def step_bot_turn() -> dict:
         raise _bad_request(str(exc)) from exc
 
     return serialize_game(session)
+
+
+@router.get("/game/bots/progress", response_model=BotProgressResponse)
+def get_bot_progress() -> dict:
+    try:
+        return game_store.get_bot_progress()
+    except GameNotInitializedError as exc:
+        raise _not_found(str(exc)) from exc
 
 
 @router.get("/game/score", response_model=RoundScoreResponse)

@@ -4,6 +4,7 @@ import { LegalActionsPanel } from "./LegalActionsPanel";
 import { PlayerPanel } from "./PlayerPanel";
 import { PlayingCard } from "./PlayingCard";
 import type {
+  BotProgress,
   BidAction,
   GameState,
   PlayCardAction,
@@ -18,6 +19,7 @@ type DebugModeViewProps = {
   playerBots: (string | null)[];
   teamsInput: string;
   availableBots: ReadyBot[];
+  botProgress: BotProgress | null;
   state: GameState | null;
   score: Score | null;
   error: string | null;
@@ -46,6 +48,7 @@ export function DebugModeView({
   playerBots,
   teamsInput,
   availableBots,
+  botProgress,
   state,
   score,
   error,
@@ -103,6 +106,12 @@ export function DebugModeView({
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}
+      {botProgress?.active ? (
+        <div className="error-banner">
+          {botProgress.player_name}: {Math.round(botProgress.percent_complete ?? 0)}%
+          {botProgress.detail ? ` (${botProgress.detail})` : ""}
+        </div>
+      ) : null}
 
       <section className="panel">
         <h2>Setup</h2>

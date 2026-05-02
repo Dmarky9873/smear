@@ -123,6 +123,16 @@ class ReadyBotListResponse(BaseModel):
     bots: list[ReadyBotResponse]
 
 
+class BotProgressResponse(BaseModel):
+    active: bool
+    player_name: str | None = None
+    label: str | None = None
+    detail: str | None = None
+    completed_units: int | None = None
+    total_units: int | None = None
+    percent_complete: float | None = None
+
+
 class PlayCardActionResponse(BaseModel):
     type: Literal["play_card"]
     card_code: str

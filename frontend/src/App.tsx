@@ -23,6 +23,7 @@ import type {
   Player,
   ReadyBot,
   Score,
+  TrickState,
 } from "./types";
 
 type AppMode = "play" | "debug";
@@ -104,6 +105,20 @@ function shouldPauseAfterBotStep(
   return false;
 }
 
+function shouldWaitForNextTrick(
+  previousState: GameState | null,
+  nextState: GameState,
+): boolean {
+  if (!previousState) {
+    return false;
+  }
+
+  return (
+    nextState.phase === "play" &&
+    nextState.round.trick_history.length > previousState.round.trick_history.length
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -127,6 +142,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [botThinkingName, setBotThinkingName] = useState<string | null>(null);
+  const [revealedTrick, setRevealedTrick] = useState<TrickState | null>(null);
+  const [awaitingNextTrick, setAwaitingNextTrick] = useState(false);
   const [botActionDelayMs, setBotActionDelayMs] = useState(BOT_ACTION_DELAY_MS);
   const botSequenceRef = useRef(0);
 
@@ -143,6 +160,19 @@ export default function App() {
       return next.map((fallbackBot, index) => current[index] ?? fallbackBot);
     });
   }, [numPlayers]);
+
+  useEffect(() => {
+    if (
+      !revealedTrick ||
+      !state ||
+      state.phase !== "play" ||
+      state.round.current_trick.plays.length === 0
+    ) {
+      return;
+    }
+
+    setRevealedTrick(null);
+  }, [revealedTrick, state]);
 
   const currentPlayer = useMemo(() => {
     if (!state || state.phase === "auction") {
@@ -200,14 +230,16 @@ export default function App() {
 
   function cancelBotSequence() {
     botSequenceRef.current += 1;
+    setAwaitingNextTrick(false);
     setBotThinkingName(null);
+    setRevealedTrick(null);
     setIsLoading(false);
   }
 
   async function advanceBotsForPlayMode(
     initialState: GameState,
     sequenceId: number,
-  ) {
+  ): Promise<boolean> {
     let currentState = initialState;
 
     while (sequenceId === botSequenceRef.current && isBotTurn(currentState)) {
@@ -220,10 +252,22 @@ export default function App() {
       await delay(botActionDelayMs);
 
       if (sequenceId !== botSequenceRef.current) {
-        return;
+        return false;
       }
 
       const nextState = await syncStateSnapshot(await stepBotTurn());
+      const completedTrick =
+        nextState.round.trick_history.length > currentState.round.trick_history.length
+          ? nextState.round.trick_history[nextState.round.trick_history.length - 1]
+          : null;
+
+      if (completedTrick && shouldWaitForNextTrick(currentState, nextState)) {
+        setRevealedTrick(completedTrick);
+        setAwaitingNextTrick(true);
+        setBotThinkingName(null);
+        return true;
+      }
+
       const shouldPause =
         shouldPauseAfterBotStep(currentState, nextState) ||
         !isBotTurn(nextState);
@@ -231,23 +275,32 @@ export default function App() {
       currentState = nextState;
 
       if (shouldPause) {
+        if (completedTrick) {
+          setRevealedTrick(completedTrick);
+        }
         setBotThinkingName(null);
         await delay(botActionDelayMs);
 
         if (sequenceId !== botSequenceRef.current) {
-          return;
+          return false;
         }
+
+        setRevealedTrick(null);
       }
     }
 
     if (sequenceId === botSequenceRef.current) {
       setBotThinkingName(null);
+      setRevealedTrick(null);
     }
+
+    return false;
   }
 
   async function runWithErrorHandling(task: () => Promise<void>) {
     setIsLoading(true);
     setError(null);
+    setAwaitingNextTrick(false);
     try {
       await task();
     } catch (taskError) {
@@ -260,14 +313,31 @@ export default function App() {
   }
 
   async function runPlayModeTask(task: () => Promise<GameState>) {
+    const previousState = state;
     const sequenceId = botSequenceRef.current + 1;
+    let preserveRevealedTrick = false;
     botSequenceRef.current = sequenceId;
     setIsLoading(true);
     setError(null);
+    setAwaitingNextTrick(false);
 
     try {
       const nextState = await syncStateSnapshot(await task());
-      await advanceBotsForPlayMode(nextState, sequenceId);
+      const completedTrick =
+        previousState &&
+        nextState.round.trick_history.length > previousState.round.trick_history.length
+          ? nextState.round.trick_history[nextState.round.trick_history.length - 1]
+          : null;
+
+      if (completedTrick && shouldWaitForNextTrick(previousState, nextState)) {
+        setRevealedTrick(completedTrick);
+        setBotThinkingName(null);
+        setAwaitingNextTrick(true);
+        preserveRevealedTrick = true;
+        return;
+      }
+
+      preserveRevealedTrick = await advanceBotsForPlayMode(nextState, sequenceId);
     } catch (taskError) {
       setError(
         taskError instanceof Error ? taskError.message : "Unknown error",
@@ -275,6 +345,9 @@ export default function App() {
     } finally {
       if (botSequenceRef.current === sequenceId) {
         setBotThinkingName(null);
+        if (!preserveRevealedTrick) {
+          setRevealedTrick(null);
+        }
         setIsLoading(false);
       }
     }
@@ -315,12 +388,22 @@ export default function App() {
   }, [mode]);
 
   useEffect(() => {
-    if (mode !== "play" || !state || isLoading || !isBotTurn(state)) {
+    if (
+      mode !== "play" ||
+      !state ||
+      isLoading ||
+      awaitingNextTrick ||
+      !isBotTurn(state)
+    ) {
       return;
     }
 
     void runPlayModeTask(async () => state);
-  }, [botActionDelayMs, isLoading, mode, state]);
+  }, [awaitingNextTrick, botActionDelayMs, isLoading, mode, state]);
+
+  function handleAdvanceToNextTrick() {
+    setAwaitingNextTrick(false);
+  }
 
   function normalizePlayerNames(): string[] {
     return playerNames.map((name, index) => {
@@ -522,6 +605,8 @@ export default function App() {
           error={error}
           isBusy={isLoading}
           botThinkingName={botThinkingName}
+          revealedTrick={revealedTrick}
+          awaitingNextTrick={awaitingNextTrick}
           botActionDelayMs={botActionDelayMs}
           currentTurnName={currentTurnName}
           turnPlayer={turnPlayer}
@@ -533,6 +618,7 @@ export default function App() {
           onPlayerBotChange={handlePlayerBotChange}
           onTeamsInputChange={setTeamsInput}
           onBotActionDelayChange={setBotActionDelayMs}
+          onAdvanceToNextTrick={handleAdvanceToNextTrick}
           onNewGame={() => {
             void handleNewGamePlay();
           }}

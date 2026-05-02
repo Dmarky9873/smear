@@ -95,10 +95,47 @@ def _resolve_model_specs(
     if len(provided_models) > MAX_PLAYERS:
         raise ValueError(f"no more than {MAX_PLAYERS} models may be provided")
 
-    resolved_models = [_resolve_model_spec(model) for model in provided_models]
-    while len(resolved_models) < MIN_PLAYERS:
-        resolved_models.append(_resolve_model_spec("random"))
-    return resolved_models
+    return [_resolve_model_spec(model) for model in provided_models]
+
+
+def _build_simulation_roster(
+    base_model_specs: list[ResolvedModelSpec],
+    team_size: int,
+) -> tuple[list[str], list[ResolvedModelSpec], list[tuple[str, ...]]]:
+    if team_size <= 0:
+        raise ValueError("team_size must be positive")
+
+    requested_players = len(base_model_specs) * team_size
+    if requested_players > MAX_PLAYERS:
+        raise ValueError(
+            f"team_size {team_size} with {len(base_model_specs)} models exceeds "
+            f"the {MAX_PLAYERS}-player limit"
+        )
+
+    player_names: list[str] = []
+    seat_model_specs: list[ResolvedModelSpec] = []
+    teams: list[tuple[str, ...]] = []
+    next_player_number = 1
+
+    for model_spec in base_model_specs:
+        team_members: list[str] = []
+        for _ in range(team_size):
+            player_name = f"Player {next_player_number}"
+            next_player_number += 1
+            player_names.append(player_name)
+            seat_model_specs.append(model_spec)
+            team_members.append(player_name)
+        teams.append(tuple(team_members))
+
+    filler_model = _resolve_model_spec("random")
+    while len(seat_model_specs) < MIN_PLAYERS:
+        player_name = f"Player {next_player_number}"
+        next_player_number += 1
+        player_names.append(player_name)
+        seat_model_specs.append(filler_model)
+        teams.append((player_name,))
+
+    return player_names, seat_model_specs, teams
 
 
 def _render_progress_bar(completed: int, total: int, width: int = 30) -> None:
@@ -135,13 +172,14 @@ def benchmark_models(
     model7: PlayerModelArg | None = None,
     model8: PlayerModelArg | None = None,
     show_progress: bool = True,
+    team_size: int = 1,
 ) -> dict:
     if n <= 0:
         raise ValueError("n must be positive")
     if alpha <= 0:
         raise ValueError("alpha must be positive")
 
-    model_specs = _resolve_model_specs(
+    base_model_specs = _resolve_model_specs(
         model1,
         model2,
         model3,
@@ -151,8 +189,11 @@ def benchmark_models(
         model7,
         model8,
     )
-    player_names = [f"Player {index + 1}" for index in range(len(model_specs))]
-    teams = [(player_name,) for player_name in player_names]
+    player_names, model_specs, teams = _build_simulation_roster(
+        base_model_specs,
+        team_size,
+    )
+    team_members_by_name = {" / ".join(team): team for team in teams}
     model_key_by_player = {
         player_name: model_spec.key
         for player_name, model_spec in zip(player_names, model_specs)
@@ -197,10 +238,21 @@ def benchmark_models(
         if match_result.is_draw:
             draws += 1
         else:
+            try:
+                winning_player_names = {
+                    player_name
+                    for team_name in match_result.winner_names
+                    for player_name in team_members_by_name[team_name]
+                }
+            except KeyError as exc:
+                raise ValueError(
+                    f"simulation returned an unknown winning team: {exc.args[0]}"
+                ) from exc
+
             winning_model_keys = sorted(
                 {
                     model_key_by_player[player_name]
-                    for player_name in match_result.winner_names
+                    for player_name in winning_player_names
                 }
             )
             win_share = 1.0 / len(winning_model_keys)
@@ -216,6 +268,7 @@ def benchmark_models(
     return {
         "games_played": n,
         "alpha": alpha,
+        "team_size": team_size,
         "players_per_game": len(model_specs),
         "seat_models": [
             {
@@ -224,6 +277,18 @@ def benchmark_models(
                 "model_label": model_spec.label,
             }
             for player_name, model_spec in zip(player_names, model_specs)
+        ],
+        "teams": [
+            {
+                "team_name": " / ".join(team),
+                "player_names": list(team),
+                "model_keys": [model_key_by_player[player_name] for player_name in team],
+                "model_labels": [
+                    model_label_by_key[model_key_by_player[player_name]]
+                    for player_name in team
+                ],
+            }
+            for team in teams
         ],
         "draws": draws,
         "draw_percentage": (draws / n) * 100,
@@ -241,6 +306,15 @@ def main() -> None:
         "alpha",
         type=int,
         help="maximum number of rounds before a draw is declared",
+    )
+    parser.add_argument(
+        "--team-size",
+        type=int,
+        default=1,
+        help=(
+            "number of same-model seats to create per supplied model; "
+            "for example, --team-size 2 with two models simulates a 2v2 match"
+        ),
     )
     parser.add_argument("model1", help="first ready bot id")
     parser.add_argument("model2", help="second ready bot id")
@@ -260,6 +334,7 @@ def main() -> None:
         args.model1,
         args.model2,
         *args.models,
+        team_size=args.team_size,
     )
     print(json.dumps(result, indent=2))
 

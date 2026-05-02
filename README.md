@@ -157,6 +157,22 @@ Useful endpoints:
 - `POST /game/play`
 - `GET /game/score`
 
+### Simulator
+
+You can also run repeated all-bot matches from the command line:
+
+```bash
+python -m backend.simulator 1000 50 greedy random
+```
+
+To simulate same-model teams, set `--team-size`. For example, this runs a 2v2 match with two greedy bots on one team and two random bots on the other:
+
+```bash
+python -m backend.simulator --team-size 2 1000 50 greedy random
+```
+
+The simulator still caps games at 8 total seats, so `--team-size 2` allows up to four supplied models.
+
 ### Frontend
 
 In a second terminal, you can either install and run the frontend from the repo root:

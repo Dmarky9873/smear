@@ -163,12 +163,10 @@ class MinimaxOneTrickPlayer(BotPlayer):
         )
 
     def choose_card(self, round_state: RoundState) -> Card:
-        """Choose the legal card with the best minimax value for the current trick.
-        """
         team_member_names = self._team_member_names(round_state)
         starting_trick_count = len(round_state.trick_history)
 
-        def _choose_card_helper(r: RoundState) -> int:
+        def _choose_card_helper(r: RoundState, alpha: float, beta: float) -> int:
             if len(r.trick_history) > starting_trick_count:
                 return self._evaluate_state(
                     r,
@@ -176,34 +174,46 @@ class MinimaxOneTrickPlayer(BotPlayer):
                     team_member_names,
                 )
 
-            scores = []
+            maximizing = r.current_player.name in team_member_names
+
+            if maximizing:
+                value = float("-inf")
+                for card in get_legal_actions(r):
+                    play = Play(r.current_player, card)
+                    child = self._apply_action(r, play)
+                    value = max(value, _choose_card_helper(child, alpha, beta))
+                    alpha = max(alpha, value)
+                    if beta <= alpha:
+                        break
+                return value
+
+            value = float("inf")
             for card in get_legal_actions(r):
                 play = Play(r.current_player, card)
-                scores.append(_choose_card_helper(self._apply_action(r, play)))
+                child = self._apply_action(r, play)
+                value = min(value, _choose_card_helper(child, alpha, beta))
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return value
 
-            if r.current_player.name in team_member_names:
-                return max(scores)
-            return min(scores)
+        best_card = None
+        best_score = float("-inf")
+        alpha = float("-inf")
+        beta = float("inf")
 
-        legal_moves = get_legal_actions(round_state)
-        move_val_dict: dict[Play, int] = {}
-
-        for card in legal_moves:
+        for card in get_legal_actions(round_state):
             play = Play(round_state.current_player, card)
-            move_val_dict[play] = _choose_card_helper(
-                self._apply_action(round_state, play)
-            )
+            child = self._apply_action(round_state, play)
+            score = _choose_card_helper(child, alpha, beta)
 
-        max_card, max_score = None, float("-inf")
-        for move, score in move_val_dict.items():
-            if score > max_score or (
-                score == max_score and (
-                    max_card is None or move.card.code > max_card.code)
-            ):
-                max_score = score
-                max_card = move.card
+            if score > best_score:
+                best_score = score
+                best_card = card
 
-        return max_card
+            alpha = max(alpha, best_score)
+
+        return best_card
 
     def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
         """Bid only when the next required bid fits the hand's best trump estimate."""

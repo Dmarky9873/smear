@@ -24,6 +24,8 @@ type PlayModeViewProps = {
   error: string | null;
   isBusy: boolean;
   botThinkingName: string | null;
+  revealedTrick: TrickState | null;
+  awaitingNextTrick: boolean;
   botActionDelayMs: number;
   currentTurnName: string;
   turnPlayer: Player | null;
@@ -35,6 +37,7 @@ type PlayModeViewProps = {
   onPlayerBotChange: (index: number, value: string | null) => void;
   onTeamsInputChange: (value: string) => void;
   onBotActionDelayChange: (value: number) => void;
+  onAdvanceToNextTrick: () => void;
   onNewGame: () => void;
   onNextRound: () => void;
   onPlay: (cardCode: string) => Promise<void>;
@@ -97,6 +100,8 @@ export function PlayModeView({
   error,
   isBusy,
   botThinkingName,
+  revealedTrick,
+  awaitingNextTrick,
   botActionDelayMs,
   currentTurnName,
   turnPlayer,
@@ -108,6 +113,7 @@ export function PlayModeView({
   onPlayerBotChange,
   onTeamsInputChange,
   onBotActionDelayChange,
+  onAdvanceToNextTrick,
   onNewGame,
   onNextRound,
   onPlay,
@@ -119,6 +125,11 @@ export function PlayModeView({
   const legalCardCodes = new Set(playActions.map((action) => action.card_code));
   const isHumanTurn = Boolean(turnPlayer && !turnPlayer.bot_id);
   const completedTricks = state ? getCompletedTricks(state) : [];
+  const visibleTrick = state
+    ? state.round.current_trick.plays.length > 0
+      ? state.round.current_trick
+      : revealedTrick ?? state.round.current_trick
+    : null;
   const canShowCurrentHand =
     Boolean(state) &&
     Boolean(turnPlayer) &&
@@ -242,7 +253,11 @@ export function PlayModeView({
             </div>
             <div className="play-score-pill">
               <span>Status</span>
-              <strong>{botThinkingName ?? getRoundBanner(state, currentTurnName)}</strong>
+              <strong>
+                {awaitingNextTrick
+                  ? "Next trick"
+                  : botThinkingName ?? getRoundBanner(state, currentTurnName)}
+              </strong>
             </div>
             {state.match.scores.map((entry) => (
               <div key={entry.name} className="play-score-pill">
@@ -255,7 +270,15 @@ export function PlayModeView({
           <section className="play-hand-card play-hand-card--sticky">
             <div className="play-section-heading">
               <h2>Hand</h2>
-              {state.round.is_terminal && !state.match.is_complete ? (
+              {awaitingNextTrick ? (
+                <button
+                  type="button"
+                  onClick={onAdvanceToNextTrick}
+                  disabled={isBusy}
+                >
+                  Move to next trick
+                </button>
+              ) : state.round.is_terminal && !state.match.is_complete ? (
                 <button type="button" onClick={onNextRound} disabled={isBusy}>
                   Next round
                 </button>
@@ -271,7 +294,9 @@ export function PlayModeView({
                     isTrump={!card.is_joker && state.round.trump === card.suit}
                     disabled={
                       state.phase === "play"
-                        ? isBusy || !legalCardCodes.has(card.code)
+                        ? awaitingNextTrick ||
+                          isBusy ||
+                          !legalCardCodes.has(card.code)
                         : true
                     }
                     onClick={
@@ -423,12 +448,12 @@ export function PlayModeView({
                   <>
                     <div className="play-centerboard__header">
                       <h3>Table</h3>
-                      <strong>{state.round.current_trick.leader_name}</strong>
+                      <strong>{visibleTrick?.leader_name ?? "-"}</strong>
                     </div>
 
                     <div className="play-trick-grid">
-                      {state.round.current_trick.plays.length > 0 ? (
-                        state.round.current_trick.plays.map((play, index) => (
+                      {visibleTrick && visibleTrick.plays.length > 0 ? (
+                        visibleTrick.plays.map((play, index) => (
                           <div
                             key={`${play.player_name}-${play.card.code}-${index}`}
                             className="play-trick-card"

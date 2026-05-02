@@ -14,14 +14,17 @@ class NewGameRequest(BaseModel):
     player_names: list[str]
     teams: list[list[str]] | None = None
     player_bots: list[str | None] | None = None
+    auto_run_bots: bool = True
 
 
 class BidRequest(BaseModel):
     amount: int = Field(ge=1, le=6)
+    auto_run_bots: bool = True
 
 
 class PlayCardRequest(BaseModel):
     card_code: str
+    auto_run_bots: bool = True
 
 
 class CardResponse(BaseModel):

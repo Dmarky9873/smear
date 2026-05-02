@@ -65,6 +65,7 @@ def new_game(payload: NewGameRequest) -> dict:
             player_names=payload.player_names,
             teams=payload.teams,
             player_bots=payload.player_bots,
+            auto_run_bots=payload.auto_run_bots,
         )
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
@@ -75,7 +76,10 @@ def new_game(payload: NewGameRequest) -> dict:
 @router.post("/game/auction/bid", response_model=GameStateResponse)
 def place_bid(payload: BidRequest) -> dict:
     try:
-        session = game_store.place_bid(payload.amount)
+        session = game_store.place_bid(
+            payload.amount,
+            auto_run_bots=payload.auto_run_bots,
+        )
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
@@ -85,9 +89,9 @@ def place_bid(payload: BidRequest) -> dict:
 
 
 @router.post("/game/auction/pass", response_model=GameStateResponse)
-def pass_auction() -> dict:
+def pass_auction(auto_run_bots: bool = True) -> dict:
     try:
-        session = game_store.pass_auction()
+        session = game_store.pass_auction(auto_run_bots=auto_run_bots)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
@@ -97,9 +101,9 @@ def pass_auction() -> dict:
 
 
 @router.post("/game/reset", response_model=GameStateResponse)
-def reset_game() -> dict:
+def reset_game(auto_run_bots: bool = True) -> dict:
     try:
-        game = game_store.reset_round()
+        game = game_store.reset_round(auto_run_bots=auto_run_bots)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
@@ -107,9 +111,9 @@ def reset_game() -> dict:
 
 
 @router.post("/game/next-round", response_model=GameStateResponse)
-def next_round() -> dict:
+def next_round(auto_run_bots: bool = True) -> dict:
     try:
-        session = game_store.next_round()
+        session = game_store.next_round(auto_run_bots=auto_run_bots)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
@@ -141,13 +145,28 @@ def get_game_legal_actions() -> dict:
 @router.post("/game/play", response_model=GameStateResponse)
 def play_card(payload: PlayCardRequest) -> dict:
     try:
-        game = game_store.play_card(payload.card_code)
+        game = game_store.play_card(
+            payload.card_code,
+            auto_run_bots=payload.auto_run_bots,
+        )
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
     return serialize_game(game)
+
+
+@router.post("/game/bots/step", response_model=GameStateResponse)
+def step_bot_turn() -> dict:
+    try:
+        session = game_store.advance_bot_turn()
+    except GameNotInitializedError as exc:
+        raise _not_found(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    return serialize_game(session)
 
 
 @router.get("/game/score", response_model=RoundScoreResponse)

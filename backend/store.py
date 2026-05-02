@@ -28,21 +28,22 @@ class GameStore:
         player_names: list[str],
         teams: list[list[str]] | None,
         player_bots: list[str | None] | None = None,
+        auto_run_bots: bool = True,
     ) -> GameSession:
         self._controller = MatchController.create(
             num_players=num_players,
             player_names=player_names,
             teams=teams,
             player_bot_ids=player_bots,
-            auto_run_bots=True,
+            auto_run_bots=auto_run_bots,
         )
         return self._controller.session
 
-    def reset_round(self) -> GameSession:
-        return self.require_controller().reset_round(auto_run_bots=True)
+    def reset_round(self, auto_run_bots: bool = True) -> GameSession:
+        return self.require_controller().reset_round(auto_run_bots=auto_run_bots)
 
-    def next_round(self) -> GameSession:
-        return self.require_controller().next_round(auto_run_bots=True)
+    def next_round(self, auto_run_bots: bool = True) -> GameSession:
+        return self.require_controller().next_round(auto_run_bots=auto_run_bots)
 
     def get_state(self) -> GameSession:
         return self.require_controller().get_state()
@@ -50,14 +51,23 @@ class GameStore:
     def get_legal_actions(self) -> list[dict]:
         return self.require_controller().get_legal_actions()
 
-    def place_bid(self, amount: int) -> GameSession:
-        return self.require_controller().place_bid(amount, auto_run_bots=True)
+    def place_bid(self, amount: int, auto_run_bots: bool = True) -> GameSession:
+        return self.require_controller().place_bid(
+            amount,
+            auto_run_bots=auto_run_bots,
+        )
 
-    def pass_auction(self) -> GameSession:
-        return self.require_controller().pass_auction(auto_run_bots=True)
+    def pass_auction(self, auto_run_bots: bool = True) -> GameSession:
+        return self.require_controller().pass_auction(auto_run_bots=auto_run_bots)
 
-    def play_card(self, card_code: str) -> GameSession:
-        return self.require_controller().play_card(card_code, auto_run_bots=True)
+    def play_card(self, card_code: str, auto_run_bots: bool = True) -> GameSession:
+        return self.require_controller().play_card(
+            card_code,
+            auto_run_bots=auto_run_bots,
+        )
+
+    def advance_bot_turn(self) -> GameSession:
+        return self.require_controller().advance_bot_turn()
 
     def get_score(self) -> dict:
         return self.require_controller().get_score()

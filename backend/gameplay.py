@@ -335,6 +335,28 @@ class MatchController:
 
         raise ValueError("bot turn loop exceeded the step limit")
 
+    def advance_bot_turn(self) -> GameSession:
+        if self.session.phase in {"round_complete", "match_complete"}:
+            raise ValueError("the round is already complete")
+
+        player_name = self._current_bot_name()
+        if player_name is None:
+            raise ValueError("no active turn is available")
+        if player_name not in self.session.bots:
+            raise ValueError(
+                f"the current turn belongs to human-controlled player '{player_name}'"
+            )
+
+        if self.session.phase == "auction":
+            self._run_bot_auction_turn(player_name)
+            return self.session
+
+        if self.session.phase == "play":
+            self._run_bot_play_turn(player_name)
+            return self.session
+
+        raise ValueError("there is no bot turn to advance")
+
     def _finalize_auction(self) -> None:
         auction_state = self.session.auction.state
         if auction_state.highest_bidder_name is None:

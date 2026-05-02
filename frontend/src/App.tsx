@@ -29,6 +29,7 @@ import type {
 } from "./types";
 
 type AppMode = "play" | "debug";
+type ThemeMode = "light" | "dark";
 
 const BOT_ACTION_DELAY_MS = 700;
 
@@ -129,6 +130,15 @@ function delay(ms: number): Promise<void> {
 
 export default function App() {
   const [mode, setMode] = useState<AppMode>("play");
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    if (typeof window === "undefined") {
+      return "light";
+    }
+
+    return window.localStorage.getItem("smear-theme") === "dark"
+      ? "dark"
+      : "light";
+  });
   const [numPlayers, setNumPlayers] = useState(4);
   const [playerNames, setPlayerNames] = useState<string[]>(() =>
     buildDefaultPlayerNames(4),
@@ -149,6 +159,11 @@ export default function App() {
   const [awaitingNextTrick, setAwaitingNextTrick] = useState(false);
   const [botActionDelayMs, setBotActionDelayMs] = useState(BOT_ACTION_DELAY_MS);
   const botSequenceRef = useRef(0);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("smear-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     setPlayerNames((current) => {
@@ -581,21 +596,33 @@ export default function App() {
           <strong>Frontend mode</strong>
           <span>Play is table-first. Debug keeps the full state inspector.</span>
         </div>
-        <div className="mode-switcher__controls">
+        <div className="mode-switcher__actions">
           <button
             type="button"
-            className={mode === "play" ? "mode-switcher__button is-active" : "mode-switcher__button"}
-            onClick={() => setMode("play")}
+            className="mode-switcher__theme-toggle"
+            aria-pressed={theme === "dark"}
+            onClick={() =>
+              setTheme((current) => (current === "dark" ? "light" : "dark"))
+            }
           >
-            Play
+            {theme === "dark" ? "Light mode" : "Dark mode"}
           </button>
-          <button
-            type="button"
-            className={mode === "debug" ? "mode-switcher__button is-active" : "mode-switcher__button"}
-            onClick={() => setMode("debug")}
-          >
-            Debug
-          </button>
+          <div className="mode-switcher__controls">
+            <button
+              type="button"
+              className={mode === "play" ? "mode-switcher__button is-active" : "mode-switcher__button"}
+              onClick={() => setMode("play")}
+            >
+              Play
+            </button>
+            <button
+              type="button"
+              className={mode === "debug" ? "mode-switcher__button is-active" : "mode-switcher__button"}
+              onClick={() => setMode("debug")}
+            >
+              Debug
+            </button>
+          </div>
         </div>
       </header>
 

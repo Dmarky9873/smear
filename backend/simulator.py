@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -251,6 +252,96 @@ class Simulator:
         return self._controller.run_match(alpha)
 
 
+def _build_team_model_specs(
+    player_names: list[str],
+    model_specs: list[ResolvedModelSpec],
+    teams: list[tuple[str, ...]],
+) -> list[ResolvedModelSpec]:
+    spec_by_player = {
+        player_name: model_spec
+        for player_name, model_spec in zip(player_names, model_specs)
+    }
+    team_model_specs: list[ResolvedModelSpec] = []
+
+    for team in teams:
+        first_spec = spec_by_player[team[0]]
+        if any(spec_by_player[player_name].key != first_spec.key for player_name in team):
+            raise ValueError("each simulated team must use a single model in fair mode")
+        team_model_specs.append(first_spec)
+
+    return team_model_specs
+
+
+def _build_fair_team_assignments(
+    team_model_specs: list[ResolvedModelSpec],
+) -> list[tuple[ResolvedModelSpec, ...]]:
+    if not team_model_specs:
+        return []
+
+    assignments: list[tuple[ResolvedModelSpec, ...]] = []
+    seen_assignment_keys: set[tuple[str, ...]] = set()
+    candidate_orders = [team_model_specs, list(reversed(team_model_specs))]
+
+    for candidate_order in candidate_orders:
+        for rotation in range(len(candidate_order)):
+            rotated_specs = tuple(
+                candidate_order[rotation:] + candidate_order[:rotation]
+            )
+            assignment_key = tuple(spec.key for spec in rotated_specs)
+            if assignment_key in seen_assignment_keys:
+                continue
+            seen_assignment_keys.add(assignment_key)
+            assignments.append(rotated_specs)
+
+    return assignments
+
+
+def _build_assignment_summary(
+    player_names: list[str],
+    teams: list[tuple[str, ...]],
+    team_assignment: tuple[ResolvedModelSpec, ...],
+) -> tuple[dict[str, str], list[dict], list[dict]]:
+    if len(teams) != len(team_assignment):
+        raise ValueError("team assignment count must match simulated teams")
+
+    model_key_by_player: dict[str, str] = {}
+    model_label_by_player: dict[str, str] = {}
+    for team, model_spec in zip(teams, team_assignment):
+        for player_name in team:
+            model_key_by_player[player_name] = model_spec.key
+            model_label_by_player[player_name] = model_spec.label
+
+    seat_models = [
+        {
+            "player_name": player_name,
+            "model_key": model_key_by_player[player_name],
+            "model_label": model_label_by_player[player_name],
+        }
+        for player_name in player_names
+    ]
+    team_summaries = [
+        {
+            "team_name": " / ".join(team),
+            "player_names": list(team),
+            "model_keys": [model_key_by_player[player_name] for player_name in team],
+            "model_labels": [model_label_by_player[player_name] for player_name in team],
+        }
+        for team in teams
+    ]
+    return model_key_by_player, seat_models, team_summaries
+
+
+def _instantiate_assignment_bots(
+    teams: list[tuple[str, ...]],
+    team_assignment: tuple[ResolvedModelSpec, ...],
+) -> dict[str, BotPlayer]:
+    controllers: dict[str, BotPlayer] = {}
+    for team, model_spec in zip(teams, team_assignment):
+        for player_name in team:
+            controllers[player_name] = model_spec.factory(player_name)
+    return controllers
+
+
 def benchmark_models(
     n: int,
     alpha: int,
@@ -265,6 +356,8 @@ def benchmark_models(
     show_progress: bool = True,
     team_size: int = 1,
     depth: int | None = None,
+    fair: bool = False,
+    seed: int | None = None,
 ) -> dict:
     if n <= 0:
         raise ValueError("n must be positive")
@@ -289,10 +382,6 @@ def benchmark_models(
         team_size,
     )
     team_members_by_name = {" / ".join(team): team for team in teams}
-    model_key_by_player = {
-        player_name: model_spec.key
-        for player_name, model_spec in zip(player_names, model_specs)
-    }
     model_label_by_key = {model_spec.key: model_spec.label for model_spec in model_specs}
     seat_counts: dict[str, int] = {}
     for model_spec in model_specs:
@@ -310,6 +399,40 @@ def benchmark_models(
 
     draws = 0
     total_rounds = 0
+    team_model_specs = _build_team_model_specs(player_names, model_specs, teams)
+
+    if fair:
+        fair_assignments = _build_fair_team_assignments(team_model_specs)
+        effective_seed = 0 if seed is None else seed
+    else:
+        fair_assignments = [tuple(team_model_specs)]
+        effective_seed = seed
+
+    assignment_game_counts = [0 for _ in fair_assignments]
+    for simulation_index in range(n):
+        assignment_game_counts[simulation_index % len(fair_assignments)] += 1
+
+    assignment_summaries = []
+    for assignment_index, team_assignment in enumerate(fair_assignments, start=1):
+        _, assignment_seat_models, assignment_teams = _build_assignment_summary(
+            player_names,
+            teams,
+            team_assignment,
+        )
+        assignment_summaries.append(
+            {
+                "assignment_index": assignment_index,
+                "games_scheduled": assignment_game_counts[assignment_index - 1],
+                "seat_models": assignment_seat_models,
+                "teams": assignment_teams,
+            }
+        )
+
+    _, canonical_seat_models, canonical_teams = _build_assignment_summary(
+        player_names,
+        teams,
+        fair_assignments[0],
+    )
 
     if show_progress:
         _render_progress_bar(0, n)
@@ -317,10 +440,21 @@ def benchmark_models(
     started_at = time.perf_counter()
 
     for simulation_index in range(n):
-        controllers = {
-            player_name: model_spec.factory(player_name)
-            for player_name, model_spec in zip(player_names, model_specs)
-        }
+        assignment_index = simulation_index % len(fair_assignments)
+        team_assignment = fair_assignments[assignment_index]
+        if effective_seed is not None:
+            if fair:
+                game_seed = effective_seed + (simulation_index // len(fair_assignments))
+            else:
+                game_seed = effective_seed + simulation_index
+            random.seed(game_seed)
+
+        controllers = _instantiate_assignment_bots(teams, team_assignment)
+        current_model_key_by_player, _, _ = _build_assignment_summary(
+            player_names,
+            teams,
+            team_assignment,
+        )
         controller = MatchController.create(
             num_players=len(model_specs),
             player_names=player_names,
@@ -348,7 +482,7 @@ def benchmark_models(
 
             winning_model_keys = sorted(
                 {
-                    model_key_by_player[player_name]
+                    current_model_key_by_player[player_name]
                     for player_name in winning_player_names
                 }
             )
@@ -373,6 +507,8 @@ def benchmark_models(
         "alpha": alpha,
         "team_size": team_size,
         "minimax_depth": depth,
+        "comparison_mode": "fair" if fair else "standard",
+        "seed": effective_seed,
         "players_per_game": len(model_specs),
         "elapsed_seconds": elapsed_seconds,
         "average_seconds_per_game": elapsed_seconds / n,
@@ -381,31 +517,59 @@ def benchmark_models(
         ),
         "games_per_second": games_per_second,
         "rounds_per_second": rounds_per_second,
-        "seat_models": [
+        "seat_models": canonical_seat_models,
+        "teams": canonical_teams,
+        "fair_schedule": (
             {
-                "player_name": player_name,
-                "model_key": model_spec.key,
-                "model_label": model_spec.label,
+                "strategy": "rotations_and_reversals",
+                "assignment_count": len(fair_assignments),
+                "fully_balanced": n % len(fair_assignments) == 0,
+                "assignments": assignment_summaries,
             }
-            for player_name, model_spec in zip(player_names, model_specs)
-        ],
-        "teams": [
-            {
-                "team_name": " / ".join(team),
-                "player_names": list(team),
-                "model_keys": [model_key_by_player[player_name] for player_name in team],
-                "model_labels": [
-                    model_label_by_key[model_key_by_player[player_name]]
-                    for player_name in team
-                ],
-            }
-            for team in teams
-        ],
+            if fair
+            else None
+        ),
         "draws": draws,
         "draw_percentage": (draws / n) * 100,
         "average_rounds_played": total_rounds / n,
         "models": model_results,
     }
+
+
+def compare_models_objectively(
+    n: int,
+    alpha: int,
+    model1: PlayerModelArg,
+    model2: PlayerModelArg,
+    model3: PlayerModelArg | None = None,
+    model4: PlayerModelArg | None = None,
+    model5: PlayerModelArg | None = None,
+    model6: PlayerModelArg | None = None,
+    model7: PlayerModelArg | None = None,
+    model8: PlayerModelArg | None = None,
+    *,
+    show_progress: bool = True,
+    team_size: int = 1,
+    depth: int | None = None,
+    seed: int | None = 0,
+) -> dict:
+    return benchmark_models(
+        n,
+        alpha,
+        model1,
+        model2,
+        model3,
+        model4,
+        model5,
+        model6,
+        model7,
+        model8,
+        show_progress=show_progress,
+        team_size=team_size,
+        depth=depth,
+        fair=True,
+        seed=seed,
+    )
 
 
 def main() -> None:
@@ -436,6 +600,23 @@ def main() -> None:
             "for example, --depth 3 with one-trick-minmax uses the 3-trick variant"
         ),
     )
+    parser.add_argument(
+        "--fair",
+        action="store_true",
+        help=(
+            "reduce seat-order variance by rotating and reversing seat assignments; "
+            "when combined with --seed, each seat assignment in a batch shares the same deal seed"
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "optional RNG seed for reproducible simulations; "
+            "in --fair mode, identical batch seeds are paired across seat assignments"
+        ),
+    )
     parser.add_argument("model1", help="first ready bot id")
     parser.add_argument("model2", help="second ready bot id")
     parser.add_argument(
@@ -456,6 +637,8 @@ def main() -> None:
         *args.models,
         team_size=args.team_size,
         depth=args.depth,
+        fair=args.fair,
+        seed=args.seed,
     )
     print(json.dumps(result, indent=2))
 

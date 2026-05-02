@@ -183,6 +183,18 @@ The simulator reports the applied override as `minimax_depth` in its JSON output
 
 Simulator output now includes wall-clock timing metrics such as `elapsed_seconds`, `average_seconds_per_game`, `average_seconds_per_round`, `games_per_second`, and `rounds_per_second` so you can compare algorithm changes directly.
 
+To reduce variance from fixed seat order, set `--fair`. This rotates and reverses seat assignments across the supplied models, and reports the tested schedule in `fair_schedule`:
+
+```bash
+python -m backend.simulator --fair 60 50 o-3-trick-minmax greedy
+```
+
+For reproducible fair comparisons, add `--seed`. In fair mode, each batch of rotated seat assignments shares the same RNG seed so the models are compared on matched deals:
+
+```bash
+python -m backend.simulator --fair --seed 0 60 50 o-3-trick-minmax greedy
+```
+
 ### Frontend
 
 In a second terminal, you can either install and run the frontend from the repo root:

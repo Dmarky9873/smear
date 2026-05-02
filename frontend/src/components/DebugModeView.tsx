@@ -510,6 +510,26 @@ export function DebugModeView({
                     </div>
                   ))}
                 </div>
+
+                <div className="list-block">
+                  <strong>Sleeping cards</strong>
+                  {state.round.hidden_cards.length > 0 ? (
+                    <div className="card-row">
+                      {state.round.hidden_cards.map((card, index) => (
+                        <PlayingCard
+                          key={`${card.code}-${index}`}
+                          card={card}
+                          compact
+                          isTrump={
+                            !card.is_joker && state.round.trump === card.suit
+                          }
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="muted">No sleeping cards.</span>
+                  )}
+                </div>
               </>
             ) : (
               <p className="muted">No score available.</p>

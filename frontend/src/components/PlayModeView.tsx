@@ -604,6 +604,29 @@ export function PlayModeView({
                   </strong>
                 </div>
               </div>
+
+              <div className="play-summary-section">
+                <div className="play-summary-section__header">
+                  <h3>Sleeping</h3>
+                  <strong>{state.round.hidden_cards.length}</strong>
+                </div>
+                {state.round.hidden_cards.length > 0 ? (
+                  <div className="play-summary-cards">
+                    {state.round.hidden_cards.map((card, index) => (
+                      <PlayingCard
+                        key={`${card.code}-${index}`}
+                        card={card}
+                        compact
+                        isTrump={
+                          !card.is_joker && state.round.trump === card.suit
+                        }
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="play-hand-empty">No sleeping cards</div>
+                )}
+              </div>
             </section>
           ) : null}
         </>

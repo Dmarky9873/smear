@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import call
 from unittest.mock import patch
 
 from backend.bots.human_information_minimax_n_trick_bot import (
@@ -6,7 +7,7 @@ from backend.bots.human_information_minimax_n_trick_bot import (
 )
 from backend.bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
 from backend.gameplay import MatchResult
-from backend.simulator import benchmark_models
+from backend.simulator import benchmark_models, compare_models_objectively
 
 
 class SimulatorTeamSizeTests(unittest.TestCase):
@@ -161,6 +162,104 @@ class SimulatorTeamSizeTests(unittest.TestCase):
                 show_progress=False,
                 depth=0,
             )
+
+    @patch("backend.simulator.time.perf_counter", side_effect=[5.0, 6.0])
+    @patch("backend.simulator.random.seed")
+    @patch("backend.simulator.Simulator.run_match")
+    @patch("backend.simulator.MatchController.create")
+    def test_fair_mode_rotates_seat_assignments_with_paired_seed(
+        self,
+        create_mock,
+        run_match_mock,
+        seed_mock,
+        perf_counter_mock,
+    ):
+        created_bots = []
+
+        def fake_create(**kwargs):
+            created_bots.append(kwargs["bots"])
+            return object()
+
+        create_mock.side_effect = fake_create
+        run_match_mock.return_value = MatchResult(
+            rounds_played=2,
+            is_draw=True,
+            winner_names=[],
+            final_scores={
+                "Player 1": 5,
+                "Player 2": 5,
+                "Player 3": 5,
+            },
+        )
+
+        result = benchmark_models(
+            6,
+            10,
+            "greedy",
+            "stupid",
+            show_progress=False,
+            fair=True,
+            seed=123,
+        )
+
+        self.assertEqual(result["comparison_mode"], "fair")
+        self.assertEqual(result["seed"], 123)
+        self.assertEqual(result["fair_schedule"]["assignment_count"], 6)
+        self.assertTrue(result["fair_schedule"]["fully_balanced"])
+        self.assertEqual(
+            [assignment["games_scheduled"] for assignment in result["fair_schedule"]["assignments"]],
+            [1, 1, 1, 1, 1, 1],
+        )
+
+        signatures = {
+            tuple(type(bots[f"Player {index}"]).__name__ for index in range(1, 4))
+            for bots in created_bots
+        }
+        self.assertEqual(len(signatures), 6)
+        self.assertEqual(seed_mock.call_args_list, [call(123)] * 6)
+        self.assertEqual(perf_counter_mock.call_count, 2)
+
+    @patch("backend.simulator.time.perf_counter", side_effect=[2.0, 3.0])
+    @patch("backend.simulator.random.seed")
+    @patch("backend.simulator.Simulator.run_match")
+    @patch("backend.simulator.MatchController.create")
+    def test_fair_mode_defaults_seed_and_distributes_extra_games(
+        self,
+        create_mock,
+        run_match_mock,
+        seed_mock,
+        perf_counter_mock,
+    ):
+        create_mock.return_value = object()
+        run_match_mock.return_value = MatchResult(
+            rounds_played=1,
+            is_draw=True,
+            winner_names=[],
+            final_scores={
+                "Player 1": 0,
+                "Player 2": 0,
+                "Player 3": 0,
+            },
+        )
+
+        result = compare_models_objectively(
+            7,
+            10,
+            "greedy",
+            "stupid",
+            show_progress=False,
+        )
+
+        self.assertEqual(result["seed"], 0)
+        self.assertEqual(
+            [assignment["games_scheduled"] for assignment in result["fair_schedule"]["assignments"]],
+            [2, 1, 1, 1, 1, 1],
+        )
+        self.assertEqual(
+            seed_mock.call_args_list,
+            [call(0), call(0), call(0), call(0), call(0), call(0), call(1)],
+        )
+        self.assertEqual(perf_counter_mock.call_count, 2)
 
 
 if __name__ == "__main__":

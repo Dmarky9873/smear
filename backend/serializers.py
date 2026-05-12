@@ -146,6 +146,9 @@ def serialize_score_details(score_details: dict) -> dict:
         "trump": score_details["trump"],
         "high_card": serialize_card(score_details["high_card"]),
         "low_card": serialize_card(score_details["low_card"]),
+        "hidden_cards": [
+            serialize_card(card) for card in sort_cards(score_details["hidden_cards"])
+        ],
         "bid_summary": {
             "bidder_name": score_details["bid_summary"].get("bidder_name"),
             "unit_name": score_details["bid_summary"].get("unit_name"),

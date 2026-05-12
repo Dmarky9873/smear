@@ -429,6 +429,24 @@ button {
   color: var(--text-muted);
 }
 
+.debug-json__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.debug-json__header h2 {
+  margin: 0;
+}
+
+.debug-json__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .debug-json {
   margin: 0;
   max-height: 480px;

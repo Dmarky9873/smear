@@ -444,6 +444,76 @@ class MinimaxNTrickBotTests(unittest.TestCase):
             deck=deck,
         )
 
+    def _build_led_suit_void_state(self) -> RoundState:
+        player_a = Player("A", {Card("AS")})
+        player_b = Player("B", {Card("QC")})
+        player_c = Player("C", {Card("AH")})
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        completed_trick = TrickState(
+            player_c,
+            [
+                Play(player_c, Card("KH")),
+                Play(player_b, Card("JD")),
+                Play(player_a, Card("10H")),
+            ],
+            players,
+            "S",
+        )
+        deck = Deck("10")
+        hidden_cards = (
+            set(deck.get_copy())
+            - player_a.cards
+            - player_b.cards
+            - player_c.cards
+            - {play.card for play in completed_trick.plays}
+        )
+        return RoundState(
+            players=players,
+            current_player=player_a,
+            trump="S",
+            current_trick=TrickState(player_a, [], players, "S"),
+            hidden_cards=hidden_cards,
+            trick_history=[completed_trick],
+            teams=teams,
+            deck=deck,
+        )
+
+    def _build_trump_or_joker_void_state(self) -> RoundState:
+        player_a = Player("A", {Card("AH")})
+        player_b = Player("B", {Card("QC")})
+        player_c = Player("C", {Card("AD")})
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        completed_trick = TrickState(
+            player_a,
+            [
+                Play(player_a, Card("KS")),
+                Play(player_b, Card("JD")),
+                Play(player_c, Card("10S")),
+            ],
+            players,
+            "S",
+        )
+        deck = Deck("10")
+        hidden_cards = (
+            set(deck.get_copy())
+            - player_a.cards
+            - player_b.cards
+            - player_c.cards
+            - {play.card for play in completed_trick.plays}
+        )
+        return RoundState(
+            players=players,
+            current_player=player_a,
+            trump="S",
+            current_trick=TrickState(player_a, [], players, "S"),
+            hidden_cards=hidden_cards,
+            trick_history=[completed_trick],
+            teams=teams,
+            deck=deck,
+        )
+
     def test_omniscient_depth_one_matches_one_trick_bot(self):
         round_state = self._build_single_trick_state()
         depth_one_bot = OmniscientMinimaxNTrickPlayer("A", depth=1)
@@ -516,13 +586,62 @@ class MinimaxNTrickBotTests(unittest.TestCase):
         round_state = self._build_ordering_state()
         bot = OmniscientMinimaxNTrickPlayer("A", depth=2)
 
-        ordered_actions = bot._ordered_legal_actions(round_state)
+        ordered_actions = bot._ordered_legal_actions(
+            round_state,
+            maximizing=True,
+        )
 
         self.assertEqual(ordered_actions[0], Card("AH"))
 
+    def test_move_ordering_respects_transposition_preference(self):
+        round_state = self._build_ordering_state()
+        bot = OmniscientMinimaxNTrickPlayer("A", depth=2)
+
+        ordered_actions = bot._ordered_legal_actions(
+            round_state,
+            maximizing=True,
+            preferred_action=Card("AD"),
+        )
+
+        self.assertEqual(ordered_actions[0], Card("AD"))
+
+    def test_tt_flag_marks_exact_and_bounds(self):
+        bot = OmniscientMinimaxNTrickPlayer("A", depth=2)
+
+        self.assertEqual(
+            bot._tt_flag(
+                maximizing=True,
+                value=3.0,
+                original_alpha=float("-inf"),
+                original_beta=float("inf"),
+                exact_value=True,
+            ),
+            bot.TT_EXACT,
+        )
+        self.assertEqual(
+            bot._tt_flag(
+                maximizing=True,
+                value=5.0,
+                original_alpha=1.0,
+                original_beta=4.0,
+                exact_value=False,
+            ),
+            bot.TT_LOWER,
+        )
+        self.assertEqual(
+            bot._tt_flag(
+                maximizing=False,
+                value=0.0,
+                original_alpha=1.0,
+                original_beta=4.0,
+                exact_value=False,
+            ),
+            bot.TT_UPPER,
+        )
+
     def test_leaf_state_utility_enables_hybrid_cutoff_for_deeper_search(self):
         round_state = self._build_two_trick_state()
-        bot = OmniscientMinimaxNTrickPlayer("A", depth=3)
+        bot = OmniscientMinimaxNTrickPlayer("A", depth=4)
 
         with patch(
             "backend.bots.omniscient_minimax_n_trick_bot.rollout_round_to_utility",
@@ -603,7 +722,7 @@ class MinimaxNTrickBotTests(unittest.TestCase):
         self.assertEqual(
             HumanInformationMinimaxNTrickPlayer("A", depth=3)
             ._determinization_sample_count(player_count=3),
-            8,
+            7,
         )
         self.assertEqual(
             HumanInformationMinimaxNTrickPlayer("A", depth=4)
@@ -619,8 +738,50 @@ class MinimaxNTrickBotTests(unittest.TestCase):
                     player_names=["A", "B", "C"],
                 )
             ),
-            8,
+            7,
         )
+
+    def test_determinization_respects_led_suit_voids(self):
+        round_state = self._build_led_suit_void_state()
+        bot = HumanInformationMinimaxNTrickPlayer(
+            "A",
+            cards=set(round_state.current_player.cards),
+            depth=2,
+        )
+
+        determinizations = bot._build_determinized_states(
+            round_state,
+            set(round_state.current_player.cards),
+        )
+
+        for determinized_state in determinizations:
+            player_b = next(
+                player for player in determinized_state.players if player.name == "B"
+            )
+            self.assertTrue(
+                all(card.is_joker or card.suit != "H" for card in player_b.cards)
+            )
+
+    def test_determinization_respects_trump_or_joker_voids(self):
+        round_state = self._build_trump_or_joker_void_state()
+        bot = HumanInformationMinimaxNTrickPlayer(
+            "A",
+            cards=set(round_state.current_player.cards),
+            depth=2,
+        )
+
+        determinizations = bot._build_determinized_states(
+            round_state,
+            set(round_state.current_player.cards),
+        )
+
+        for determinized_state in determinizations:
+            player_b = next(
+                player for player in determinized_state.players if player.name == "B"
+            )
+            self.assertTrue(
+                all(not card.is_joker and card.suit != "S" for card in player_b.cards)
+            )
 
     def test_transposition_table_preserves_exact_best_action(self):
         round_state = self._build_transposition_regression_state()

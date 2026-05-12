@@ -6,7 +6,7 @@ import {
   fetchBots,
   fetchGameState,
   fetchLegalActions,
-  fetchScore,
+  fetchOptionalScore,
   nextRound,
   passAuction,
   placeBid,
@@ -227,13 +227,10 @@ export default function App() {
 
   async function syncStateSnapshot(nextState?: GameState): Promise<GameState> {
     const resolvedState = nextState ?? (await fetchGameState());
-    const shouldLoadScore =
-      resolvedState.phase === "round_complete" ||
-      resolvedState.phase === "match_complete";
 
     const [nextLegalActions, nextScore] = await Promise.all([
       fetchLegalActions(),
-      shouldLoadScore ? fetchScore() : Promise.resolve(null),
+      fetchOptionalScore(),
     ]);
 
     setState(resolvedState);
@@ -473,6 +470,14 @@ export default function App() {
     });
   }
 
+  function confirmNewGameIfNeeded(): boolean {
+    if (!state) {
+      return true;
+    }
+
+    return window.confirm("Are you sure you want to start a new game?");
+  }
+
   function handlePlayerNameChange(index: number, value: string) {
     setPlayerNames((current) => {
       const next = [...current];
@@ -490,6 +495,10 @@ export default function App() {
   }
 
   async function handleNewGameDebug() {
+    if (!confirmNewGameIfNeeded()) {
+      return;
+    }
+
     await runWithErrorHandling(async () => {
       await createGame({
         num_players: numPlayers,
@@ -503,6 +512,10 @@ export default function App() {
   }
 
   async function handleNewGamePlay() {
+    if (!confirmNewGameIfNeeded()) {
+      return;
+    }
+
     await runPlayModeTask(async () =>
       createGame({
         num_players: numPlayers,

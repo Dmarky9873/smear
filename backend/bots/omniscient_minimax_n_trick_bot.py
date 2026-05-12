@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from hashlib import sha256
 from random import Random
 
 try:
     from backend.constants import CARD_DICT, GAME_VALUES, HAND_SIZE, RANK_ORDER
     from backend.engine import (
-        Auction,
         apply_auction_action_for_search,
         apply_trick_action_for_search,
         get_legal_actions,
@@ -28,7 +28,6 @@ try:
 except ImportError:
     from constants import CARD_DICT, GAME_VALUES, HAND_SIZE, RANK_ORDER
     from engine import (
-        Auction,
         apply_auction_action_for_search,
         apply_trick_action_for_search,
         get_legal_actions,
@@ -47,6 +46,12 @@ except ImportError:
         rollout_round_to_utility,
     )
 
+@dataclass(frozen=True)
+class SearchTranspositionEntry:
+    value: float
+    flag: str
+    best_action: Card | AuctionEvent | None = None
+
 
 class OmniscientMinimaxNTrickPlayer(BotPlayer):
     """Searches card play by projected match utility and searches the auction directly."""
@@ -57,6 +62,9 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         code: 1 << index
         for index, code in enumerate(sorted(CARD_DICT.keys()))
     }
+    TT_EXACT = "exact"
+    TT_LOWER = "lower"
+    TT_UPPER = "upper"
 
     def __init__(
         self,
@@ -148,7 +156,85 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
             card.code,
         )
 
-    def _ordered_legal_actions(self, round_state: RoundState) -> list[Card]:
+    def _auction_candidate_suits(self) -> list[str]:
+        candidate_suits = {
+            card.suit
+            for card in self.cards
+            if not card.is_joker and card.suit is not None
+        }
+        if not candidate_suits:
+            return ["H", "D", "C", "S"]
+        return sorted(candidate_suits)
+
+    def _guaranteed_opening_bid_commitment(
+        self,
+        auction_state: AuctionState,
+    ) -> tuple[int, str] | None:
+        if auction_state.highest_bid is not None:
+            return None
+
+        deck_low = calculate_functional_deck_low(len(auction_state.player_names))
+        best_suit: str | None = None
+        best_points = 0
+        best_key: tuple[int, int, str] | None = None
+
+        for suit in self._auction_candidate_suits():
+            has_high = any(
+                not card.is_joker and card.suit == suit and card.rank == "A"
+                for card in self.cards
+            )
+            has_low = any(
+                not card.is_joker and card.suit == suit and card.rank == deck_low
+                for card in self.cards
+            )
+            guaranteed_points = int(has_high) + int(has_low)
+            suit_cards = [
+                card for card in self.cards
+                if not card.is_joker and card.suit == suit
+            ]
+            suit_key = (
+                len(suit_cards),
+                max((RANK_ORDER[card.rank] for card in suit_cards), default=-1),
+                suit,
+            )
+            if (
+                guaranteed_points > best_points
+                or (
+                    guaranteed_points == best_points
+                    and (best_key is None or suit_key > best_key)
+                )
+            ):
+                best_points = guaranteed_points
+                best_suit = suit
+                best_key = suit_key
+
+        if best_suit is None or best_points <= 0:
+            return None
+        return best_points, best_suit
+
+    def _preferred_action_first(
+        self,
+        actions: list[Card] | list[AuctionEvent],
+        preferred_action: Card | AuctionEvent | None,
+    ) -> list[Card] | list[AuctionEvent]:
+        if preferred_action is None or len(actions) < 2:
+            return actions
+        try:
+            action_index = actions.index(preferred_action)
+        except ValueError:
+            return actions
+        if action_index == 0:
+            return actions
+        actions.insert(0, actions.pop(action_index))
+        return actions
+
+    def _ordered_legal_actions(
+        self,
+        round_state: RoundState,
+        *,
+        maximizing: bool,
+        preferred_action: Card | None = None,
+    ) -> list[Card]:
         legal_actions = list(get_legal_actions(round_state))
         if len(legal_actions) < 2:
             return legal_actions
@@ -156,13 +242,55 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
             key=lambda card: self._card_order_key(round_state, card),
             reverse=True,
         )
-        return legal_actions
+        return self._preferred_action_first(legal_actions, preferred_action)
+
+    def _tt_flag(
+        self,
+        *,
+        maximizing: bool,
+        value: float,
+        original_alpha: float,
+        original_beta: float,
+        exact_value: bool,
+    ) -> str:
+        if exact_value:
+            return self.TT_EXACT
+        if value >= original_beta:
+            return self.TT_LOWER
+        if value <= original_alpha:
+            return self.TT_UPPER
+        return self.TT_LOWER if maximizing else self.TT_UPPER
+
+    def _store_tt_entry(
+        self,
+        transposition_table: dict[tuple, SearchTranspositionEntry],
+        state_key: tuple,
+        *,
+        maximizing: bool,
+        value: float,
+        original_alpha: float,
+        original_beta: float,
+        exact_value: bool,
+        best_action: Card | AuctionEvent | None,
+    ) -> None:
+        transposition_table[state_key] = SearchTranspositionEntry(
+            value=value,
+            flag=self._tt_flag(
+                maximizing=maximizing,
+                value=value,
+                original_alpha=original_alpha,
+                original_beta=original_beta,
+                exact_value=exact_value,
+            ),
+            best_action=best_action,
+        )
 
     def _ordered_auction_actions(
         self,
         auction_state: AuctionState,
         *,
         maximizing: bool,
+        preferred_action: AuctionEvent | None = None,
     ) -> list[AuctionEvent]:
         legal_actions = get_legal_auction_actions(auction_state, max_bid=self.MAX_BID)
         if len(legal_actions) < 2:
@@ -172,9 +300,9 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                 action.action == "bid",
                 action.amount or 0,
             ),
-            reverse=maximizing,
+            reverse=True,
         )
-        return legal_actions
+        return self._preferred_action_first(legal_actions, preferred_action)
 
     def _transposition_key(
         self,
@@ -187,19 +315,27 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                 signature |= self.CARD_SIGNATURES[card.code]
             return signature
 
+        player_names = tuple(player.name for player in round_state.players)
+        player_indexes = {
+            player_name: index
+            for index, player_name in enumerate(player_names)
+        }
+        captured_signatures = []
+        for player in round_state.players:
+            captured_by_origin = [0] * len(player_names)
+            for play in player.captured_plays:
+                captured_by_origin[player_indexes[play.player.name]] |= self.CARD_SIGNATURES[
+                    play.card.code
+                ]
+            captured_signatures.append(
+                (player.name, tuple(captured_by_origin))
+            )
+
         return (
             remaining_tricks,
             round_state.current_player.name,
             round_state.current_trick.leader.name,
             round_state.trump,
-            len(round_state.trick_history),
-            tuple(
-                tuple(
-                    (play.player.name, play.card.code)
-                    for play in trick.plays
-                )
-                for trick in round_state.trick_history
-            ),
             tuple(
                 (play.player.name, play.card.code)
                 for play in round_state.current_trick.plays
@@ -209,6 +345,7 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                 (player.name, _cards_signature(player.cards))
                 for player in round_state.players
             ),
+            tuple(captured_signatures),
         )
 
     def _auction_transposition_key(self, auction_state: AuctionState) -> tuple:
@@ -244,7 +381,7 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
             teams=teams,
             target_score=self._context_target_score,
             player_name=self.name,
-            hybrid_cutoff=self.depth >= 3,
+            hybrid_cutoff=self.depth >= 4,
             exact_rollout_action_threshold=len(round_state.players) * 2,
         )
 
@@ -255,30 +392,65 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         team_member_names: set[str],
         alpha: float,
         beta: float,
-        transposition_table: dict[tuple, float],
+        transposition_table: dict[tuple, SearchTranspositionEntry],
         auction_state: AuctionState | None,
     ) -> tuple[float, bool]:
+        original_alpha = alpha
+        original_beta = beta
         state_key = self._transposition_key(round_state, remaining_tricks)
-        cached_value = transposition_table.get(state_key)
-        if cached_value is not None:
-            return cached_value, True
+        maximizing = round_state.current_player.name in team_member_names
+        cached_entry = transposition_table.get(state_key)
+        preferred_action: Card | None = None
+        if cached_entry is not None and isinstance(cached_entry.best_action, Card):
+            preferred_action = cached_entry.best_action
+        if cached_entry is not None:
+            if cached_entry.flag == self.TT_EXACT:
+                return cached_entry.value, True
+            if cached_entry.flag == self.TT_LOWER:
+                alpha = max(alpha, cached_entry.value)
+            else:
+                beta = min(beta, cached_entry.value)
+            if beta <= alpha:
+                return cached_entry.value, False
 
         if round_state.is_terminal or remaining_tricks <= 0:
             value = self._leaf_state_utility(round_state, auction_state)
-            transposition_table[state_key] = value
+            self._store_tt_entry(
+                transposition_table,
+                state_key,
+                maximizing=maximizing,
+                value=value,
+                original_alpha=original_alpha,
+                original_beta=original_beta,
+                exact_value=True,
+                best_action=None,
+            )
             return value, True
 
-        maximizing = round_state.current_player.name in team_member_names
         trick_count_before = len(round_state.trick_history)
-        legal_actions = self._ordered_legal_actions(round_state)
+        legal_actions = self._ordered_legal_actions(
+            round_state,
+            maximizing=maximizing,
+            preferred_action=preferred_action,
+        )
         if not legal_actions:
             value = self._leaf_state_utility(round_state, auction_state)
-            transposition_table[state_key] = value
+            self._store_tt_entry(
+                transposition_table,
+                state_key,
+                maximizing=maximizing,
+                value=value,
+                original_alpha=original_alpha,
+                original_beta=original_beta,
+                exact_value=True,
+                best_action=None,
+            )
             return value, True
 
         if maximizing:
             value = float("-inf")
             exact_value = True
+            best_action: Card | None = None
             for card in legal_actions:
                 play = Play(round_state.current_player, card)
                 undo = apply_trick_action_for_search(
@@ -297,7 +469,9 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                         transposition_table,
                         auction_state,
                     )
-                    value = max(value, child_value)
+                    if child_value > value:
+                        value = child_value
+                        best_action = card
                     exact_value = exact_value and child_exact
                 finally:
                     undo_trick_action_for_search(round_state, undo)
@@ -305,12 +479,21 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                 if beta <= alpha:
                     exact_value = False
                     break
-            if exact_value:
-                transposition_table[state_key] = value
+            self._store_tt_entry(
+                transposition_table,
+                state_key,
+                maximizing=maximizing,
+                value=value,
+                original_alpha=original_alpha,
+                original_beta=original_beta,
+                exact_value=exact_value,
+                best_action=best_action,
+            )
             return value, exact_value
 
         value = float("inf")
         exact_value = True
+        best_action = None
         for card in legal_actions:
             play = Play(round_state.current_player, card)
             undo = apply_trick_action_for_search(
@@ -329,7 +512,9 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                     transposition_table,
                     auction_state,
                 )
-                value = min(value, child_value)
+                if child_value < value:
+                    value = child_value
+                    best_action = card
                 exact_value = exact_value and child_exact
             finally:
                 undo_trick_action_for_search(round_state, undo)
@@ -337,8 +522,16 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
             if beta <= alpha:
                 exact_value = False
                 break
-        if exact_value:
-            transposition_table[state_key] = value
+        self._store_tt_entry(
+            transposition_table,
+            state_key,
+            maximizing=maximizing,
+            value=value,
+            original_alpha=original_alpha,
+            original_beta=original_beta,
+            exact_value=exact_value,
+            best_action=best_action,
+        )
         return value, exact_value
 
     def choose_card(self, round_state: RoundState) -> Card:
@@ -349,7 +542,10 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
 
         ensure_captured_plays_synchronized(round_state)
         team_member_names = self._team_member_names(round_state)
-        legal_actions = self._ordered_legal_actions(round_state)
+        legal_actions = self._ordered_legal_actions(
+            round_state,
+            maximizing=True,
+        )
         opening_suit_override = getattr(self, "_opening_suit_override", None)
         if round_state.trump is None and opening_suit_override is not None:
             suited_actions = [
@@ -364,7 +560,7 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         best_score = float("-inf")
         alpha = float("-inf")
         beta = float("inf")
-        transposition_table: dict[tuple, float] = {}
+        transposition_table: dict[tuple, SearchTranspositionEntry] = {}
         auction_state = self._play_auction_state()
         self.begin_progress(
             label=f"Searching {self.depth} tricks ahead",
@@ -521,21 +717,34 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         world: dict,
         alpha: float,
         beta: float,
-        transposition_table: dict[tuple, float],
+        transposition_table: dict[tuple, SearchTranspositionEntry],
     ) -> tuple[float, bool]:
         if auction_state.is_complete:
             return self._auction_leaf_utility(auction_state, world), True
 
+        original_alpha = alpha
+        original_beta = beta
         state_key = self._auction_transposition_key(auction_state)
-        cached_value = transposition_table.get(state_key)
-        if cached_value is not None:
-            return cached_value, True
-
         team_member_names = self._auction_team_member_names(auction_state)
         maximizing = auction_state.current_bidder_name in team_member_names
+        cached_entry = transposition_table.get(state_key)
+        preferred_action: AuctionEvent | None = None
+        if cached_entry is not None and isinstance(cached_entry.best_action, AuctionEvent):
+            preferred_action = cached_entry.best_action
+        if cached_entry is not None:
+            if cached_entry.flag == self.TT_EXACT:
+                return cached_entry.value, True
+            if cached_entry.flag == self.TT_LOWER:
+                alpha = max(alpha, cached_entry.value)
+            else:
+                beta = min(beta, cached_entry.value)
+            if beta <= alpha:
+                return cached_entry.value, False
+
         legal_actions = self._ordered_auction_actions(
             auction_state,
             maximizing=maximizing,
+            preferred_action=preferred_action,
         )
         if not legal_actions:
             return self._auction_leaf_utility(auction_state, world), True
@@ -543,6 +752,7 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         if maximizing:
             value = float("-inf")
             exact_value = True
+            best_action: AuctionEvent | None = None
             for action in legal_actions:
                 undo = apply_auction_action_for_search(
                     auction_state,
@@ -558,7 +768,9 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                         beta,
                         transposition_table,
                     )
-                    value = max(value, child_value)
+                    if child_value > value:
+                        value = child_value
+                        best_action = action
                     exact_value = exact_value and child_exact
                     alpha = max(alpha, value)
                 finally:
@@ -566,12 +778,21 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                 if beta <= alpha:
                     exact_value = False
                     break
-            if exact_value:
-                transposition_table[state_key] = value
+            self._store_tt_entry(
+                transposition_table,
+                state_key,
+                maximizing=maximizing,
+                value=value,
+                original_alpha=original_alpha,
+                original_beta=original_beta,
+                exact_value=exact_value,
+                best_action=best_action,
+            )
             return value, exact_value
 
         value = float("inf")
         exact_value = True
+        best_action = None
         for action in legal_actions:
             undo = apply_auction_action_for_search(
                 auction_state,
@@ -587,7 +808,9 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                     beta,
                     transposition_table,
                 )
-                value = min(value, child_value)
+                if child_value < value:
+                    value = child_value
+                    best_action = action
                 exact_value = exact_value and child_exact
                 beta = min(beta, value)
             finally:
@@ -595,8 +818,16 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
             if beta <= alpha:
                 exact_value = False
                 break
-        if exact_value:
-            transposition_table[state_key] = value
+        self._store_tt_entry(
+            transposition_table,
+            state_key,
+            maximizing=maximizing,
+            value=value,
+            original_alpha=original_alpha,
+            original_beta=original_beta,
+            exact_value=exact_value,
+            best_action=best_action,
+        )
         return value, exact_value
 
     def _prefer_auction_action(
@@ -613,7 +844,19 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         return False
 
     def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
-        legal_actions = get_legal_auction_actions(auction_state, max_bid=self.MAX_BID)
+        self._opening_suit_override = None
+        opening_commitment = self._guaranteed_opening_bid_commitment(auction_state)
+        legal_actions = self._ordered_auction_actions(
+            auction_state,
+            maximizing=True,
+        )
+        if opening_commitment is not None:
+            opening_bid, opening_suit = opening_commitment
+            for action in legal_actions:
+                if action.action == "bid" and action.amount == opening_bid:
+                    self._opening_suit_override = opening_suit
+                    return action
+
         worlds = self._build_auction_worlds(auction_state)
         best_action: AuctionEvent | None = None
         best_value = float("-inf")

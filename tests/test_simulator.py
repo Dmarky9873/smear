@@ -1,4 +1,8 @@
 import unittest
+import json
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import call
 from unittest.mock import patch
 
@@ -176,6 +180,36 @@ class SimulatorTeamSizeTests(unittest.TestCase):
                 team_size=2,
                 three_player=True,
             )
+
+    def test_script_entrypoint_runs_with_greedy_model(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "backend/simulator.py",
+                "--seed",
+                "0",
+                "1",
+                "10",
+                "random",
+                "greedy",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+        )
+        output = json.loads(completed.stdout)
+        self.assertEqual(output["games_played"], 1)
+        self.assertEqual(output["seed"], 0)
+        self.assertEqual(output["players_per_game"], 3)
+        self.assertIn("greedy", output["models"])
 
     @patch("backend.simulator.time.perf_counter", side_effect=[1.0, 2.0])
     @patch("backend.simulator.Simulator.run_match")

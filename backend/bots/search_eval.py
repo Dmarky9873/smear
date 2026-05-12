@@ -540,9 +540,13 @@ def _has_trump_control(cards: set[Card], trump_suit: str) -> bool:
         return True
     if not trump_cards:
         return False
-    if _count_jokers(cards) > 0:
-        return True
     return any(card.rank in {"A", "K", "Q", "J"} for card in trump_cards)
+
+
+def _joker_bid_bonus(cards: set[Card], trump_suit: str) -> int:
+    if _count_jokers(cards) == 0:
+        return 0
+    return 1 if _trump_cards(cards, trump_suit) else 0
 
 
 def _estimate_hand_strength(cards: set[Card], trump_suit: str) -> int:
@@ -551,7 +555,7 @@ def _estimate_hand_strength(cards: set[Card], trump_suit: str) -> int:
         estimate += 1
     if _has_low_trump_candidate(cards, trump_suit):
         estimate += 1
-    estimate += _count_jokers(cards)
+    estimate += _joker_bid_bonus(cards, trump_suit)
     if _has_game_strength(cards):
         estimate += 1
     if _has_trump_control(cards, trump_suit):

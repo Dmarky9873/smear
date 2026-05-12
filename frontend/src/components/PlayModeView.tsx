@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { buildDisplayCapturedByPlayer } from "../capturedDisplay";
 import { sortCardsHighToLow } from "../cardSort";
 import { PlayingCard } from "./PlayingCard";
 import type {
@@ -75,6 +76,25 @@ function getCompletedTricks(state: GameState): TrickState[] {
   return [...state.round.trick_history].reverse();
 }
 
+function getScoreHeading(state: GameState, score: Score | null): string {
+  if (!score) {
+    return "Score";
+  }
+  return state.round.is_terminal ? "Score" : "Last Round Score";
+}
+
+function getJokerAwardText(score: Score): string {
+  const jokerWinners = score.results
+    .filter((result) => result.joker_count > 0)
+    .map((result) => `${result.name} (${result.joker_count})`);
+
+  if (jokerWinners.length === 0) {
+    return "No joker points awarded";
+  }
+
+  return jokerWinners.join(", ");
+}
+
 export function PlayModeView({
   numPlayers,
   playerNames,
@@ -127,6 +147,9 @@ export function PlayModeView({
     0,
     Math.min(100, botProgress?.percent_complete ?? 0),
   );
+  const displayCapturedByPlayer = state
+    ? buildDisplayCapturedByPlayer(state.round)
+    : null;
   const orderedTurnCards = turnPlayer
     ? sortCardsHighToLow(turnPlayer.cards)
     : [];
@@ -355,6 +378,10 @@ export function PlayModeView({
                 const isCurrentPlayer = player.name === turnPlayer?.name;
                 const isBot = Boolean(player.bot_id);
                 const tablePlay = getVisiblePlayForPlayer(visibleTrick, player.name);
+                const displayCaptured = displayCapturedByPlayer?.[player.name] ?? {
+                  cards: player.captured_cards,
+                  count: player.captured_count,
+                };
                 const isAuctionWinner =
                   state.auction.highest_bidder_name === player.name &&
                   state.auction.current_high_bid !== null;
@@ -388,7 +415,7 @@ export function PlayModeView({
                     </div>
                     <div className="play-seat__meta">
                       <span>{player.cards.length} cards</span>
-                      <span>{player.captured_count} won</span>
+                      <span>{displayCaptured.count} won</span>
                     </div>
 
                     {showTableCardSection ? (
@@ -420,8 +447,8 @@ export function PlayModeView({
                         <div className="play-seat__section">
                           <span className="play-seat__label">Won</span>
                           <div className="play-seat__cards">
-                            {player.captured_cards.length > 0 ? (
-                              player.captured_cards.map((card: Card, index) => (
+                            {displayCaptured.cards.length > 0 ? (
+                              displayCaptured.cards.map((card: Card, index) => (
                                 <PlayingCard
                                   key={`${player.name}-${card.code}-${index}`}
                                   card={card}
@@ -575,10 +602,10 @@ export function PlayModeView({
             </div>
           </section>
 
-          {state.round.is_terminal && score ? (
+          {score ? (
             <section className="play-summary-card">
               <div className="play-section-heading">
-                <h2>Score</h2>
+                <h2>{getScoreHeading(state, score)}</h2>
                 {state.match.is_complete ? (
                   <strong>{state.match.winner_names.join(", ")}</strong>
                 ) : null}
@@ -600,6 +627,10 @@ export function PlayModeView({
                   <strong>{score.awards.low.unit_name}</strong>
                 </div>
                 <div className="play-mini-card">
+                  <span>Jokers</span>
+                  <strong>{getJokerAwardText(score)}</strong>
+                </div>
+                <div className="play-mini-card">
                   <span>Game</span>
                   <strong>
                     {score.awards.game.unit_name ??
@@ -612,17 +643,17 @@ export function PlayModeView({
               <div className="play-summary-section">
                 <div className="play-summary-section__header">
                   <h3>Sleeping</h3>
-                  <strong>{state.round.hidden_cards.length}</strong>
+                  <strong>{score.hidden_cards.length}</strong>
                 </div>
-                {state.round.hidden_cards.length > 0 ? (
+                {score.hidden_cards.length > 0 ? (
                   <div className="play-summary-cards">
-                    {state.round.hidden_cards.map((card, index) => (
+                    {score.hidden_cards.map((card, index) => (
                       <PlayingCard
                         key={`${card.code}-${index}`}
                         card={card}
                         compact
                         isTrump={
-                          !card.is_joker && state.round.trump === card.suit
+                          !card.is_joker && score.trump === card.suit
                         }
                       />
                     ))}

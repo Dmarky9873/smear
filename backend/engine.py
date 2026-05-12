@@ -218,9 +218,11 @@ def apply_auction_action_for_search(
         if state.highest_bidder_name is None:
             raise ValueError("auction cannot complete without a winning bid")
         state.is_complete = True
-        state.current_bidder_index = state.player_names.index(state.highest_bidder_name)
+        state.current_bidder_index = state.player_names.index(
+            state.highest_bidder_name)
     else:
-        state.current_bidder_index = (state.current_bidder_index + 1) % len(state.player_names)
+        state.current_bidder_index = (
+            state.current_bidder_index + 1) % len(state.player_names)
 
     return undo
 
@@ -233,7 +235,8 @@ def undo_auction_action_for_search(
         raise ValueError("search undo expected an auction event in history")
     last_action = state.bid_history.pop()
     if last_action != undo.action:
-        raise ValueError("search undo expected the applied auction action at history tail")
+        raise ValueError(
+            "search undo expected the applied auction action at history tail")
 
     if undo.action.action == "pass" and not undo.previous_passed:
         state.passed_player_names.remove(undo.action.bidder_name)
@@ -515,7 +518,8 @@ def _apply_trick_action_in_place(state: RoundState, action: Play) -> bool:
         state.trick_history.append(curr_trick)
         return True
 
-    state.current_player = players[(players.index(curr_player) + 1) % len(players)]
+    state.current_player = players[(
+        players.index(curr_player) + 1) % len(players)]
     return False
 
 
@@ -580,7 +584,8 @@ def apply_trick_action_for_search(
         undo.next_trick = next_trick
         return undo
 
-    state.current_player = players[(players.index(curr_player) + 1) % len(players)]
+    state.current_player = players[(
+        players.index(curr_player) + 1) % len(players)]
     return undo
 
 
@@ -591,7 +596,8 @@ def undo_trick_action_for_search(
     """Undo a search mutation created by `apply_trick_action_for_search`."""
     if undo.completed_trick:
         if not state.trick_history or state.trick_history[-1] is not undo.trick:
-            raise ValueError("search undo expected the completed trick at history tail")
+            raise ValueError(
+                "search undo expected the completed trick at history tail")
         state.trick_history.pop()
 
         if undo.trick_winner is None:
@@ -601,7 +607,8 @@ def undo_trick_action_for_search(
             undo.trick_winner.captured_plays.remove(play)
 
     if not undo.trick.plays or undo.trick.plays[-1].card != undo.played_card:
-        raise ValueError("search undo expected the played card at the trick tail")
+        raise ValueError(
+            "search undo expected the played card at the trick tail")
     undo.trick.plays.pop()
 
     undo.acting_player.cards.add(undo.played_card)
@@ -740,7 +747,7 @@ def score_round_details(round: RoundState) -> dict:
 
         unit_by_name[jack_unit_name]["breakdown"]["jack"] = 1
     else:
-        jack_reason = "Jack of trump is hiding, so no jack point is awarded."
+        jack_reason = "Jack of trump hiding."
 
     # one point per joker possessed
     for unit in scoring_units:
@@ -781,6 +788,7 @@ def score_round_details(round: RoundState) -> dict:
         "trump": round.trump,
         "high_card": high_card,
         "low_card": low_card,
+        "hidden_cards": set(round.hidden_cards),
         "awards": {
             "high": {
                 "unit_name": high_unit_name,

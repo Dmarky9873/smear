@@ -120,6 +120,7 @@ class RoundScoringTests(unittest.TestCase):
             results_by_name["B"]["captured_cards"],
         )
         self.assertEqual(results_by_name["B"]["game_total"], 54)
+        self.assertEqual(details["hidden_cards"], round_state.hidden_cards)
 
 
 if __name__ == "__main__":

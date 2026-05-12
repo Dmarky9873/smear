@@ -194,6 +194,7 @@ class RoundScoreResponse(BaseModel):
     trump: str
     high_card: CardResponse
     low_card: CardResponse
+    hidden_cards: list[CardResponse]
     bid_summary: BidSummaryResponse
     awards: dict[str, ScoreAwardResponse]
     results: list[ScoreResultResponse]

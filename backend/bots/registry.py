@@ -27,6 +27,7 @@ try:
     )
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from .omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
+    from .optimal_bot import OptimalBotPlayer
     from .random_bot import RandomPlayer
     from .stupid_bot import StupidBot
 except ImportError:
@@ -53,6 +54,7 @@ except ImportError:
     )
     from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
+    from bots.optimal_bot import OptimalBotPlayer
     from bots.random_bot import RandomPlayer
     from bots.stupid_bot import StupidBot
 
@@ -151,6 +153,15 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         label="Stupid",
         description="Auctions very stupidly; always bids one higher than the previous highest bid. Hard when you're about to go out.",
         factory=lambda player_name: StupidBot(player_name),
+    ),
+    ReadyBotSpec(
+        id="optimal-bot",
+        label="Optimal Bot",
+        description=(
+            "Depth-3 sampled hidden-information minimax tuned to keep most of "
+            "the search strength while cutting determinization cost."
+        ),
+        factory=lambda player_name: OptimalBotPlayer(player_name),
     ),
     ReadyBotSpec(
         id="1-trick-minmax",

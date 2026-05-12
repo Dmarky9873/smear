@@ -149,6 +149,7 @@ export type Score = {
   trump: string;
   high_card: Card;
   low_card: Card;
+  hidden_cards: Card[];
   bid_summary: BidSummary;
   awards: {
     high: ScoreAward;

@@ -9,7 +9,10 @@ try:
         undo_trick_action_for_search,
     )
     from backend.models import Card, Play, RoundState, Team, TrickState
-    from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from .omniscient_minimax_n_trick_bot import (
+        OmniscientMinimaxNTrickPlayer,
+        SearchTranspositionEntry,
+    )
     from .search_eval import ensure_captured_plays_synchronized
 except ImportError:
     from engine import (
@@ -17,7 +20,10 @@ except ImportError:
         undo_trick_action_for_search,
     )
     from models import Card, Play, RoundState, Team, TrickState
-    from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from .omniscient_minimax_n_trick_bot import (
+        OmniscientMinimaxNTrickPlayer,
+        SearchTranspositionEntry,
+    )
     from .search_eval import ensure_captured_plays_synchronized
 
 
@@ -27,7 +33,8 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
     DETERMINIZATION_SAMPLES = 12
     MIN_DETERMINIZATION_SAMPLES = 2
     AUCTION_DETERMINIZATION_SAMPLES = 6
-    THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES = 8
+    THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES = 7
+    _HIDDEN_SLOT = "__hidden__"
 
     def _public_visible_cards(
         self,
@@ -95,6 +102,180 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
             trump=trick.trump,
         )
 
+    def _infer_void_constraints(
+        self,
+        round_state: RoundState,
+    ) -> tuple[dict[str, set[str]], set[str]]:
+        suit_voids = {
+            player.name: set()
+            for player in round_state.players
+            if player.name != self.name
+        }
+        trump_or_joker_voids: set[str] = set()
+
+        for trick in [*round_state.trick_history, round_state.current_trick]:
+            if len(trick.plays) < 2:
+                continue
+
+            prior_plays: list[Play] = []
+            trick_trump = trick.trump
+            for play in trick.plays:
+                if not prior_plays:
+                    prior_plays.append(play)
+                    continue
+
+                player_name = play.player.name
+                if player_name == self.name:
+                    prior_plays.append(play)
+                    continue
+
+                lead_card = prior_plays[0].card
+                trump_played = any(
+                    trick_trump is not None
+                    and not prior_play.card.is_joker
+                    and prior_play.card.suit == trick_trump
+                    for prior_play in prior_plays
+                )
+                joker_played = any(
+                    prior_play.card.is_joker for prior_play in prior_plays
+                )
+
+                if trump_played or joker_played:
+                    if (
+                        not play.card.is_joker
+                        and (trick_trump is None or play.card.suit != trick_trump)
+                    ):
+                        trump_or_joker_voids.add(player_name)
+                elif (
+                    not lead_card.is_joker
+                    and trick_trump is not None
+                    and lead_card.suit != trick_trump
+                    and (play.card.is_joker or play.card.suit != lead_card.suit)
+                ):
+                    suit_voids[player_name].add(lead_card.suit)
+
+                prior_plays.append(play)
+
+        return suit_voids, trump_or_joker_voids
+
+    def _card_allowed_for_player(
+        self,
+        card: Card,
+        player_name: str,
+        *,
+        trump: str | None,
+        suit_voids: dict[str, set[str]],
+        trump_or_joker_voids: set[str],
+    ) -> bool:
+        if player_name in trump_or_joker_voids:
+            if card.is_joker:
+                return False
+            if trump is not None and card.suit == trump:
+                return False
+
+        return card.is_joker or card.suit not in suit_voids.get(player_name, set())
+
+    def _sample_constrained_unseen_cards(
+        self,
+        *,
+        unseen_cards: list[Card],
+        player_hand_sizes: dict[str, int],
+        hidden_count: int,
+        trump: str | None,
+        suit_voids: dict[str, set[str]],
+        trump_or_joker_voids: set[str],
+        rng: Random,
+    ) -> tuple[dict[str, set[Card]], set[Card]]:
+        recipient_capacities = {
+            player_name: hand_size
+            for player_name, hand_size in player_hand_sizes.items()
+            if hand_size > 0
+        }
+        if hidden_count > 0:
+            recipient_capacities[self._HIDDEN_SLOT] = hidden_count
+
+        base_eligibility: dict[Card, tuple[str, ...]] = {}
+        for card in unseen_cards:
+            eligible_recipients = [
+                recipient
+                for recipient in recipient_capacities
+                if recipient == self._HIDDEN_SLOT
+                or self._card_allowed_for_player(
+                    card,
+                    recipient,
+                    trump=trump,
+                    suit_voids=suit_voids,
+                    trump_or_joker_voids=trump_or_joker_voids,
+                )
+            ]
+            if not eligible_recipients:
+                raise ValueError(
+                    "no legal determinization assignment exists for unseen cards"
+                )
+            base_eligibility[card] = tuple(eligible_recipients)
+
+        ordered_cards = list(unseen_cards)
+        rng.shuffle(ordered_cards)
+        ordered_cards.sort(
+            key=lambda card: (len(base_eligibility[card]), card.code),
+        )
+
+        remaining_capacities = dict(recipient_capacities)
+        assignments = {
+            recipient: []
+            for recipient in recipient_capacities
+        }
+
+        def is_feasible(start_index: int) -> bool:
+            for recipient, remaining_capacity in remaining_capacities.items():
+                if remaining_capacity <= 0:
+                    continue
+                eligible_remaining = sum(
+                    1
+                    for card in ordered_cards[start_index:]
+                    if recipient in base_eligibility[card]
+                )
+                if eligible_remaining < remaining_capacity:
+                    return False
+            return True
+
+        def backtrack(card_index: int) -> bool:
+            if card_index == len(ordered_cards):
+                return True
+            if not is_feasible(card_index):
+                return False
+
+            card = ordered_cards[card_index]
+            candidate_recipients = [
+                recipient
+                for recipient in base_eligibility[card]
+                if remaining_capacities[recipient] > 0
+            ]
+            rng.shuffle(candidate_recipients)
+
+            for recipient in candidate_recipients:
+                remaining_capacities[recipient] -= 1
+                assignments[recipient].append(card)
+                if backtrack(card_index + 1):
+                    return True
+                assignments[recipient].pop()
+                remaining_capacities[recipient] += 1
+
+            return False
+
+        if not backtrack(0):
+            raise ValueError(
+                "could not build a determinized world consistent with public constraints"
+            )
+
+        return (
+            {
+                player_name: set(assignments.get(player_name, []))
+                for player_name in player_hand_sizes
+            },
+            set(assignments.get(self._HIDDEN_SLOT, [])),
+        )
+
     def _build_determinized_states(
         self,
         round_state: RoundState,
@@ -114,6 +295,7 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 "public state is inconsistent with the deck and remaining card counts"
             )
 
+        suit_voids, trump_or_joker_voids = self._infer_void_constraints(round_state)
         seed_bytes = sha256(
             self._determinization_seed_payload(round_state, known_hand).encode("utf-8")
         ).digest()
@@ -122,21 +304,30 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         sample_count = self._determinization_sample_count(
             player_count=len(round_state.players),
         )
+        opponent_hand_sizes = {
+            player.name: len(player.cards)
+            for player in round_state.players
+            if player.name != self.name
+        }
 
         for sample_index in range(sample_count):
             rng = Random(base_seed + sample_index)
-            shuffled_cards = unseen_cards.copy()
-            rng.shuffle(shuffled_cards)
-            cursor = 0
+            sampled_hands, sampled_hidden_cards = self._sample_constrained_unseen_cards(
+                unseen_cards=unseen_cards,
+                player_hand_sizes=opponent_hand_sizes,
+                hidden_count=hidden_count,
+                trump=round_state.trump,
+                suit_voids=suit_voids,
+                trump_or_joker_voids=trump_or_joker_voids,
+                rng=rng,
+            )
             cloned_players_by_name = {}
 
             for player in round_state.players:
                 if player.name == self.name:
                     hand = set(known_hand)
                 else:
-                    hand_size = len(player.cards)
-                    hand = set(shuffled_cards[cursor: cursor + hand_size])
-                    cursor += hand_size
+                    hand = sampled_hands[player.name]
                 cloned_players_by_name[player.name] = player.__class__(
                     player.name,
                     hand,
@@ -171,7 +362,7 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 ],
                 trump=round_state.trump,
                 current_trick=cloned_current_trick,
-                hidden_cards=set(shuffled_cards[cursor: cursor + hidden_count]),
+                hidden_cards=sampled_hidden_cards,
                 trick_history=cloned_trick_history,
                 teams=cloned_teams,
                 deck=round_state.deck,
@@ -188,7 +379,7 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
             if self.depth == 3:
                 return max(
                     self.MIN_DETERMINIZATION_SAMPLES,
-                    (self.DETERMINIZATION_SAMPLES * 2) // 3,
+                    (self.DETERMINIZATION_SAMPLES * 7) // 12,
                 )
             if self.depth == 4:
                 return max(
@@ -234,7 +425,10 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         known_hand = set(round_state.current_player.cards)
         team_member_names = self._team_member_names(round_state)
         determinizations = self._build_determinized_states(round_state, known_hand)
-        legal_actions = self._ordered_legal_actions(round_state)
+        legal_actions = self._ordered_legal_actions(
+            round_state,
+            maximizing=True,
+        )
         opening_suit_override = getattr(self, "_opening_suit_override", None)
         if round_state.trump is None and opening_suit_override is not None:
             suited_actions = [
@@ -249,7 +443,7 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         best_score = float("-inf")
         total_units = len(legal_actions) * len(determinizations)
         completed_units = 0
-        transposition_table: dict[tuple, float] = {}
+        transposition_table: dict[tuple, SearchTranspositionEntry] = {}
         auction_state = self._play_auction_state()
         self.begin_progress(
             label=f"Searching {self.depth} tricks ahead",

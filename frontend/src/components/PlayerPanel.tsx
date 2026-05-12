@@ -1,17 +1,21 @@
 import { sortCardsHighToLow } from "../cardSort";
 import { PlayingCard } from "./PlayingCard";
-import type { Player } from "../types";
+import type { Card, Player } from "../types";
 
 type PlayerPanelProps = {
   player: Player;
   trump: string | null;
   isCurrentPlayer: boolean;
+  capturedCards?: Card[];
+  capturedCount?: number;
 };
 
 export function PlayerPanel({
   player,
   trump,
   isCurrentPlayer,
+  capturedCards = player.captured_cards,
+  capturedCount = player.captured_count,
 }: PlayerPanelProps) {
   const orderedCards = sortCardsHighToLow(player.cards);
 
@@ -42,9 +46,9 @@ export function PlayerPanel({
       </div>
 
       <div className="player-panel__group">
-        <strong>Captured ({player.captured_count})</strong>
+        <strong>Captured ({capturedCount})</strong>
         <div className="card-row">
-          {player.captured_cards.map((card) => (
+          {capturedCards.map((card) => (
             <PlayingCard
               key={`${player.name}-${card.code}`}
               card={card}
@@ -52,7 +56,7 @@ export function PlayerPanel({
               isTrump={!card.is_joker && trump === card.suit}
             />
           ))}
-          {player.captured_cards.length === 0 ? (
+          {capturedCards.length === 0 ? (
             <span className="muted">No captured cards.</span>
           ) : null}
         </div>

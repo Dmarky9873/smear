@@ -1,3 +1,7 @@
+import {
+  buildDisplayCapturedByPlayer,
+  getDisplayCapturedCountForTeam,
+} from "../capturedDisplay";
 import { CurrentTrickPanel } from "./CurrentTrickPanel";
 import { DebugJsonPanel } from "./DebugJsonPanel";
 import { LegalActionsPanel } from "./LegalActionsPanel";
@@ -42,6 +46,18 @@ type DebugModeViewProps = {
   onPassAuction: () => void;
 };
 
+function getJokerAwardText(score: Score): string {
+  const jokerWinners = score.results
+    .filter((result) => result.joker_count > 0)
+    .map((result) => `${result.name} (${result.joker_count})`);
+
+  if (jokerWinners.length === 0) {
+    return "No joker points awarded";
+  }
+
+  return jokerWinners.join(", ");
+}
+
 export function DebugModeView({
   numPlayers,
   playerNames,
@@ -70,6 +86,10 @@ export function DebugModeView({
   onBid,
   onPassAuction,
 }: DebugModeViewProps) {
+  const displayCapturedByPlayer = state
+    ? buildDisplayCapturedByPlayer(state.round)
+    : null;
+
   return (
     <main className="app-shell">
       <header className="status-bar panel">
@@ -356,6 +376,8 @@ export function DebugModeView({
                   key={player.name}
                   player={player}
                   trump={state.round.trump}
+                  capturedCards={displayCapturedByPlayer?.[player.name]?.cards}
+                  capturedCount={displayCapturedByPlayer?.[player.name]?.count}
                   isCurrentPlayer={
                     state.phase === "play" &&
                     player.name === state.round.current_player_name
@@ -417,12 +439,14 @@ export function DebugModeView({
 
           <section className="panel">
             <h2>Score</h2>
-            {!state.round.is_terminal ? (
-              <p className="muted">
-                Score is only available once the round is terminal.
-              </p>
-            ) : score ? (
+            {score ? (
               <>
+                {!state.round.is_terminal ? (
+                  <p className="muted">
+                    Showing the most recently completed round while the next round
+                    is in progress.
+                  </p>
+                ) : null}
                 <div className="score-awards">
                   <div className="score-award-card">
                     <strong>Bid</strong>
@@ -458,6 +482,10 @@ export function DebugModeView({
                       {score.awards.low.unit_name} via{" "}
                       {score.awards.low.player_name} with {score.low_card.code}
                     </span>
+                  </div>
+                  <div className="score-award-card">
+                    <strong>Jokers</strong>
+                    <span>{getJokerAwardText(score)}</span>
                   </div>
                   <div className="score-award-card">
                     <strong>Game</strong>
@@ -513,15 +541,15 @@ export function DebugModeView({
 
                 <div className="list-block">
                   <strong>Sleeping cards</strong>
-                  {state.round.hidden_cards.length > 0 ? (
+                  {score.hidden_cards.length > 0 ? (
                     <div className="card-row">
-                      {state.round.hidden_cards.map((card, index) => (
+                      {score.hidden_cards.map((card, index) => (
                         <PlayingCard
                           key={`${card.code}-${index}`}
                           card={card}
                           compact
                           isTrump={
-                            !card.is_joker && state.round.trump === card.suit
+                            !card.is_joker && score.trump === card.suit
                           }
                         />
                       ))}
@@ -545,7 +573,15 @@ export function DebugModeView({
                     <strong>Team {index + 1}:</strong>{" "}
                     {team.constituents.join(", ")}
                   </span>
-                  <span>Captured cards: {team.captured_count}</span>
+                  <span>
+                    Captured cards:{" "}
+                    {displayCapturedByPlayer
+                      ? getDisplayCapturedCountForTeam(
+                          displayCapturedByPlayer,
+                          team.constituents,
+                        )
+                      : team.captured_count}
+                  </span>
                 </div>
               ))}
             </div>

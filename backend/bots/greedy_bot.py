@@ -15,6 +15,7 @@ try:
         would_win,
     )
     from .base import BotPlayer
+    from .search_eval import calculate_functional_deck_low
 except ImportError:
     from constants import GAME_VALUES, HAND_SIZE, RANKS, RANK_ORDER
     from engine import Auction, get_legal_actions, get_legal_auction_actions
@@ -28,6 +29,7 @@ except ImportError:
         would_win,
     )
     from bots.base import BotPlayer
+    from bots.search_eval import calculate_functional_deck_low
 
 
 class GreedyPlayer(BotPlayer):
@@ -85,6 +87,9 @@ class GreedyPlayer(BotPlayer):
         lowest_trump = min(trump_cards, key=lambda card: RANK_ORDER[card.rank])
         return RANK_ORDER[lowest_trump.rank] <= RANK_ORDER["10"]
 
+    def _has_exact_low_trump(self, trump_suit: str, deck_low: str) -> bool:
+        return any(card.rank == deck_low for card in self._trump_cards(trump_suit))
+
     def _has_game_strength(self) -> bool:
         game_total = sum(
             GAME_VALUES.get(card.rank, 0)
@@ -104,9 +109,17 @@ class GreedyPlayer(BotPlayer):
             return True
         if not trump_cards:
             return False
-        if self._count_jokers() > 0:
-            return True
         return any(card.rank in {"A", "K", "Q", "J"} for card in trump_cards)
+
+    def _joker_bid_bonus(self, trump_suit: str) -> int:
+        if self._count_jokers() == 0:
+            return 0
+        return 1 if self._trump_cards(trump_suit) else 0
+
+    def _guaranteed_opening_points(self, trump_suit: str, deck_low: str) -> int:
+        return int(self._has_high_trump(trump_suit)) + int(
+            self._has_exact_low_trump(trump_suit, deck_low)
+        )
 
     def _estimate_hand_strength(self, trump_suit: str) -> int:
         estimate = 0
@@ -114,7 +127,7 @@ class GreedyPlayer(BotPlayer):
             estimate += 1
         if self._has_low_trump_candidate(trump_suit):
             estimate += 1
-        estimate += self._count_jokers()
+        estimate += self._joker_bid_bonus(trump_suit)
         if self._has_game_strength():
             estimate += 1
         if self._has_trump_control(trump_suit):
@@ -175,8 +188,18 @@ class GreedyPlayer(BotPlayer):
         self,
         auction_state: AuctionState,
     ) -> AuctionEvent:
-        self.preferred_suit = self._select_preferred_suit()
+        self._opening_suit_override = None
         legal_actions = get_legal_auction_actions(auction_state)
+        opening_commitment = self._opening_bid_commitment(auction_state)
+        if opening_commitment is not None:
+            opening_bid, opening_suit = opening_commitment
+            self.preferred_suit = opening_suit
+            self._opening_suit_override = opening_suit
+            for action in legal_actions:
+                if action.action == "bid" and action.amount == opening_bid:
+                    return action
+
+        self.preferred_suit = self._select_preferred_suit()
         next_bid = (
             1 if auction_state.highest_bid is None
             else auction_state.highest_bid + 1
@@ -221,26 +244,54 @@ class GreedyPlayer(BotPlayer):
         }
 
     def _calculate_low(self, num_players: int) -> str:
-        dealt = HAND_SIZE * num_players
-        best_low = None
-        best_diff = float("inf")
+        return calculate_functional_deck_low(num_players)
 
-        for i, rank in enumerate(RANKS):
-            remaining_ranks = RANKS[i:]
-            deck_size = 4 * len(remaining_ranks) + 2
-            hiding = deck_size - dealt
+    def _all_candidate_suits(self) -> list[str]:
+        candidate_suits = {
+            card.suit
+            for card in self.cards
+            if not card.is_joker and card.suit is not None
+        }
+        if not candidate_suits:
+            return list(self._candidate_suits)
+        return sorted(
+            candidate_suits,
+            key=lambda suit: (
+                self._preferred_suit_key(suit),
+                -self._candidate_suits.index(suit),
+            ),
+            reverse=True,
+        )
 
-            if hiding <= 0:
-                continue
+    def _opening_bid_commitment(
+        self,
+        auction_state: AuctionState,
+    ) -> tuple[int, str] | None:
+        if auction_state.highest_bid is not None:
+            return None
 
-            diff = abs(hiding - 2)
-            if diff < best_diff:
-                best_diff = diff
-                best_low = rank
+        deck_low = self._calculate_low(len(auction_state.player_names))
+        best_suit: str | None = None
+        best_points = 0
+        best_key: tuple | None = None
 
-        if best_low is None:
-            raise ValueError(f"could not determine a functional deck low for {num_players} players")
-        return best_low
+        for suit in self._all_candidate_suits():
+            guaranteed_points = self._guaranteed_opening_points(suit, deck_low)
+            suit_key = self._preferred_suit_key(suit)
+            if (
+                guaranteed_points > best_points
+                or (
+                    guaranteed_points == best_points
+                    and (best_key is None or suit_key > best_key)
+                )
+            ):
+                best_points = guaranteed_points
+                best_suit = suit
+                best_key = suit_key
+
+        if best_suit is None or best_points <= 0:
+            return None
+        return best_points, best_suit
 
     def _candidate_opening_suits(self) -> list[str]:
         candidate_suits = {
@@ -389,12 +440,43 @@ class GreedyPlayer(BotPlayer):
         if not self._use_rollout_auction:
             return self._choose_threshold_auction_action(auction_state)
 
+        self._opening_suit_override = None
+        opening_commitment = self._opening_bid_commitment(auction_state)
         pass_action = next(
             (action for action in legal_actions if action.action == "pass"),
             None,
         )
         bid_actions = [action for action in legal_actions if action.action == "bid"]
         candidate_suits = self._candidate_opening_suits()
+        if opening_commitment is not None:
+            opening_bid, opening_suit = opening_commitment
+            pass_action = None
+            bid_actions = [
+                action for action in bid_actions if action.amount == opening_bid
+            ]
+            candidate_suits = [opening_suit]
+        else:
+            next_bid = (
+                1 if auction_state.highest_bid is None
+                else auction_state.highest_bid + 1
+            )
+            bid_ceiling = max(
+                self._estimate_hand_strength(suit)
+                for suit in candidate_suits
+            )
+            bid_actions = [
+                action
+                for action in bid_actions
+                if action.amount is not None
+                and next_bid <= action.amount <= max(next_bid, bid_ceiling)
+            ]
+            if not bid_actions and pass_action is None:
+                bid_actions = [
+                    min(
+                        (action for action in legal_actions if action.action == "bid"),
+                        key=lambda action: action.amount or 0,
+                    )
+                ]
         rollout_worlds = self._build_rollout_worlds(auction_state)
 
         best_action: AuctionEvent | None = None

@@ -37,6 +37,7 @@ class GameSession:
     target_score: int = 21
     round_number: int = 1
     last_round_score: dict | None = None
+    last_scored_round_number: int | None = None
 
     @property
     def score_unit_names(self) -> list[str]:
@@ -435,7 +436,10 @@ class MatchController:
     def _score_terminal_round_if_needed(self) -> None:
         if (
             not self.session.game.round_state.is_terminal
-            or self.session.last_round_score is not None
+            or (
+                self.session.last_round_score is not None
+                and self.session.last_scored_round_number == self.session.round_number
+            )
         ):
             return
 
@@ -444,6 +448,7 @@ class MatchController:
         )
         self._apply_match_score_updates(round_score)
         self.session.last_round_score = round_score
+        self.session.last_scored_round_number = self.session.round_number
 
     def get_state(self) -> GameSession:
         self._score_terminal_round_if_needed()
@@ -466,6 +471,7 @@ class MatchController:
     def reset_round(self, auto_run_bots: bool = False) -> GameSession:
         self.session.game.reset_round()
         self.session.last_round_score = None
+        self.session.last_scored_round_number = None
         self.session.auction = self._build_auction_state(
             self.session.player_names,
             self.session.dealer_index,
@@ -491,7 +497,6 @@ class MatchController:
             next_dealer_index,
         )
         self.session.round_number += 1
-        self.session.last_round_score = None
         self._sync_all_bot_hands()
         if auto_run_bots:
             self.run_bot_turns()
@@ -533,8 +538,6 @@ class MatchController:
         return self.session
 
     def get_score(self) -> dict:
-        if not self.session.game.round_state.is_terminal:
-            raise RoundNotTerminalError("Round is not terminal yet.")
         self._score_terminal_round_if_needed()
         if self.session.last_round_score is None:
             raise RoundNotTerminalError("Round score is unavailable.")

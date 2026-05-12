@@ -13,6 +13,16 @@ type MutatingRequestOptions = {
   auto_run_bots?: boolean;
 };
 
+class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 function withAutoRunBots(
   path: string,
   options?: MutatingRequestOptions,
@@ -42,7 +52,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       payload && typeof payload === "object" && "detail" in payload
         ? String(payload.detail)
         : `${response.status} ${response.statusText}`;
-    throw new Error(detail);
+    throw new ApiError(response.status, detail);
   }
 
   return payload as T;
@@ -123,6 +133,17 @@ export function playCard(
 
 export function fetchScore(): Promise<Score> {
   return request<Score>("/game/score");
+}
+
+export async function fetchOptionalScore(): Promise<Score | null> {
+  try {
+    return await fetchScore();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export function stepBotTurn(): Promise<GameState> {

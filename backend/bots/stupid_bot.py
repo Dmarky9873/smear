@@ -9,12 +9,6 @@ except ImportError:
     from models import AuctionEvent, AuctionState, Card, RoundState, would_win, get_cards_value
     from bots.base import BotPlayer
 
-try:
-    from .base import BotPlayer
-except ImportError:
-    from base import BotPlayer
-
-
 class StupidBot(BotPlayer):
     def choose_card(self, round_state: RoundState) -> Card:
         """For the stupid player, play the card with the highest expected value
@@ -46,4 +40,4 @@ class StupidBot(BotPlayer):
         for action in legal_actions:
             if action.action == "pass":
                 return action
-        raise ValueError("greedy bot could not find a legal auction action")
+        raise ValueError("stupid bot could not find a legal auction action")

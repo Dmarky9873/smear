@@ -111,14 +111,13 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
             for player in round_state.players
             if player.name != self.name
         }
-        trump_or_joker_voids: set[str] = set()
+        players_without_joker: set[str] = set()
 
         for trick in [*round_state.trick_history, round_state.current_trick]:
             if len(trick.plays) < 2:
                 continue
 
             prior_plays: list[Play] = []
-            trick_trump = trick.trump
             for play in trick.plays:
                 if not prior_plays:
                     prior_plays.append(play)
@@ -130,50 +129,31 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                     continue
 
                 lead_card = prior_plays[0].card
-                trump_played = any(
-                    trick_trump is not None
-                    and not prior_play.card.is_joker
-                    and prior_play.card.suit == trick_trump
-                    for prior_play in prior_plays
-                )
-                joker_played = any(
-                    prior_play.card.is_joker for prior_play in prior_plays
-                )
-
-                if trump_played or joker_played:
-                    if (
-                        not play.card.is_joker
-                        and (trick_trump is None or play.card.suit != trick_trump)
-                    ):
-                        trump_or_joker_voids.add(player_name)
-                elif (
+                if (
                     not lead_card.is_joker
-                    and trick_trump is not None
-                    and lead_card.suit != trick_trump
-                    and (play.card.is_joker or play.card.suit != lead_card.suit)
+                    and not play.card.is_joker
+                    and play.card.suit != lead_card.suit
+                    and play.card.suit != trick.trump
                 ):
                     suit_voids[player_name].add(lead_card.suit)
+                    if lead_card.suit == trick.trump:
+                        players_without_joker.add(player_name)
 
                 prior_plays.append(play)
 
-        return suit_voids, trump_or_joker_voids
+        return suit_voids, players_without_joker
 
     def _card_allowed_for_player(
         self,
         card: Card,
         player_name: str,
         *,
-        trump: str | None,
         suit_voids: dict[str, set[str]],
-        trump_or_joker_voids: set[str],
+        players_without_joker: set[str],
     ) -> bool:
-        if player_name in trump_or_joker_voids:
-            if card.is_joker:
-                return False
-            if trump is not None and card.suit == trump:
-                return False
-
-        return card.is_joker or card.suit not in suit_voids.get(player_name, set())
+        if card.is_joker:
+            return player_name not in players_without_joker
+        return card.suit not in suit_voids.get(player_name, set())
 
     def _sample_constrained_unseen_cards(
         self,
@@ -181,9 +161,8 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         unseen_cards: list[Card],
         player_hand_sizes: dict[str, int],
         hidden_count: int,
-        trump: str | None,
         suit_voids: dict[str, set[str]],
-        trump_or_joker_voids: set[str],
+        players_without_joker: set[str],
         rng: Random,
     ) -> tuple[dict[str, set[Card]], set[Card]]:
         recipient_capacities = {
@@ -203,9 +182,8 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 or self._card_allowed_for_player(
                     card,
                     recipient,
-                    trump=trump,
                     suit_voids=suit_voids,
-                    trump_or_joker_voids=trump_or_joker_voids,
+                    players_without_joker=players_without_joker,
                 )
             ]
             if not eligible_recipients:
@@ -295,7 +273,7 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 "public state is inconsistent with the deck and remaining card counts"
             )
 
-        suit_voids, trump_or_joker_voids = self._infer_void_constraints(round_state)
+        suit_voids, players_without_joker = self._infer_void_constraints(round_state)
         seed_bytes = sha256(
             self._determinization_seed_payload(round_state, known_hand).encode("utf-8")
         ).digest()
@@ -316,9 +294,8 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 unseen_cards=unseen_cards,
                 player_hand_sizes=opponent_hand_sizes,
                 hidden_count=hidden_count,
-                trump=round_state.trump,
                 suit_voids=suit_voids,
-                trump_or_joker_voids=trump_or_joker_voids,
+                players_without_joker=players_without_joker,
                 rng=rng,
             )
             cloned_players_by_name = {}

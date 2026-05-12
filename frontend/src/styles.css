@@ -849,8 +849,26 @@ button {
   margin: 0;
 }
 
+.play-seat__header-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .play-seat__status {
   font-size: 16px;
+  font-weight: 700;
+}
+
+.play-seat__leader-badge {
+  padding: 4px 9px;
+  border: 1px solid var(--border-accent);
+  border-radius: 999px;
+  background: var(--surface-accent-soft);
+  color: var(--accent-text);
+  font-size: 14px;
   font-weight: 700;
 }
 

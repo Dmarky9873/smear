@@ -166,6 +166,87 @@ class RoundStateTransitionTests(unittest.TestCase):
             {"J1", "KS", "9H"},
         )
 
+    def test_player_may_trump_or_play_joker_even_when_holding_led_suit(self):
+        player_a = Player("A", {Card("AD")})
+        player_b = Player("B", {Card("9D"), Card("10H"), Card("J1"), Card("KS")})
+        player_c = Player("C", {Card("QC")})
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        round_state = RoundState(
+            players=players,
+            current_player=player_b,
+            trump="H",
+            current_trick=TrickState(
+                player_a,
+                [Play(player_a, Card("AD"))],
+                players,
+                "H",
+            ),
+            hidden_cards=set(),
+            trick_history=[],
+            teams=teams,
+            deck=Deck("9"),
+        )
+
+        self.assertEqual(
+            {card.code for card in get_legal_actions(round_state)},
+            {"9D", "10H", "J1"},
+        )
+
+    def test_trump_led_requires_joker_when_void_in_trump(self):
+        player_a = Player("A", {Card("AD")})
+        player_b = Player("B", {Card("JH"), Card("QH"), Card("AH"), Card("10S"), Card("KS"), Card("J2")})
+        player_c = Player("C", {Card("QS")})
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        round_state = RoundState(
+            players=players,
+            current_player=player_b,
+            trump="D",
+            current_trick=TrickState(
+                player_a,
+                [Play(player_a, Card("AD")), Play(player_c, Card("QS"))],
+                players,
+                "D",
+            ),
+            hidden_cards=set(),
+            trick_history=[],
+            teams=teams,
+            deck=Deck("10"),
+        )
+
+        self.assertEqual(
+            {card.code for card in get_legal_actions(round_state)},
+            {"J2"},
+        )
+
+    def test_trump_led_allows_slough_only_when_void_in_trump_and_joker(self):
+        player_a = Player("A", {Card("AD")})
+        player_b = Player("B", {Card("JH"), Card("QH"), Card("AH"), Card("10S"), Card("KS")})
+        player_c = Player("C", {Card("QS")})
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        round_state = RoundState(
+            players=players,
+            current_player=player_b,
+            trump="D",
+            current_trick=TrickState(
+                player_a,
+                [Play(player_a, Card("AD")), Play(player_c, Card("QS"))],
+                players,
+                "D",
+            ),
+            hidden_cards=set(),
+            trick_history=[],
+            teams=teams,
+            deck=Deck("10"),
+        )
+
+        self.assertEqual(
+            {card.code for card in get_legal_actions(round_state)},
+            {"10S", "AH", "JH", "KS", "QH"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

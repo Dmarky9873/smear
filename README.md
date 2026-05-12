@@ -81,11 +81,20 @@ Additional details:
 The play restrictions in the engine are:
 
 - If you are leading a trick after trump has already been established, any card is legal.
-- If a trump suit card or a joker has already been played into the current trick, every later player must play either a trump suit card or a joker if they have one. If they have neither, they may play any card.
-- If no trump suit card or joker has yet been played and the lead card is a non-trump suit card, a later player must follow the led suit if possible.
-- Only if the player has no card in the led suit may they discard any other card, including trump or a joker.
+- If trump was led, any trump card or joker is legal.
+- If trump was led and you have at least one trump card or joker, you may not discard a non-trump off-suit card.
+- If a non-trump, non-joker card was led, you may always play a trump suit card or a joker.
+- If you choose to play a non-trump, non-joker card, it must follow the led suit if possible.
+- Only if the led card was not trump and you have no card in the led suit may you discard any non-trump, non-joker off-suit card.
 
-This means the engine does not allow a forced trump-in or joker play on a plain non-trump lead. Once a trump suit card or joker appears, the remainder of the trick is forced into the trump-or-joker rule.
+This means trump cards and jokers are always legal during a trick, but a trump lead blocks non-trump discards while you still hold any trump-capable response.
+
+Examples:
+
+- Trump is hearts, the trick is led with `AD`, and your hand is `9D`, `10H`, `J1`, `KS`. Your legal plays are `9D`, `10H`, and `J1`. `KS` is illegal because it is neither trump, nor a joker, nor a diamond.
+- Trump is hearts, the trick is led with `AH`, and your hand is `9D`, `10H`, `J1`, `KS`. Your legal plays are `10H` and `J1`. Because hearts were led, a non-trump, non-joker off-suit discard is not allowed while you still hold trump.
+- Trump is diamonds, the trick is led with `AD`, and your hand is `JH`, `QH`, `AH`, `10S`, `KS`, `J2`. Your only legal play is `J2`. Because trump was led, the joker is the only trump-capable response in hand.
+- If the trick is led with a joker, every card in hand is legal.
 
 ### Round Scoring
 

@@ -378,6 +378,7 @@ export function PlayModeView({
                 const isCurrentPlayer = player.name === turnPlayer?.name;
                 const isBot = Boolean(player.bot_id);
                 const tablePlay = getVisiblePlayForPlayer(visibleTrick, player.name);
+                const isTrickLeader = visibleTrick?.leader_name === player.name;
                 const displayCaptured = displayCapturedByPlayer?.[player.name] ?? {
                   cards: player.captured_cards,
                   count: player.captured_count,
@@ -409,9 +410,14 @@ export function PlayModeView({
                         {player.name}
                         {player.bot_label ? ` (${player.bot_label})` : ""}
                       </h3>
-                      <span className="play-seat__status">
-                        {isBot ? "Bot" : "Human"}
-                      </span>
+                      <div className="play-seat__header-tags">
+                        {isTrickLeader ? (
+                          <span className="play-seat__leader-badge">Lead</span>
+                        ) : null}
+                        <span className="play-seat__status">
+                          {isBot ? "Bot" : "Human"}
+                        </span>
+                      </div>
                     </div>
                     <div className="play-seat__meta">
                       <span>{player.cards.length} cards</span>
@@ -572,7 +578,7 @@ export function PlayModeView({
                                 className="play-history-block"
                               >
                                 <div className="play-history-block__header">
-                                  <span>Winner</span>
+                                  <span>Lead {trick.leader_name}</span>
                                   <strong>{trick.winner_name ?? "-"}</strong>
                                 </div>
                                 <div className="play-history-block__cards">

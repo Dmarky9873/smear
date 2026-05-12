@@ -479,7 +479,7 @@ class MinimaxNTrickBotTests(unittest.TestCase):
             deck=deck,
         )
 
-    def _build_trump_or_joker_void_state(self) -> RoundState:
+    def _build_trump_led_void_state(self) -> RoundState:
         player_a = Player("A", {Card("AH")})
         player_b = Player("B", {Card("QC")})
         player_c = Player("C", {Card("AD")})
@@ -762,8 +762,8 @@ class MinimaxNTrickBotTests(unittest.TestCase):
                 all(card.is_joker or card.suit != "H" for card in player_b.cards)
             )
 
-    def test_determinization_respects_trump_or_joker_voids(self):
-        round_state = self._build_trump_or_joker_void_state()
+    def test_determinization_respects_trump_led_voids(self):
+        round_state = self._build_trump_led_void_state()
         bot = HumanInformationMinimaxNTrickPlayer(
             "A",
             cards=set(round_state.current_player.cards),
@@ -780,7 +780,10 @@ class MinimaxNTrickBotTests(unittest.TestCase):
                 player for player in determinized_state.players if player.name == "B"
             )
             self.assertTrue(
-                all(not card.is_joker and card.suit != "S" for card in player_b.cards)
+                all(
+                    not card.is_joker and card.suit != "S"
+                    for card in player_b.cards
+                )
             )
 
     def test_transposition_table_preserves_exact_best_action(self):

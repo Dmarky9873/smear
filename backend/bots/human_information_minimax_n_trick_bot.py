@@ -10,6 +10,7 @@ try:
     )
     from backend.models import Card, Play, RoundState, Team, TrickState
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from .search_eval import ensure_captured_plays_synchronized
 except ImportError:
     from engine import (
         apply_trick_action_for_search,
@@ -17,6 +18,7 @@ except ImportError:
     )
     from models import Card, Play, RoundState, Team, TrickState
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
+    from .search_eval import ensure_captured_plays_synchronized
 
 
 class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
@@ -24,19 +26,8 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
 
     DETERMINIZATION_SAMPLES = 12
     MIN_DETERMINIZATION_SAMPLES = 2
-
-    def set_match_context(
-        self,
-        *,
-        player_names: list[str],
-        teams: list[tuple[str, ...]],
-        match_scores: dict[str, int],
-        target_score: int,
-    ) -> None:
-        self._context_player_names = list(player_names)
-        self._context_teams = [tuple(team) for team in teams]
-        self._context_match_scores = dict(match_scores)
-        self._context_target_score = target_score
+    AUCTION_DETERMINIZATION_SAMPLES = 6
+    THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES = 8
 
     def _public_visible_cards(
         self,
@@ -128,7 +119,9 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         ).digest()
         base_seed = int.from_bytes(seed_bytes[:8], "big")
         determinizations: list[RoundState] = []
-        sample_count = self._determinization_sample_count()
+        sample_count = self._determinization_sample_count(
+            player_count=len(round_state.players),
+        )
 
         for sample_index in range(sample_count):
             rng = Random(base_seed + sample_index)
@@ -171,24 +164,42 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 for team in round_state.teams
             ]
 
-            determinizations.append(
-                RoundState(
-                    players=cloned_players,
-                    current_player=cloned_players_by_name[
-                        round_state.current_player.name
-                    ],
-                    trump=round_state.trump,
-                    current_trick=cloned_current_trick,
-                    hidden_cards=set(shuffled_cards[cursor: cursor + hidden_count]),
-                    trick_history=cloned_trick_history,
-                    teams=cloned_teams,
-                    deck=round_state.deck,
-                )
+            determinized_state = RoundState(
+                players=cloned_players,
+                current_player=cloned_players_by_name[
+                    round_state.current_player.name
+                ],
+                trump=round_state.trump,
+                current_trick=cloned_current_trick,
+                hidden_cards=set(shuffled_cards[cursor: cursor + hidden_count]),
+                trick_history=cloned_trick_history,
+                teams=cloned_teams,
+                deck=round_state.deck,
             )
+            ensure_captured_plays_synchronized(determinized_state)
+            determinizations.append(determinized_state)
 
         return determinizations
 
-    def _determinization_sample_count(self) -> int:
+    def _determinization_sample_count(self, *, player_count: int | None = None) -> int:
+        if player_count == 3:
+            if self.depth <= 2:
+                return self.DETERMINIZATION_SAMPLES
+            if self.depth == 3:
+                return max(
+                    self.MIN_DETERMINIZATION_SAMPLES,
+                    (self.DETERMINIZATION_SAMPLES * 2) // 3,
+                )
+            if self.depth == 4:
+                return max(
+                    self.MIN_DETERMINIZATION_SAMPLES,
+                    self.DETERMINIZATION_SAMPLES // 3,
+                )
+            return max(
+                self.MIN_DETERMINIZATION_SAMPLES,
+                self.DETERMINIZATION_SAMPLES // 5,
+            )
+
         if self.depth <= 2:
             return self.DETERMINIZATION_SAMPLES
         if self.depth == 3:
@@ -202,6 +213,17 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 self.DETERMINIZATION_SAMPLES // 4,
             )
         return self.MIN_DETERMINIZATION_SAMPLES
+
+    def _build_auction_worlds(self, auction_state):
+        return self._build_sampled_auction_worlds(
+            auction_state,
+            sample_count=self._auction_determinization_sample_count(auction_state),
+        )
+
+    def _auction_determinization_sample_count(self, auction_state) -> int:
+        if len(auction_state.player_names) == 3:
+            return self.THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES
+        return self.AUCTION_DETERMINIZATION_SAMPLES
 
     def choose_card(self, round_state: RoundState) -> Card:
         if round_state.current_player.name != self.name:
@@ -227,7 +249,8 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         best_score = float("-inf")
         total_units = len(legal_actions) * len(determinizations)
         completed_units = 0
-        transposition_table: dict[tuple, int] = {}
+        transposition_table: dict[tuple, float] = {}
+        auction_state = self._play_auction_state()
         self.begin_progress(
             label=f"Searching {self.depth} tricks ahead",
             total_units=total_units,
@@ -242,18 +265,14 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                 ):
                     trick_count_before = len(determinized_state.trick_history)
                     play = Play(determinized_state.current_player, card)
-                    undo = apply_trick_action_for_search(determinized_state, play)
+                    undo = apply_trick_action_for_search(
+                        determinized_state,
+                        play,
+                        validate_legal=False,
+                    )
                     try:
                         trick_completed = (
                             len(determinized_state.trick_history) > trick_count_before
-                        )
-                        immediate_value = (
-                            self._evaluate_trick(
-                                determinized_state.trick_history[-1],
-                                team_member_names,
-                            )
-                            if trick_completed
-                            else 0
                         )
                         child_value, _ = self._search_n_trick_value(
                             determinized_state,
@@ -262,8 +281,9 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                             float("-inf"),
                             float("inf"),
                             transposition_table,
+                            auction_state,
                         )
-                        total_score += immediate_value + child_value
+                        total_score += child_value
                     finally:
                         undo_trick_action_for_search(determinized_state, undo)
 

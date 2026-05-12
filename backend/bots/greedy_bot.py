@@ -58,6 +58,8 @@ class GreedyPlayer(BotPlayer):
         teams: list[tuple[str, ...]],
         match_scores: dict[str, int],
         target_score: int,
+        auction_state=None,
+        round_state=None,
     ) -> None:
         self._context_player_names = list(player_names)
         self._context_teams = [tuple(team) for team in teams]
@@ -250,7 +252,10 @@ class GreedyPlayer(BotPlayer):
             return list(self._candidate_suits[: self.MAX_AUCTION_CANDIDATE_SUITS])
         ordered_suits = sorted(
             candidate_suits,
-            key=self._preferred_suit_key,
+            key=lambda suit: (
+                self._preferred_suit_key(suit),
+                -self._candidate_suits.index(suit),
+            ),
             reverse=True,
         )
         return ordered_suits[: self.MAX_AUCTION_CANDIDATE_SUITS]

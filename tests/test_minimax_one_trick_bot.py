@@ -3,6 +3,12 @@ import unittest
 from backend.bots.human_information_minimax_one_trick_bot import (
     HumanInformationMinimaxOneTrickPlayer,
 )
+from backend.bots.legacy_human_information_minimax_n_trick_bot import (
+    LegacyHumanInformationMinimaxNTrickPlayer,
+)
+from backend.bots.legacy_omniscient_minimax_n_trick_bot import (
+    LegacyOmniscientMinimaxNTrickPlayer,
+)
 from backend.bots.minimax_one_trick_bot import MinimaxOneTrickPlayer
 from backend.bots.o_minimax_one_trick_bot import OMNISCIENT_MinimaxOneTrickPlayer
 from backend.bots.omniscient_minimax_one_trick_bot import (
@@ -93,6 +99,16 @@ class MinimaxOneTrickBotTests(unittest.TestCase):
     def test_registry_builds_omniscient_bot_for_omniscient_minimax_id(self):
         bot = build_ready_bot("o-one-trick-minmax", "A")
         self.assertIsInstance(bot, OmniscientMinimaxOneTrickPlayer)
+
+    def test_registry_builds_hidden_legacy_minimax_ids(self):
+        self.assertIsInstance(
+            build_ready_bot("legacy-2-trick-minmax", "A"),
+            LegacyHumanInformationMinimaxNTrickPlayer,
+        )
+        self.assertIsInstance(
+            build_ready_bot("legacy-o-2-trick-minmax", "A"),
+            LegacyOmniscientMinimaxNTrickPlayer,
+        )
 
     def test_legacy_import_paths_remain_compatible(self):
         self.assertIs(MinimaxOneTrickPlayer, HumanInformationMinimaxOneTrickPlayer)

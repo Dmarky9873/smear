@@ -4,6 +4,7 @@ from backend.engine import (
     Game,
     apply_trick_action_for_search,
     apply_trick_action_to_state,
+    get_legal_actions,
     undo_trick_action_for_search,
 )
 from backend.models import Card, Deck, Play, Player, RoundState, Team, TrickState
@@ -137,6 +138,33 @@ class RoundStateTransitionTests(unittest.TestCase):
         self.assertEqual(game.round_state.current_player.name, "C")
         self.assertEqual(len(game.round_state.trick_history), 1)
         self.assertEqual(sorted(card.code for card in game.round_state.current_player.captured_cards), ["10C", "AH", "J1"])
+
+    def test_void_in_led_suit_may_slough_even_if_holding_joker(self):
+        player_a = Player("A", {Card("10D")})
+        player_b = Player("B", {Card("KD")})
+        player_c = Player("C", {Card("J1"), Card("KS"), Card("9H")})
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        round_state = RoundState(
+            players=players,
+            current_player=player_c,
+            trump="C",
+            current_trick=TrickState(
+                player_a,
+                [Play(player_a, Card("10D")), Play(player_b, Card("KD"))],
+                players,
+                "C",
+            ),
+            hidden_cards=set(),
+            trick_history=[],
+            teams=teams,
+            deck=Deck("10"),
+        )
+
+        self.assertEqual(
+            {card.code for card in get_legal_actions(round_state)},
+            {"J1", "KS", "9H"},
+        )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,52 @@ from backend.simulator import benchmark_models, compare_models_objectively
 
 
 class SimulatorTeamSizeTests(unittest.TestCase):
+    @patch("backend.simulator.time.perf_counter", side_effect=[3.0, 4.0])
+    @patch("backend.simulator.Simulator.run_match")
+    @patch("backend.simulator.MatchController.create")
+    def test_three_player_mode_fills_missing_third_seat_with_random(
+        self,
+        create_mock,
+        run_match_mock,
+        perf_counter_mock,
+    ):
+        captured_create_kwargs = {}
+
+        def fake_create(**kwargs):
+            captured_create_kwargs.update(kwargs)
+            return object()
+
+        create_mock.side_effect = fake_create
+        run_match_mock.return_value = MatchResult(
+            rounds_played=1,
+            is_draw=False,
+            winner_names=["Player 1"],
+            final_scores={
+                "Player 1": 21,
+                "Player 2": 0,
+                "Player 3": 0,
+            },
+        )
+
+        result = benchmark_models(
+            1,
+            10,
+            "greedy",
+            "stupid",
+            show_progress=False,
+            three_player=True,
+        )
+
+        self.assertEqual(captured_create_kwargs["num_players"], 3)
+        self.assertEqual(
+            captured_create_kwargs["player_names"],
+            ["Player 1", "Player 2", "Player 3"],
+        )
+        self.assertTrue(result["three_player"])
+        self.assertEqual(result["players_per_game"], 3)
+        self.assertIn("random", result["models"])
+        self.assertEqual(perf_counter_mock.call_count, 2)
+
     @patch("backend.simulator.time.perf_counter", side_effect=[10.0, 12.5])
     @patch("backend.simulator.Simulator.run_match")
     @patch("backend.simulator.MatchController.create")
@@ -98,6 +144,37 @@ class SimulatorTeamSizeTests(unittest.TestCase):
                 "random",
                 show_progress=False,
                 team_size=2,
+            )
+
+    def test_three_player_mode_rejects_more_than_three_models(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "three-player mode accepts at most three models",
+        ):
+            benchmark_models(
+                1,
+                10,
+                "random",
+                "greedy",
+                "stupid",
+                "one-trick-minmax",
+                show_progress=False,
+                three_player=True,
+            )
+
+    def test_three_player_mode_requires_single_seat_teams(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "three-player mode requires team_size 1",
+        ):
+            benchmark_models(
+                1,
+                10,
+                "random",
+                "greedy",
+                show_progress=False,
+                team_size=2,
+                three_player=True,
             )
 
     @patch("backend.simulator.time.perf_counter", side_effect=[1.0, 2.0])

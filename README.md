@@ -82,13 +82,10 @@ The play restrictions in the engine are:
 
 - If you are leading a trick after trump has already been established, any card is legal.
 - If a trump suit card or a joker has already been played into the current trick, every later player must play either a trump suit card or a joker if they have one. If they have neither, they may play any card.
-- If no trump suit card or joker has yet been played and the lead card is a non-trump suit card, a later player must play one of the following if possible:
-  - a card in the led suit
-  - a trump suit card
-  - a joker
-- Only if the player has none of those options may they discard any other card.
+- If no trump suit card or joker has yet been played and the lead card is a non-trump suit card, a later player must follow the led suit if possible.
+- Only if the player has no card in the led suit may they discard any other card, including trump or a joker.
 
-This means the engine allows trumping in or playing a joker on a non-trump lead, and once a trump suit card or joker appears, the remainder of the trick is forced into the trump-or-joker rule.
+This means the engine does not allow a forced trump-in or joker play on a plain non-trump lead. Once a trump suit card or joker appears, the remainder of the trick is forced into the trump-or-joker rule.
 
 ### Round Scoring
 

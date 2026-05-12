@@ -56,41 +56,40 @@ def would_win(card: Card, trick_state: TrickState) -> bool:
     if not trick_state.plays:
         return True
 
-    trump_cards = [
-        play.card
-        for play in trick_state.plays
-        if not play.card.is_joker and play.card.suit == trick_state.trump
-    ]
+    trump_high_rank = -1
+    joker_played = False
+    lead_suit = None
+    lead_high_rank = -1
+    for play in trick_state.plays:
+        played_card = play.card
+        if played_card.is_joker:
+            joker_played = True
+            continue
+        played_rank = RANK_ORDER[played_card.rank]
+        if played_card.suit == trick_state.trump:
+            trump_high_rank = max(trump_high_rank, played_rank)
+            continue
+        if lead_suit is None:
+            lead_suit = played_card.suit
+        if played_card.suit == lead_suit:
+            lead_high_rank = max(lead_high_rank, played_rank)
+
     if not card.is_joker and card.suit == trick_state.trump:
-        return not trump_cards or RANK_ORDER[card.rank] > max(
-            RANK_ORDER[trump_card.rank] for trump_card in trump_cards
-        )
-    if trump_cards:
+        return trump_high_rank < RANK_ORDER[card.rank]
+    if trump_high_rank >= 0:
         return False
 
-    joker_count = sum(1 for play in trick_state.plays if play.card.is_joker)
     if card.is_joker:
-        return joker_count == 0
-    if joker_count > 0:
+        return not joker_played
+    if joker_played:
         return False
 
-    lead_suit = next(
-        (play.card.suit for play in trick_state.plays if not play.card.is_joker),
-        None,
-    )
     if lead_suit is None:
         return True
     if card.suit != lead_suit:
         return False
 
-    lead_suit_cards = [
-        play.card
-        for play in trick_state.plays
-        if not play.card.is_joker and play.card.suit == lead_suit
-    ]
-    return RANK_ORDER[card.rank] > max(
-        RANK_ORDER[lead_suit_card.rank] for lead_suit_card in lead_suit_cards
-    )
+    return RANK_ORDER[card.rank] > lead_high_rank
 
 
 def get_rank_from_card_code(card_code: str) -> str:
@@ -98,25 +97,32 @@ def get_rank_from_card_code(card_code: str) -> str:
     return card_code[:-1]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Card:
     code: str
+    _is_joker: bool = field(init=False, repr=False, compare=False, hash=False)
+    _rank: str | None = field(init=False, repr=False, compare=False, hash=False)
+    _suit: str | None = field(init=False, repr=False, compare=False, hash=False)
 
     def __post_init__(self):
         if self.code not in CARD_DICT:
             raise ValueError(f"Invalid card code: {self.code}")
+        is_joker = self.code in {"J1", "J2"}
+        object.__setattr__(self, "_is_joker", is_joker)
+        object.__setattr__(self, "_rank", None if is_joker else self.code[:-1])
+        object.__setattr__(self, "_suit", None if is_joker else self.code[-1])
 
     @property
     def is_joker(self) -> bool:
-        return self.code in {"J1", "J2"}
+        return self._is_joker
 
     @property
     def rank(self) -> str | None:
-        return None if self.is_joker else self.code[:-1]
+        return self._rank
 
     @property
     def suit(self) -> str | None:
-        return None if self.is_joker else self.code[-1]
+        return self._suit
 
     def __str__(self) -> str:
         return CARD_DICT[self.code]

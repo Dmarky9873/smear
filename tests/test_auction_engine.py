@@ -1,6 +1,11 @@
 import unittest
 
-from backend.engine import Auction, get_legal_auction_actions
+from backend.engine import (
+    Auction,
+    apply_auction_action_for_search,
+    get_legal_auction_actions,
+    undo_auction_action_for_search,
+)
 from backend.models import AuctionEvent
 
 
@@ -57,6 +62,35 @@ class AuctionRulesTests(unittest.TestCase):
         self.assertTrue(state.is_complete)
         self.assertEqual(state.highest_bidder_name, "A")
         self.assertEqual(state.current_bidder_name, "A")
+
+    def test_search_auction_apply_and_undo_restore_completed_state_transition(self):
+        auction = Auction(["A", "B", "C"], dealer="C")
+        auction.apply_event(AuctionEvent("A", "bid", 4))
+        auction.apply_event(AuctionEvent("B", "pass"))
+
+        undo = apply_auction_action_for_search(
+            auction.state,
+            AuctionEvent("C", "pass"),
+            validate_legal=False,
+        )
+
+        self.assertTrue(auction.state.is_complete)
+        self.assertEqual(auction.state.highest_bidder_name, "A")
+        self.assertEqual(auction.state.current_bidder_name, "A")
+
+        undo_auction_action_for_search(auction.state, undo)
+
+        self.assertFalse(auction.state.is_complete)
+        self.assertEqual(auction.state.current_bidder_name, "C")
+        self.assertEqual(auction.state.highest_bid, 4)
+        self.assertEqual(auction.state.highest_bidder_name, "A")
+        self.assertEqual(
+            auction.state.bid_history,
+            [
+                AuctionEvent("A", "bid", 4),
+                AuctionEvent("B", "pass"),
+            ],
+        )
 
 
 if __name__ == "__main__":

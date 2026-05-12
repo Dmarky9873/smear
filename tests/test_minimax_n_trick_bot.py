@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from backend.bots.human_information_minimax_n_trick_bot import (
     HumanInformationMinimaxNTrickPlayer,
@@ -15,12 +16,20 @@ from backend.bots.omniscient_minimax_one_trick_bot import (
     OmniscientMinimaxOneTrickPlayer,
 )
 from backend.bots.registry import build_ready_bot, list_ready_bot_metadata
+from backend.bots.search_eval import (
+    _should_rollout_cutoff_exactly,
+    apply_bid_and_match_rules,
+    ensure_captured_plays_synchronized,
+    rollout_round_to_utility,
+    score_unit_name,
+)
 from backend.engine import (
     apply_trick_action_for_search,
     get_legal_actions,
+    score_round_details,
     undo_trick_action_for_search,
 )
-from backend.models import Card, Deck, Play, Player, RoundState, Team, TrickState
+from backend.models import AuctionState, Card, Deck, Play, Player, RoundState, Team, TrickState
 
 
 class ExactOmniscientMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
@@ -148,6 +157,62 @@ class ExactOmniscientMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                     else 0
                 )
                 scores[card.code] = immediate_value + self._search_exact(
+                    round_state,
+                    self.depth - 1 if trick_completed else self.depth,
+                    team_member_names,
+                )
+            finally:
+                undo_trick_action_for_search(round_state, undo)
+
+        return scores
+
+    def _search_exact_utility(
+        self,
+        round_state: RoundState,
+        remaining_tricks: int,
+        team_member_names: set[str],
+    ) -> float:
+        if round_state.is_terminal or remaining_tricks <= 0:
+            return self._leaf_state_utility(round_state, None)
+
+        legal_actions = list(get_legal_actions(round_state))
+        if not legal_actions:
+            return self._leaf_state_utility(round_state, None)
+
+        maximizing = round_state.current_player.name in team_member_names
+        trick_count_before = len(round_state.trick_history)
+        value = float("-inf") if maximizing else float("inf")
+
+        for card in legal_actions:
+            play = Play(round_state.current_player, card)
+            undo = apply_trick_action_for_search(round_state, play)
+            try:
+                trick_completed = len(round_state.trick_history) > trick_count_before
+                child_value = self._search_exact_utility(
+                    round_state,
+                    remaining_tricks - 1 if trick_completed else remaining_tricks,
+                    team_member_names,
+                )
+                if maximizing:
+                    value = max(value, child_value)
+                else:
+                    value = min(value, child_value)
+            finally:
+                undo_trick_action_for_search(round_state, undo)
+
+        return value
+
+    def root_scores_exact_utility(self, round_state: RoundState) -> dict[str, float]:
+        team_member_names = self._team_member_names(round_state)
+        scores: dict[str, float] = {}
+
+        for card in list(get_legal_actions(round_state)):
+            trick_count_before = len(round_state.trick_history)
+            play = Play(round_state.current_player, card)
+            undo = apply_trick_action_for_search(round_state, play)
+            try:
+                trick_completed = len(round_state.trick_history) > trick_count_before
+                scores[card.code] = self._search_exact_utility(
                     round_state,
                     self.depth - 1 if trick_completed else self.depth,
                     team_member_names,
@@ -294,6 +359,91 @@ class MinimaxNTrickBotTests(unittest.TestCase):
             deck=deck,
         )
 
+    def _build_terminal_scoring_state(self) -> RoundState:
+        player_a = Player("A", set())
+        player_b = Player("B", set())
+        player_c = Player("C", set())
+        players = [player_a, player_b, player_c]
+        teams = [Team([player], set()) for player in players]
+        trick_history = [
+            TrickState(
+                player_a,
+                [
+                    Play(player_a, Card("JH")),
+                    Play(player_b, Card("QS")),
+                    Play(player_c, Card("JC")),
+                ],
+                players,
+                "H",
+            ),
+            TrickState(
+                player_a,
+                [
+                    Play(player_a, Card("AH")),
+                    Play(player_b, Card("KD")),
+                    Play(player_c, Card("J1")),
+                ],
+                players,
+                "H",
+            ),
+            TrickState(
+                player_a,
+                [
+                    Play(player_a, Card("KH")),
+                    Play(player_b, Card("AD")),
+                    Play(player_c, Card("J2")),
+                ],
+                players,
+                "H",
+            ),
+            TrickState(
+                player_a,
+                [
+                    Play(player_a, Card("QH")),
+                    Play(player_b, Card("KS")),
+                    Play(player_c, Card("QC")),
+                ],
+                players,
+                "H",
+            ),
+            TrickState(
+                player_a,
+                [
+                    Play(player_a, Card("AS")),
+                    Play(player_b, Card("AC")),
+                    Play(player_c, Card("JS")),
+                ],
+                players,
+                "H",
+            ),
+            TrickState(
+                player_b,
+                [
+                    Play(player_b, Card("JD")),
+                    Play(player_c, Card("QD")),
+                    Play(player_a, Card("KC")),
+                ],
+                players,
+                "H",
+            ),
+        ]
+        deck = Deck("J")
+        hidden_cards = set(deck.get_copy()) - {
+            play.card
+            for trick in trick_history
+            for play in trick.plays
+        }
+        return RoundState(
+            players=players,
+            current_player=player_a,
+            trump="H",
+            current_trick=TrickState(player_a, [], players, "H"),
+            hidden_cards=hidden_cards,
+            trick_history=trick_history,
+            teams=teams,
+            deck=deck,
+        )
+
     def test_omniscient_depth_one_matches_one_trick_bot(self):
         round_state = self._build_single_trick_state()
         depth_one_bot = OmniscientMinimaxNTrickPlayer("A", depth=1)
@@ -370,39 +520,163 @@ class MinimaxNTrickBotTests(unittest.TestCase):
 
         self.assertEqual(ordered_actions[0], Card("AH"))
 
-    def test_determinization_samples_reduce_for_higher_depths(self):
+    def test_leaf_state_utility_enables_hybrid_cutoff_for_deeper_search(self):
+        round_state = self._build_two_trick_state()
+        bot = OmniscientMinimaxNTrickPlayer("A", depth=3)
+
+        with patch(
+            "backend.bots.omniscient_minimax_n_trick_bot.rollout_round_to_utility",
+            return_value=7.0,
+        ) as rollout_mock:
+            value = bot._leaf_state_utility(round_state, None)
+
+        self.assertEqual(value, 7.0)
+        rollout_mock.assert_called_once()
+        self.assertEqual(rollout_mock.call_args.kwargs["hybrid_cutoff"], True)
+
+    def test_leaf_state_utility_keeps_exact_rollout_for_shallower_search(self):
+        round_state = self._build_two_trick_state()
+        bot = OmniscientMinimaxNTrickPlayer("A", depth=2)
+
+        with patch(
+            "backend.bots.omniscient_minimax_n_trick_bot.rollout_round_to_utility",
+            return_value=5.0,
+        ) as rollout_mock:
+            value = bot._leaf_state_utility(round_state, None)
+
+        self.assertEqual(value, 5.0)
+        rollout_mock.assert_called_once()
+        self.assertEqual(rollout_mock.call_args.kwargs["hybrid_cutoff"], False)
+
+    def test_hybrid_cutoff_uses_partial_evaluator_when_trump_is_set(self):
+        round_state = self._build_two_trick_state()
+
+        with (
+            patch(
+                "backend.bots.search_eval.evaluate_terminal_round_utility",
+                return_value=7.0,
+            ) as terminal_mock,
+            patch(
+                "backend.bots.search_eval.estimate_partial_match_utility",
+                side_effect=[3.0],
+            ) as estimate_mock,
+        ):
+            value = rollout_round_to_utility(
+                round_state=round_state,
+                auction_state=None,
+                match_scores=None,
+                teams=[("A",), ("B",), ("C",)],
+                target_score=21,
+                player_name="A",
+                hybrid_cutoff=True,
+            )
+
+        self.assertEqual(value, 3.0)
+        terminal_mock.assert_not_called()
+        estimate_mock.assert_called_once()
+
+    def test_hybrid_cutoff_keeps_exact_rollout_for_near_terminal_states(self):
+        round_state = self._build_ordering_state()
+        self.assertTrue(_should_rollout_cutoff_exactly(round_state))
+
+    def test_determinization_samples_stay_higher_for_three_player_games(self):
         self.assertEqual(
             HumanInformationMinimaxNTrickPlayer("A", depth=2)
-            ._determinization_sample_count(),
+            ._determinization_sample_count(player_count=4),
             12,
         )
         self.assertEqual(
             HumanInformationMinimaxNTrickPlayer("A", depth=3)
-            ._determinization_sample_count(),
+            ._determinization_sample_count(player_count=4),
             6,
         )
         self.assertEqual(
             HumanInformationMinimaxNTrickPlayer("A", depth=4)
-            ._determinization_sample_count(),
+            ._determinization_sample_count(player_count=4),
             3,
         )
         self.assertEqual(
             HumanInformationMinimaxNTrickPlayer("A", depth=5)
-            ._determinization_sample_count(),
+            ._determinization_sample_count(player_count=4),
             2,
+        )
+        self.assertEqual(
+            HumanInformationMinimaxNTrickPlayer("A", depth=3)
+            ._determinization_sample_count(player_count=3),
+            8,
+        )
+        self.assertEqual(
+            HumanInformationMinimaxNTrickPlayer("A", depth=4)
+            ._determinization_sample_count(player_count=3),
+            4,
+        )
+        self.assertEqual(
+            HumanInformationMinimaxNTrickPlayer("A", depth=3)
+            ._auction_determinization_sample_count(
+                AuctionState(
+                    dealer_index=0,
+                    current_bidder_index=1,
+                    player_names=["A", "B", "C"],
+                )
+            ),
+            8,
         )
 
     def test_transposition_table_preserves_exact_best_action(self):
         round_state = self._build_transposition_regression_state()
         cached_bot = OmniscientMinimaxNTrickPlayer("B", depth=3)
         exact_bot = ExactOmniscientMinimaxNTrickPlayer("B", depth=3)
-        exact_scores = exact_bot.root_scores_exact(round_state)
+        exact_scores = exact_bot.root_scores_exact_utility(round_state)
         chosen_card = cached_bot.choose_card(round_state)
 
         self.assertEqual(
             exact_scores[chosen_card.code],
             max(exact_scores.values()),
         )
+
+    def test_terminal_search_scoring_matches_round_scoring_rules(self):
+        round_state = self._build_terminal_scoring_state()
+        ensure_captured_plays_synchronized(round_state)
+        auction_state = AuctionState(
+            dealer_index=0,
+            current_bidder_index=1,
+            player_names=["A", "B", "C"],
+            highest_bid=5,
+            highest_bidder_name="B",
+            passed_player_names={"A", "C"},
+            is_complete=True,
+        )
+        teams = [("A",), ("B",), ("C",)]
+        match_scores = {"A": 20, "B": 19, "C": 18}
+
+        _, projected_scores = apply_bid_and_match_rules(
+            round_state=round_state,
+            auction_state=auction_state,
+            match_scores=match_scores,
+            teams=teams,
+            target_score=21,
+        )
+
+        details = score_round_details(round_state)
+        manual_scores = {
+            score_unit_name(team): float(match_scores.get(score_unit_name(team), 0))
+            for team in teams
+        }
+        round_points = {
+            result["name"]: float(result["total_points"])
+            for result in details["results"]
+        }
+        for team in teams:
+            unit_name = score_unit_name(team)
+            delta = round_points[unit_name]
+            if unit_name == "B":
+                delta = float(-auction_state.highest_bid)
+            next_score = manual_scores[unit_name] + delta
+            if unit_name != "B" and next_score > 20:
+                next_score = 20.0
+            manual_scores[unit_name] = next_score
+
+        self.assertEqual(projected_scores, manual_scores)
 
     def test_depth_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "depth must be at least 1"):

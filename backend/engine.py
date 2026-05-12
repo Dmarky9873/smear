@@ -44,6 +44,16 @@ class SearchTrickUndo:
     trick_winner: Player | None = None
 
 
+@dataclass
+class SearchAuctionUndo:
+    previous_current_bidder_index: int
+    previous_highest_bid: int | None
+    previous_highest_bidder_name: str | None
+    previous_is_complete: bool
+    previous_passed: bool
+    action: AuctionEvent
+
+
 class Auction:
     def __init__(
         self,
@@ -166,6 +176,72 @@ def get_legal_auction_actions(
     max_bid: int = 6,
 ) -> list[AuctionEvent]:
     return Auction.from_state(auction_state, max_bid=max_bid).legal_actions()
+
+
+def apply_auction_action_for_search(
+    state: AuctionState,
+    action: AuctionEvent,
+    *,
+    max_bid: int = 6,
+    validate_legal: bool = True,
+) -> SearchAuctionUndo:
+    if state.is_complete:
+        raise ValueError("auction is already complete")
+    if action.bidder_name != state.current_bidder_name:
+        raise ValueError("bidder passed is not the current bidder")
+
+    if validate_legal and action not in get_legal_auction_actions(state, max_bid=max_bid):
+        raise ValueError("auction action attempted despite it not being legal")
+
+    undo = SearchAuctionUndo(
+        previous_current_bidder_index=state.current_bidder_index,
+        previous_highest_bid=state.highest_bid,
+        previous_highest_bidder_name=state.highest_bidder_name,
+        previous_is_complete=state.is_complete,
+        previous_passed=action.bidder_name in state.passed_player_names,
+        action=action,
+    )
+
+    if action.action == "pass":
+        state.passed_player_names.add(action.bidder_name)
+    elif action.action == "bid":
+        if action.amount is None:
+            raise ValueError("bid events require an amount")
+        state.highest_bid = action.amount
+        state.highest_bidder_name = action.bidder_name
+    else:
+        raise ValueError(f"unsupported auction action: {action.action}")
+
+    state.bid_history.append(action)
+
+    if len(state.bid_history) >= len(state.player_names):
+        if state.highest_bidder_name is None:
+            raise ValueError("auction cannot complete without a winning bid")
+        state.is_complete = True
+        state.current_bidder_index = state.player_names.index(state.highest_bidder_name)
+    else:
+        state.current_bidder_index = (state.current_bidder_index + 1) % len(state.player_names)
+
+    return undo
+
+
+def undo_auction_action_for_search(
+    state: AuctionState,
+    undo: SearchAuctionUndo,
+) -> None:
+    if not state.bid_history:
+        raise ValueError("search undo expected an auction event in history")
+    last_action = state.bid_history.pop()
+    if last_action != undo.action:
+        raise ValueError("search undo expected the applied auction action at history tail")
+
+    if undo.action.action == "pass" and not undo.previous_passed:
+        state.passed_player_names.remove(undo.action.bidder_name)
+
+    state.current_bidder_index = undo.previous_current_bidder_index
+    state.highest_bid = undo.previous_highest_bid
+    state.highest_bidder_name = undo.previous_highest_bidder_name
+    state.is_complete = undo.previous_is_complete
 
 
 class Game:
@@ -377,7 +453,9 @@ def get_legal_actions(state: RoundState) -> set[Card]:
     # If no trump or joker played, check the lead card for follow-suit rules
     lead_card = state.current_trick.plays[0].card
 
-    # If a non-trump, non-joker suit was led, can follow suit or trump in.
+    # If a non-trump, non-joker suit was led, players must follow suit if able.
+    # Otherwise they may slough any card; simply holding trump or a joker does
+    # not force or authorize a trump-in on this ruleset.
     if (
         not lead_card.is_joker
         and state.trump is not None
@@ -387,13 +465,8 @@ def get_legal_actions(state: RoundState) -> set[Card]:
             card for card in hand
             if not card.is_joker and card.suit == lead_card.suit
         }
-        trump_or_joker_cards = {
-            card for card in hand
-            if card.is_joker or (not card.is_joker and card.suit == state.trump)
-        }
-        legal_plays = same_suit_cards | trump_or_joker_cards
-        if legal_plays:
-            return legal_plays
+        if same_suit_cards:
+            return same_suit_cards
         return set(hand)
 
     # If a joker was led and is the only card played, anything may be played.
@@ -449,6 +522,8 @@ def _apply_trick_action_in_place(state: RoundState, action: Play) -> bool:
 def apply_trick_action_for_search(
     state: RoundState,
     action: Play,
+    *,
+    validate_legal: bool = True,
 ) -> SearchTrickUndo:
     """Mutate a round state for search and return an undo record.
 
@@ -460,7 +535,7 @@ def apply_trick_action_for_search(
             f"action with player {action.player} was attempted despite {state.current_player} being the current player"
         )
 
-    if action.card not in get_legal_actions(state):
+    if validate_legal and action.card not in get_legal_actions(state):
         raise ValueError(
             f"action with card {action.card} attempted despite card not being in legal moves"
         )
@@ -634,10 +709,8 @@ def score_round_details(round: RoundState) -> dict:
 
     low_unit_name = player_to_unit[low_owner]
 
-    # make sure low is credited to the original owner's scoring unit
-    for unit in scoring_units:
-        unit["captured_cards"].discard(low_card)
-    unit_by_name[low_unit_name]["captured_cards"].add(low_card)
+    # Low awards a point to the original owner, but the captured-card ownership
+    # must remain untouched so game totals still reflect who actually won the card.
     unit_by_name[low_unit_name]["breakdown"]["low"] = 1
 
     # high goes to whoever possesses the highest visible trump
@@ -748,42 +821,37 @@ def get_trick_winner(trick: TrickState) -> Player:
     if not trick.is_terminal:
         raise ValueError(f"trick is not in terminal state")
 
-    trump_plays = list()
-    trick_trump = None
-    trick_trump_plays = list()
-    joker_plays = list()
+    best_trump_play = None
+    best_trump_rank = -1
+    first_joker_play = None
+    lead_suit = None
+    best_lead_play = None
+    best_lead_rank = -1
 
     for play in trick.plays:
-        # Check if card is trump suit (excluding jokers)
-        if not play.card.is_joker and play.card.suit == trick.trump:
-            trump_plays.append(play)
+        card = play.card
+        if card.is_joker:
+            if first_joker_play is None:
+                first_joker_play = play
+            continue
 
-        # Set trick trump to first non-joker, non-trump suit
-        if not play.card.is_joker and play.card.suit != trick.trump and trick_trump is None:
-            trick_trump = play.card.suit
+        card_rank = RANK_ORDER[card.rank]
+        if card.suit == trick.trump:
+            if card_rank > best_trump_rank:
+                best_trump_rank = card_rank
+                best_trump_play = play
+            continue
 
-        # Add to trick_trump_plays if it matches trick trump
-        if not play.card.is_joker and play.card.suit == trick_trump:
-            trick_trump_plays.append(play)
+        if lead_suit is None:
+            lead_suit = card.suit
+        if card.suit == lead_suit and card_rank > best_lead_rank:
+            best_lead_rank = card_rank
+            best_lead_play = play
 
-        # Track jokers
-        if play.card.is_joker:
-            joker_plays.append(play)
-
-    # Trump suit beats everything
-    if len(trump_plays) != 0:
-        m = get_max_card([play.card for play in trump_plays])
-        for play in trump_plays:
-            if play.card == m:
-                return play.player
-
-    # Jokers beat sub-round trump
-    elif len(joker_plays) != 0:
-        return joker_plays[0].player
-
-    # Sub-round trump (suit of first card) beats nothing
-    else:
-        m = get_max_card([play.card for play in trick_trump_plays])
-        for play in trick_trump_plays:
-            if play.card == m:
-                return play.player
+    if best_trump_play is not None:
+        return best_trump_play.player
+    if first_joker_play is not None:
+        return first_joker_play.player
+    if best_lead_play is not None:
+        return best_lead_play.player
+    raise ValueError("terminal trick did not contain a winning play")

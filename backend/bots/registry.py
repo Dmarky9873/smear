@@ -13,6 +13,18 @@ try:
     from .human_information_minimax_one_trick_bot import (
         HumanInformationMinimaxOneTrickPlayer,
     )
+    from .legacy_human_information_minimax_n_trick_bot import (
+        LegacyHumanInformationMinimaxNTrickPlayer,
+    )
+    from .legacy_human_information_minimax_one_trick_bot import (
+        LegacyHumanInformationMinimaxOneTrickPlayer,
+    )
+    from .legacy_omniscient_minimax_n_trick_bot import (
+        LegacyOmniscientMinimaxNTrickPlayer,
+    )
+    from .legacy_omniscient_minimax_one_trick_bot import (
+        LegacyOmniscientMinimaxOneTrickPlayer,
+    )
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from .omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from .random_bot import RandomPlayer
@@ -26,6 +38,18 @@ except ImportError:
     )
     from bots.human_information_minimax_one_trick_bot import (
         HumanInformationMinimaxOneTrickPlayer,
+    )
+    from bots.legacy_human_information_minimax_n_trick_bot import (
+        LegacyHumanInformationMinimaxNTrickPlayer,
+    )
+    from bots.legacy_human_information_minimax_one_trick_bot import (
+        LegacyHumanInformationMinimaxOneTrickPlayer,
+    )
+    from bots.legacy_omniscient_minimax_n_trick_bot import (
+        LegacyOmniscientMinimaxNTrickPlayer,
+    )
+    from bots.legacy_omniscient_minimax_one_trick_bot import (
+        LegacyOmniscientMinimaxOneTrickPlayer,
     )
     from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
@@ -75,6 +99,40 @@ def _build_n_trick_specs() -> tuple[ReadyBotSpec, ...]:
     return tuple(specs)
 
 
+def _build_legacy_n_trick_specs() -> tuple[ReadyBotSpec, ...]:
+    specs: list[ReadyBotSpec] = []
+    for depth in range(2, HAND_SIZE + 1):
+        specs.append(
+            ReadyBotSpec(
+                id=f"legacy-{depth}-trick-minmax",
+                label=f"Legacy L-{depth} Minmax",
+                description=(
+                    f"Legacy sampled hidden-information minimax over the next "
+                    f"{depth} completed tricks."
+                ),
+                factory=lambda player_name, depth=depth: LegacyHumanInformationMinimaxNTrickPlayer(
+                    player_name,
+                    depth=depth,
+                ),
+            )
+        )
+        specs.append(
+            ReadyBotSpec(
+                id=f"legacy-o-{depth}-trick-minmax",
+                label=f"Legacy Omniscient L-{depth} Minmax",
+                description=(
+                    f"Legacy perfect-information minimax over the next {depth} "
+                    "completed tricks."
+                ),
+                factory=lambda player_name, depth=depth: LegacyOmniscientMinimaxNTrickPlayer(
+                    player_name,
+                    depth=depth,
+                ),
+            )
+        )
+    return tuple(specs)
+
+
 READY_BOTS: tuple[ReadyBotSpec, ...] = (
     ReadyBotSpec(
         id="random",
@@ -112,7 +170,35 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
     *_build_n_trick_specs(),
 )
 
-READY_BOT_MAP = {bot.id: bot for bot in READY_BOTS}
+HIDDEN_BOTS: tuple[ReadyBotSpec, ...] = (
+    ReadyBotSpec(
+        id="one-trick-minmax",
+        label="L-1 Minmax",
+        description="Alias for the default one-trick sampled hidden-information minimax bot.",
+        factory=lambda player_name: HumanInformationMinimaxOneTrickPlayer(
+            player_name
+        ),
+    ),
+    ReadyBotSpec(
+        id="legacy-one-trick-minmax",
+        label="Legacy L-1 Minmax",
+        description="Legacy one-trick sampled hidden-information minimax.",
+        factory=lambda player_name: LegacyHumanInformationMinimaxOneTrickPlayer(
+            player_name
+        ),
+    ),
+    ReadyBotSpec(
+        id="legacy-o-one-trick-minmax",
+        label="Legacy Omniscient L-1 Minmax",
+        description="Legacy one-trick perfect-information minimax.",
+        factory=lambda player_name: LegacyOmniscientMinimaxOneTrickPlayer(
+            player_name
+        ),
+    ),
+    *_build_legacy_n_trick_specs(),
+)
+
+READY_BOT_MAP = {bot.id: bot for bot in (*READY_BOTS, *HIDDEN_BOTS)}
 
 
 def get_ready_bot_spec(bot_id: str) -> ReadyBotSpec:

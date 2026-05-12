@@ -193,9 +193,15 @@ def _resolve_model_specs(
 def _build_simulation_roster(
     base_model_specs: list[ResolvedModelSpec],
     team_size: int,
+    *,
+    three_player: bool = False,
 ) -> tuple[list[str], list[ResolvedModelSpec], list[tuple[str, ...]]]:
     if team_size <= 0:
         raise ValueError("team_size must be positive")
+    if three_player and team_size != 1:
+        raise ValueError("three-player mode requires team_size 1")
+    if three_player and len(base_model_specs) > MIN_PLAYERS:
+        raise ValueError("three-player mode accepts at most three models")
 
     requested_players = len(base_model_specs) * team_size
     if requested_players > MAX_PLAYERS:
@@ -359,6 +365,7 @@ def benchmark_models(
     depth: int | None = None,
     fair: bool = False,
     seed: int | None = None,
+    three_player: bool = False,
 ) -> dict:
     if n <= 0:
         raise ValueError("n must be positive")
@@ -381,6 +388,7 @@ def benchmark_models(
     player_names, model_specs, teams = _build_simulation_roster(
         base_model_specs,
         team_size,
+        three_player=three_player,
     )
     team_members_by_name = {" / ".join(team): team for team in teams}
     model_label_by_key = {
@@ -511,6 +519,7 @@ def benchmark_models(
         "alpha": alpha,
         "team_size": team_size,
         "minimax_depth": depth,
+        "three_player": three_player,
         "comparison_mode": "fair" if fair else "standard",
         "seed": effective_seed,
         "players_per_game": len(model_specs),
@@ -556,6 +565,7 @@ def compare_models_objectively(
     team_size: int = 1,
     depth: int | None = None,
     seed: int | None = 0,
+    three_player: bool = False,
 ) -> dict:
     return benchmark_models(
         n,
@@ -573,6 +583,7 @@ def compare_models_objectively(
         depth=depth,
         fair=True,
         seed=seed,
+        three_player=three_player,
     )
 
 
@@ -585,6 +596,14 @@ def main() -> None:
         "alpha",
         type=int,
         help="maximum number of rounds before a draw is declared",
+    )
+    parser.add_argument(
+        "--three-player",
+        action="store_true",
+        help=(
+            "force an exactly three-player simulation; if only two models are "
+            "supplied, the third seat is filled with random"
+        ),
     )
     parser.add_argument(
         "--team-size",
@@ -643,6 +662,7 @@ def main() -> None:
         depth=args.depth,
         fair=args.fair,
         seed=args.seed,
+        three_player=args.three_player,
     )
     print(json.dumps(result, indent=2))
 

@@ -217,6 +217,8 @@ class MatchController:
                 teams=self.session.teams,
                 match_scores=self.session.match_scores,
                 target_score=self.session.target_score,
+                auction_state=self.session.auction.state,
+                round_state=self.session.game.round_state,
             )
 
     def _sync_all_bot_hands(self) -> None:

@@ -498,10 +498,12 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("| Play accuracy | 0.800", table)
-        self.assertIn("| Decision      | promoted", table)
-        self.assertIn("[test] changed=1 same=1 new=0", table)
-        self.assertIn("[test] same: Decision", table)
+        self.assertIn("[test] comparison", table)
+        self.assertIn("metric", table)
+        self.assertIn("Play accuracy", table)
+        self.assertIn("Decision", table)
+        self.assertIn("summary  changed 1 | same 1 | new 0", table)
+        self.assertIn("same     Decision", table)
 
     def test_train_with_dagger_runs_small_end_to_end_cycle(self):
         bundle, report = train_with_dagger(

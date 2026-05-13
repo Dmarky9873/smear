@@ -1162,11 +1162,21 @@ def train_with_self_play(
         )
         _log(
             verbose,
-            (
-                f"[self-play] iteration {iteration_index + 1}/{self_play_iterations} "
-                f"matches={self_play_matches} play_temp={iteration_temperature:.2f} "
-                f"auction_temp={iteration_auction_temperature:.2f} epsilon={iteration_epsilon:.2f} "
-                f"workers={workers}"
+            _render_compact_block(
+                prefix="[self-play]",
+                title=f"iteration {iteration_index + 1}/{self_play_iterations} collect",
+                rows=[
+                    ("matches", str(self_play_matches)),
+                    (
+                        "explore",
+                        (
+                            f"play temp {iteration_temperature:.2f} | "
+                            f"auction temp {iteration_auction_temperature:.2f} | "
+                            f"epsilon {iteration_epsilon:.2f}"
+                        ),
+                    ),
+                    ("workers", str(workers)),
+                ],
             ),
         )
         iteration_dataset, collection_report = collect_self_play_training_dataset(
@@ -1190,10 +1200,13 @@ def train_with_self_play(
         )
         _log(
             verbose,
-            (
-                f"[self-play] iteration {iteration_index + 1}/{self_play_iterations} "
-                f"replay_window={min(replay_window, len(replay_history.iterations))} "
-                f"aggregate {_format_dataset_counts(aggregate_dataset)}"
+            _render_compact_block(
+                prefix="[self-play]",
+                title=f"iteration {iteration_index + 1}/{self_play_iterations} replay",
+                rows=[
+                    ("window", str(min(replay_window, len(replay_history.iterations)))),
+                    ("dataset", _format_dataset_counts(aggregate_dataset)),
+                ],
             ),
         )
         current_bundle, training_report = train_neural_3p_bundle(
@@ -1235,9 +1248,12 @@ def train_with_self_play(
         )
         _log(
             verbose,
-            (
-                f"[self-play] iteration {iteration_index + 1}/{self_play_iterations} "
-                f"{_format_training_metrics(training_report)}"
+            _render_compact_block(
+                prefix="[self-play]",
+                title=f"iteration {iteration_index + 1}/{self_play_iterations} train",
+                rows=[
+                    ("metrics", _format_training_metrics(training_report)),
+                ],
             ),
         )
         iteration_snapshot = _build_self_play_training_snapshot(
@@ -1430,10 +1446,36 @@ def main() -> None:
     )
     _log(
         verbose,
-        (
-            f"[self-play] run_dir={run_dir} initial_model={initial_model_path} "
-            f"self_play_matches={args.self_play_matches} workers={args.workers} "
-            f"replay_store_dir={args.replay_store_dir}"
+        _render_compact_block(
+            prefix="[self-play]",
+            title="run",
+            rows=[
+                ("run dir", str(run_dir)),
+                ("initial", str(initial_model_path)),
+                ("replay", f"{args.replay_store_dir} | window {args.replay_window} | disk {args.persisted_replay_limit}"),
+                (
+                    "budget",
+                    (
+                        f"{args.duration_hours:.2f}h | matches {args.self_play_matches} | alpha {args.alpha} | "
+                        f"workers {args.workers} | trainer {args.trainer_backend} | batch {args.trainer_batch_size}"
+                    ),
+                ),
+                (
+                    "eval",
+                    (
+                        f"games {args.eval_games} | optimal {args.eval_games_vs_optimal} | "
+                        f"precheck {args.precheck_games}"
+                    ),
+                ),
+                (
+                    "promote",
+                    (
+                        f"margin {args.promotion_head_to_head_margin:.1f} | "
+                        f"greedy tol {args.promotion_greedy_regression_tolerance:.1f} | "
+                        f"optimal tol {args.promotion_optimal_regression_tolerance:.1f}"
+                    ),
+                ),
+            ],
         ),
     )
 
@@ -1452,9 +1494,13 @@ def main() -> None:
         iteration_started_at = time.perf_counter()
         _log(
             verbose,
-            (
-                f"[self-play] iteration {iteration_index} start "
-                f"elapsed_hours={(time.time() - started_at) / 3600.0:.2f}"
+            _render_compact_block(
+                prefix="[self-play]",
+                title=f"iteration {iteration_index}",
+                rows=[
+                    ("state", "start"),
+                    ("elapsed", f"{(time.time() - started_at) / 3600.0:.2f}h"),
+                ],
             ),
         )
         candidate_bundle, report = train_with_self_play(
@@ -1517,11 +1563,15 @@ def main() -> None:
         training_report = report["self_play_iterations"][-1]["training"]
         _log(
             verbose,
-            (
-                f"[self-play] iteration {iteration_index} trained checkpoint={candidate_path} "
-                f"replay_shard={replay_shard_path} "
-                f"{_format_training_metrics(training_report)} "
-                f"train_elapsed={_format_seconds(training_report.get('elapsed_seconds', 0.0))}"
+            _render_compact_block(
+                prefix="[self-play]",
+                title=f"iteration {iteration_index} trained",
+                rows=[
+                    ("checkpoint", str(candidate_path)),
+                    ("replay", str(replay_shard_path)),
+                    ("metrics", _format_training_metrics(training_report)),
+                    ("elapsed", _format_seconds(training_report.get("elapsed_seconds", 0.0))),
+                ],
             ),
         )
 

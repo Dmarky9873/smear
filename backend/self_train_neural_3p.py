@@ -864,25 +864,43 @@ def main() -> None:
     )
     _log(
         verbose,
-        (
-            f"[self-train] run_dir={run_dir} initial_model={initial_model_path} "
-            f"teacher_pool={args.teacher_pool}"
-        ),
-    )
-    _log(
-        verbose,
-        (
-            f"[self-train] config duration={args.duration_hours:.2f}h alpha={args.alpha} "
-                f"bootstrap_matches={args.bootstrap_matches} dagger_matches={args.dagger_matches} "
-                f"dagger_iterations={args.dagger_iterations} eval_games={args.eval_games} "
-                f"eval_games_vs_optimal={args.eval_games_vs_optimal} precheck_games={args.precheck_games} "
-                f"promotion_margin={args.promotion_head_to_head_margin:.1f} "
-                f"greedy_tol={args.promotion_greedy_regression_tolerance:.1f} "
-                f"optimal_tol={args.promotion_optimal_regression_tolerance:.1f} "
-                f"teacher_sample_scale={args.teacher_sample_scale:.2f} "
-                f"teacher_target_temperature={args.teacher_target_temperature:.2f} "
-                f"workers={args.workers} trainer={args.trainer_backend} "
-                f"batch_size={args.trainer_batch_size}"
+        _render_compact_block(
+            prefix="[self-train]",
+            title="run",
+            rows=[
+                ("run dir", str(run_dir)),
+                ("initial", str(initial_model_path)),
+                ("teachers", args.teacher_pool),
+                (
+                    "budget",
+                    (
+                        f"{args.duration_hours:.2f}h | alpha {args.alpha} | workers {args.workers} | "
+                        f"trainer {args.trainer_backend} | batch {args.trainer_batch_size}"
+                    ),
+                ),
+                (
+                    "schedule",
+                    (
+                        f"bootstrap {args.bootstrap_matches} | dagger {args.dagger_matches} x{args.dagger_iterations} | "
+                        f"eval {args.eval_games} | optimal {args.eval_games_vs_optimal} | precheck {args.precheck_games}"
+                    ),
+                ),
+                (
+                    "promote",
+                    (
+                        f"margin {args.promotion_head_to_head_margin:.1f} | "
+                        f"greedy tol {args.promotion_greedy_regression_tolerance:.1f} | "
+                        f"optimal tol {args.promotion_optimal_regression_tolerance:.1f}"
+                    ),
+                ),
+                (
+                    "search",
+                    (
+                        f"sample scale {args.teacher_sample_scale:.2f} | "
+                        f"target temp {args.teacher_target_temperature:.2f}"
+                    ),
+                ),
+            ],
         ),
     )
 
@@ -902,10 +920,15 @@ def main() -> None:
         cycle_seed = args.seed + (cycle_index * 10_000)
         _log(
             verbose,
-            (
-                f"[self-train] cycle {cycle_index} start seed={cycle_seed} "
-                f"elapsed_hours={(time.time() - started_at) / 3600.0:.2f} "
-                f"time_left={_format_seconds(max(0.0, deadline - time.time()))}"
+            _render_compact_block(
+                prefix="[self-train]",
+                title=f"cycle {cycle_index}",
+                rows=[
+                    ("state", "start"),
+                    ("seed", str(cycle_seed)),
+                    ("elapsed", f"{(time.time() - started_at) / 3600.0:.2f}h"),
+                    ("left", _format_seconds(max(0.0, deadline - time.time()))),
+                ],
             ),
         )
         cycle_started_at = time.perf_counter()
@@ -964,13 +987,25 @@ def main() -> None:
         save_model_bundle(candidate_bundle, candidate_path)
         _log(
             verbose,
-            (
-                f"[self-train] cycle {cycle_index} trained checkpoint={candidate_path} "
-                f"play_acc={training_report['training']['play_history'][-1]['accuracy']:.3f} "
-                f"auction_acc={training_report['training']['auction_history'][-1]['accuracy']:.3f} "
-                f"play_value_mse={training_report['training']['play_value_history'][-1]['mse']:.4f} "
-                f"auction_value_mse={training_report['training']['auction_value_history'][-1]['mse']:.4f} "
-                f"train_elapsed={_format_seconds(training_report['training'].get('elapsed_seconds', 0.0))}"
+            _render_compact_block(
+                prefix="[self-train]",
+                title=f"cycle {cycle_index} trained",
+                rows=[
+                    ("checkpoint", str(candidate_path)),
+                    (
+                        "metrics",
+                        (
+                            f"play_acc={training_report['training']['play_history'][-1]['accuracy']:.3f} "
+                            f"auction_acc={training_report['training']['auction_history'][-1]['accuracy']:.3f} "
+                            f"play_value_mse={training_report['training']['play_value_history'][-1]['mse']:.4f} "
+                            f"auction_value_mse={training_report['training']['auction_value_history'][-1]['mse']:.4f}"
+                        ),
+                    ),
+                    (
+                        "elapsed",
+                        _format_seconds(training_report["training"].get("elapsed_seconds", 0.0)),
+                    ),
+                ],
             ),
         )
         evaluation_started_at = time.perf_counter()
@@ -1010,9 +1045,13 @@ def main() -> None:
             )
         _log(
             verbose,
-            (
-                f"[self-train] cycle {cycle_index} eval {_format_eval_summary(evaluation_report)} "
-                f"eval_elapsed={_format_seconds(evaluation_elapsed)}"
+            _render_compact_block(
+                prefix="[self-train]",
+                title=f"cycle {cycle_index} eval",
+                rows=[
+                    ("summary", _format_eval_summary(evaluation_report)),
+                    ("elapsed", _format_seconds(evaluation_elapsed)),
+                ],
             ),
         )
 

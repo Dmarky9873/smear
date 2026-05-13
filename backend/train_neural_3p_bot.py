@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 import math
 import random
 from pathlib import Path
+import shutil
 import sys
 import time
 import threading
@@ -70,6 +72,7 @@ DEFAULT_GRADIENT_CLIP = 3.0
 DEFAULT_STUDENT_AGREEMENT_KEEP_PROB = 0.2
 DEFAULT_TEACHER_SAMPLE_SCALE = 0.6
 DEFAULT_TEACHER_TARGET_TEMPERATURE = 0.35
+DEFAULT_WORKERS = 1
 THREE_PLAYER_NAMES = ["Player 1", "Player 2", "Player 3"]
 
 
@@ -106,6 +109,16 @@ class TrainingDataset:
         self.auction_policy_examples.extend(other.auction_policy_examples)
         self.play_value_examples.extend(other.play_value_examples)
         self.auction_value_examples.extend(other.auction_value_examples)
+
+
+@dataclass(frozen=True)
+class ComparisonMetric:
+    key: str
+    label: str
+    kind: str = "float"
+    digits: int = 3
+    higher_is_better: bool | None = None
+    tolerance: float = 1e-9
 
 
 def _scaled_count(count: int, scale: float, *, minimum: int = 1) -> int:
@@ -483,12 +496,329 @@ def _format_seconds(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+TRAINING_ITERATION_METRICS: tuple[ComparisonMetric, ...] = (
+    ComparisonMetric(
+        key="play_policy_examples",
+        label="Play policy ex.",
+        kind="int",
+        higher_is_better=True,
+    ),
+    ComparisonMetric(
+        key="auction_policy_examples",
+        label="Auction policy ex.",
+        kind="int",
+        higher_is_better=True,
+    ),
+    ComparisonMetric(
+        key="play_value_examples",
+        label="Play value ex.",
+        kind="int",
+        higher_is_better=True,
+    ),
+    ComparisonMetric(
+        key="auction_value_examples",
+        label="Auction value ex.",
+        kind="int",
+        higher_is_better=True,
+    ),
+    ComparisonMetric(
+        key="play_accuracy",
+        label="Play accuracy",
+        kind="float",
+        digits=3,
+        higher_is_better=True,
+        tolerance=5e-4,
+    ),
+    ComparisonMetric(
+        key="auction_accuracy",
+        label="Auction accuracy",
+        kind="float",
+        digits=3,
+        higher_is_better=True,
+        tolerance=5e-4,
+    ),
+    ComparisonMetric(
+        key="play_value_mse",
+        label="Play value MSE",
+        kind="float",
+        digits=4,
+        higher_is_better=False,
+        tolerance=5e-5,
+    ),
+    ComparisonMetric(
+        key="auction_value_mse",
+        label="Auction value MSE",
+        kind="float",
+        digits=4,
+        higher_is_better=False,
+        tolerance=5e-5,
+    ),
+    ComparisonMetric(
+        key="training_elapsed_seconds",
+        label="Train time",
+        kind="duration",
+        higher_is_better=False,
+        tolerance=0.5,
+    ),
+)
+
+
+def _format_comparison_value(value: object, metric: ComparisonMetric) -> str:
+    if value is None:
+        return "-"
+    if metric.kind == "int":
+        return f"{int(value):,}"
+    if metric.kind == "float":
+        numeric_value = float(value)
+        if not math.isfinite(numeric_value):
+            return "nan"
+        return f"{numeric_value:.{metric.digits}f}"
+    if metric.kind == "percent":
+        numeric_value = float(value)
+        if not math.isfinite(numeric_value):
+            return "nan"
+        return f"{numeric_value:.{metric.digits}f}%"
+    if metric.kind == "duration":
+        return _format_seconds(float(value))
+    return str(value)
+
+
+def _format_comparison_delta(
+    previous_value: object,
+    current_value: object,
+    metric: ComparisonMetric,
+) -> str:
+    if previous_value is None or current_value is None:
+        return "-"
+    if metric.kind == "text":
+        return "same" if str(previous_value) == str(current_value) else "changed"
+    if metric.kind == "duration":
+        delta = float(current_value) - float(previous_value)
+        return f"{delta:+.1f}s"
+    if metric.kind == "percent":
+        delta = float(current_value) - float(previous_value)
+        return f"{delta:+.{metric.digits}f} pts"
+    if metric.kind == "int":
+        return f"{int(current_value) - int(previous_value):+,d}"
+    delta = float(current_value) - float(previous_value)
+    return f"{delta:+.{metric.digits}f}"
+
+
+def _comparison_status(
+    previous_value: object,
+    current_value: object,
+    metric: ComparisonMetric,
+) -> str:
+    if previous_value is None:
+        return "new"
+    if current_value is None:
+        return "changed"
+    if metric.kind == "text":
+        return "same" if str(previous_value) == str(current_value) else "changed"
+
+    previous_numeric = float(previous_value)
+    current_numeric = float(current_value)
+    if not math.isfinite(previous_numeric) or not math.isfinite(current_numeric):
+        return "changed"
+    if abs(current_numeric - previous_numeric) <= metric.tolerance:
+        return "same"
+    if metric.higher_is_better is None:
+        return "changed"
+    improved = (
+        current_numeric > previous_numeric
+        if metric.higher_is_better
+        else current_numeric < previous_numeric
+    )
+    return "improved" if improved else "regressed"
+
+
+def _summarize_metric_labels(labels: list[str], *, limit: int = 4) -> str:
+    if not labels:
+        return "-"
+    if len(labels) <= limit:
+        return ", ".join(labels)
+    remaining = len(labels) - limit
+    return f"{', '.join(labels[:limit])}, +{remaining} more"
+
+
+def _render_iteration_comparison_table(
+    *,
+    prefix: str,
+    title: str,
+    current_snapshot: dict[str, object],
+    previous_snapshot: dict[str, object] | None,
+    metrics: tuple[ComparisonMetric, ...] | list[ComparisonMetric],
+    footer_note: str | None = None,
+) -> str:
+    headers = ("Metric", "Previous", "Current", "Delta", "Status")
+    rendered_rows: list[tuple[str, str, str, str, str]] = []
+    changed_labels: list[str] = []
+    same_labels: list[str] = []
+    new_labels: list[str] = []
+
+    for metric in metrics:
+        previous_value = None if previous_snapshot is None else previous_snapshot.get(metric.key)
+        current_value = current_snapshot.get(metric.key)
+        status = _comparison_status(previous_value, current_value, metric)
+        rendered_rows.append(
+            (
+                metric.label,
+                _format_comparison_value(previous_value, metric),
+                _format_comparison_value(current_value, metric),
+                _format_comparison_delta(previous_value, current_value, metric),
+                status,
+            )
+        )
+        if status == "same":
+            same_labels.append(metric.label)
+        elif status == "new":
+            new_labels.append(metric.label)
+        else:
+            changed_labels.append(metric.label)
+
+    column_widths = [len(header) for header in headers]
+    for row in rendered_rows:
+        for index, cell in enumerate(row):
+            column_widths[index] = max(column_widths[index], len(cell))
+
+    def _border(fill: str = "-") -> str:
+        return "+" + "+".join(fill * (width + 2) for width in column_widths) + "+"
+
+    def _row(cells: tuple[str, str, str, str, str] | tuple[str, ...]) -> str:
+        return "| " + " | ".join(
+            cell.ljust(column_widths[index])
+            for index, cell in enumerate(cells)
+        ) + " |"
+
+    lines = [f"{prefix} {title}", _border(), _row(headers), _border()]
+    for row in rendered_rows:
+        lines.append(_row(row))
+    lines.append(_border())
+    lines.append(
+        (
+            f"{prefix} changed={len(changed_labels)} same={len(same_labels)} "
+            f"new={len(new_labels)}"
+        )
+    )
+    if changed_labels:
+        lines.append(f"{prefix} changed: {_summarize_metric_labels(changed_labels)}")
+    if same_labels:
+        lines.append(f"{prefix} same: {_summarize_metric_labels(same_labels)}")
+    if new_labels:
+        lines.append(f"{prefix} new: {_summarize_metric_labels(new_labels)}")
+    if footer_note:
+        lines.append(f"{prefix} note: {footer_note}")
+    return "\n".join(lines)
+
+
+def _build_training_iteration_snapshot(
+    *,
+    dataset: TrainingDataset,
+    training_report: dict,
+) -> dict[str, object]:
+    return {
+        "play_policy_examples": len(dataset.play_policy_examples),
+        "auction_policy_examples": len(dataset.auction_policy_examples),
+        "play_value_examples": len(dataset.play_value_examples),
+        "auction_value_examples": len(dataset.auction_value_examples),
+        "play_accuracy": training_report["play_history"][-1]["accuracy"],
+        "auction_accuracy": training_report["auction_history"][-1]["accuracy"],
+        "play_value_mse": training_report["play_value_history"][-1]["mse"],
+        "auction_value_mse": training_report["auction_value_history"][-1]["mse"],
+        "training_elapsed_seconds": training_report.get("elapsed_seconds"),
+    }
+
+
+def _resolve_worker_count(*, workers: int, work_items: int) -> int:
+    if workers <= 0:
+        raise ValueError("workers must be positive")
+    if work_items <= 0:
+        return 1
+    return min(workers, work_items)
+
+
+def _create_parallel_executor(*, max_workers: int):
+    try:
+        return ProcessPoolExecutor(max_workers=max_workers), "process"
+    except (NotImplementedError, PermissionError, OSError):
+        return ThreadPoolExecutor(max_workers=max_workers), "thread"
+
+
+def _merge_count_dict(target: dict[str, int], source: dict[str, int]) -> None:
+    for key, value in source.items():
+        target[key] = target.get(key, 0) + value
+
+
+def _collect_rollout_examples_worker(task: dict) -> tuple[TrainingDataset, dict]:
+    return _collect_rollout_examples(**task)
+
+
+def _merge_collection_shard_reports(
+    *,
+    actor_mode: str,
+    alpha: int,
+    match_count: int,
+    worker_count: int,
+    aggregate_dataset: TrainingDataset,
+    shard_reports: list[dict],
+    elapsed_seconds: float,
+) -> dict:
+    teacher_label_counts: dict[str, int] = {}
+    acting_bot_counts: dict[str, int] = {}
+    forced_auction_actions = 0
+    forced_play_actions = 0
+    teacher_queries = 0
+    worker_elapsed_seconds = 0.0
+
+    for shard_report in shard_reports:
+        _merge_count_dict(teacher_label_counts, shard_report["teacher_label_counts"])
+        _merge_count_dict(acting_bot_counts, shard_report["acting_bot_counts"])
+        forced_auction_actions += shard_report["forced_auction_actions"]
+        forced_play_actions += shard_report["forced_play_actions"]
+        teacher_queries += shard_report["teacher_queries"]
+        worker_elapsed_seconds += shard_report["elapsed_seconds"]
+
+    return {
+        "actor_mode": actor_mode,
+        "matches": match_count,
+        "alpha": alpha,
+        "teacher_label_counts": teacher_label_counts,
+        "acting_bot_counts": acting_bot_counts,
+        "play_policy_examples": len(aggregate_dataset.play_policy_examples),
+        "auction_policy_examples": len(aggregate_dataset.auction_policy_examples),
+        "play_value_examples": len(aggregate_dataset.play_value_examples),
+        "auction_value_examples": len(aggregate_dataset.auction_value_examples),
+        "forced_auction_actions": forced_auction_actions,
+        "forced_play_actions": forced_play_actions,
+        "teacher_queries": teacher_queries,
+        "elapsed_seconds": elapsed_seconds,
+        "worker_elapsed_seconds": worker_elapsed_seconds,
+        "workers": worker_count,
+    }
+
+
 def _progress_bar(completed: int, total: int, width: int = 24) -> str:
     if total <= 0:
         return "[" + ("-" * width) + "]"
     ratio = max(0.0, min(1.0, completed / total))
     filled = min(width, int(round(width * ratio)))
     return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+
+def _fit_progress_message_to_terminal(
+    message: str,
+    *,
+    previous_render_width: int,
+) -> tuple[str, int]:
+    terminal_width = max(40, shutil.get_terminal_size(fallback=(120, 20)).columns)
+    max_message_width = max(terminal_width - 1, 20)
+    if len(message) > max_message_width:
+        if max_message_width <= 3:
+            message = message[:max_message_width]
+        else:
+            message = message[: max_message_width - 3] + "..."
+    render_width = max(previous_render_width, len(message))
+    return message.ljust(render_width), len(message)
 
 
 class LiveProgressDisplay:
@@ -591,12 +921,15 @@ class LiveProgressDisplay:
         if detail:
             message += f" {detail}"
 
-        padded_message = message.ljust(self._last_line_length)
+        padded_message, visible_width = _fit_progress_message_to_terminal(
+            message,
+            previous_render_width=self._last_line_length,
+        )
         sys.stderr.write("\r" + padded_message)
         if final:
             sys.stderr.write("\n")
         sys.stderr.flush()
-        self._last_line_length = len(padded_message)
+        self._last_line_length = visible_width
 
 
 def _log_progress(
@@ -1239,20 +1572,100 @@ def collect_teacher_training_dataset(
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
     teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
+    workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
-    return _collect_rollout_examples(
-        actor_mode="teacher",
-        teacher_specs=teacher_specs,
-        match_count=match_count,
-        alpha=alpha,
-        seed=seed,
-        student_agreement_keep_prob=student_agreement_keep_prob,
-        teacher_sample_scale=teacher_sample_scale,
-        teacher_target_temperature=teacher_target_temperature,
-        verbose=verbose,
-    )
+    if workers <= 1 or match_count <= 1:
+        return _collect_rollout_examples(
+            actor_mode="teacher",
+            teacher_specs=teacher_specs,
+            match_count=match_count,
+            alpha=alpha,
+            seed=seed,
+            student_agreement_keep_prob=student_agreement_keep_prob,
+            teacher_sample_scale=teacher_sample_scale,
+            teacher_target_temperature=teacher_target_temperature,
+            verbose=verbose,
+        )
 
+    resolved_workers = _resolve_worker_count(workers=workers, work_items=match_count)
+    aggregate_dataset = TrainingDataset()
+    shard_reports: list[dict] = []
+    started_at = time.perf_counter()
+    progress = LiveProgressDisplay(
+        verbose=verbose,
+        label="collect:teacher",
+        total=match_count,
+        started_at=started_at,
+    )
+    _log(
+        verbose,
+        (
+            f"[collect:teacher] start matches={match_count} alpha={alpha} "
+            f"seed={seed} teacher_pool={_format_teacher_pool(teacher_specs)} "
+            f"workers={resolved_workers}"
+        ),
+    )
+    progress.start(detail=_format_dataset_counts(aggregate_dataset))
+
+    tasks = [
+        {
+            "actor_mode": "teacher",
+            "teacher_specs": teacher_specs,
+            "match_count": 1,
+            "alpha": alpha,
+            "seed": seed + (match_index * 1_000),
+            "student_agreement_keep_prob": student_agreement_keep_prob,
+            "teacher_sample_scale": teacher_sample_scale,
+            "teacher_target_temperature": teacher_target_temperature,
+            "verbose": False,
+        }
+        for match_index in range(match_count)
+    ]
+
+    completed_matches = 0
+    executor, executor_kind = _create_parallel_executor(max_workers=resolved_workers)
+    if executor_kind != "process":
+        _log(verbose, f"[collect:teacher] falling back to {executor_kind} workers")
+    with executor:
+        futures = [executor.submit(_collect_rollout_examples_worker, task) for task in tasks]
+        for future in as_completed(futures):
+            shard_dataset, shard_report = future.result()
+            aggregate_dataset.extend(shard_dataset)
+            shard_reports.append(shard_report)
+            completed_matches += shard_report["matches"]
+            progress.update(
+                completed=completed_matches,
+                detail=_format_dataset_counts(aggregate_dataset),
+            )
+
+    elapsed_seconds = time.perf_counter() - started_at
+    progress.stop(
+        completed=match_count,
+        detail=_format_dataset_counts(aggregate_dataset),
+    )
+    report = _merge_collection_shard_reports(
+        actor_mode="teacher",
+        alpha=alpha,
+        match_count=match_count,
+        worker_count=resolved_workers,
+        aggregate_dataset=aggregate_dataset,
+        shard_reports=shard_reports,
+        elapsed_seconds=elapsed_seconds,
+    )
+    _log(
+        verbose,
+        (
+            f"[collect:teacher] done {_format_dataset_counts(aggregate_dataset)} "
+            f"elapsed={_format_seconds(elapsed_seconds)} "
+            f"forced_auction={report['forced_auction_actions']} "
+            f"forced_play={report['forced_play_actions']} "
+            f"teacher_queries={report['teacher_queries']} "
+            f"workers={resolved_workers} "
+            f"labels={report['teacher_label_counts']}"
+        ),
+    )
+    return aggregate_dataset, report
 
 def collect_dagger_training_dataset(
     *,
@@ -1264,20 +1677,132 @@ def collect_dagger_training_dataset(
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
     teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
+    workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
-    return _collect_rollout_examples(
-        actor_mode="student",
-        teacher_specs=teacher_specs,
-        match_count=match_count,
-        alpha=alpha,
-        seed=seed,
-        student_bundle=student_bundle,
-        student_agreement_keep_prob=student_agreement_keep_prob,
-        teacher_sample_scale=teacher_sample_scale,
-        teacher_target_temperature=teacher_target_temperature,
+    if workers <= 1 or match_count <= 1:
+        return _collect_rollout_examples(
+            actor_mode="student",
+            teacher_specs=teacher_specs,
+            match_count=match_count,
+            alpha=alpha,
+            seed=seed,
+            student_bundle=student_bundle,
+            student_agreement_keep_prob=student_agreement_keep_prob,
+            teacher_sample_scale=teacher_sample_scale,
+            teacher_target_temperature=teacher_target_temperature,
+            verbose=verbose,
+        )
+
+    resolved_workers = _resolve_worker_count(workers=workers, work_items=match_count)
+    aggregate_dataset = TrainingDataset()
+    shard_reports: list[dict] = []
+    started_at = time.perf_counter()
+    progress = LiveProgressDisplay(
         verbose=verbose,
+        label="collect:student",
+        total=match_count,
+        started_at=started_at,
     )
+    _log(
+        verbose,
+        (
+            f"[collect:student] start matches={match_count} alpha={alpha} "
+            f"seed={seed} teacher_pool={_format_teacher_pool(teacher_specs)} "
+            f"workers={resolved_workers}"
+        ),
+    )
+    progress.start(detail=_format_dataset_counts(aggregate_dataset))
+
+    tasks = [
+        {
+            "actor_mode": "student",
+            "teacher_specs": teacher_specs,
+            "match_count": 1,
+            "alpha": alpha,
+            "seed": seed + (match_index * 1_000),
+            "student_bundle": student_bundle,
+            "student_agreement_keep_prob": student_agreement_keep_prob,
+            "teacher_sample_scale": teacher_sample_scale,
+            "teacher_target_temperature": teacher_target_temperature,
+            "verbose": False,
+        }
+        for match_index in range(match_count)
+    ]
+
+    completed_matches = 0
+    executor, executor_kind = _create_parallel_executor(max_workers=resolved_workers)
+    if executor_kind != "process":
+        _log(verbose, f"[collect:student] falling back to {executor_kind} workers")
+    with executor:
+        futures = [executor.submit(_collect_rollout_examples_worker, task) for task in tasks]
+        for future in as_completed(futures):
+            shard_dataset, shard_report = future.result()
+            aggregate_dataset.extend(shard_dataset)
+            shard_reports.append(shard_report)
+            completed_matches += shard_report["matches"]
+            progress.update(
+                completed=completed_matches,
+                detail=_format_dataset_counts(aggregate_dataset),
+            )
+
+    elapsed_seconds = time.perf_counter() - started_at
+    progress.stop(
+        completed=match_count,
+        detail=_format_dataset_counts(aggregate_dataset),
+    )
+    report = _merge_collection_shard_reports(
+        actor_mode="student",
+        alpha=alpha,
+        match_count=match_count,
+        worker_count=resolved_workers,
+        aggregate_dataset=aggregate_dataset,
+        shard_reports=shard_reports,
+        elapsed_seconds=elapsed_seconds,
+    )
+    _log(
+        verbose,
+        (
+            f"[collect:student] done {_format_dataset_counts(aggregate_dataset)} "
+            f"elapsed={_format_seconds(elapsed_seconds)} "
+            f"forced_auction={report['forced_auction_actions']} "
+            f"forced_play={report['forced_play_actions']} "
+            f"teacher_queries={report['teacher_queries']} "
+            f"workers={resolved_workers} "
+            f"labels={report['teacher_label_counts']}"
+        ),
+    )
+    return aggregate_dataset, report
+
+def _train_model_component_worker(task: dict) -> dict:
+    model = task["model"]
+    if task["kind"] == "choice":
+        history = model.train_choice_examples(
+            task["examples"],
+            epochs=task["epochs"],
+            learning_rate=task["learning_rate"],
+            l2=task["l2"],
+            seed=task["seed"],
+            gradient_clip=task["gradient_clip"],
+            progress_callback=None,
+        )
+    else:
+        history = model.train_regression_examples(
+            task["examples"],
+            epochs=task["epochs"],
+            learning_rate=task["learning_rate"],
+            l2=task["l2"],
+            seed=task["seed"],
+            gradient_clip=task["gradient_clip"],
+            progress_callback=None,
+        )
+    model._assert_finite_parameters()
+    return {
+        "name": task["name"],
+        "model": model.to_dict(),
+        "history": history,
+    }
+
 
 
 def _initialize_model(
@@ -1332,6 +1857,7 @@ def train_neural_3p_bundle(
     bot_id: str = "neural-3p-v2",
     bundle_version: int = 2,
     extra_metadata: dict | None = None,
+    workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     if not play_examples:
@@ -1359,7 +1885,8 @@ def train_neural_3p_bundle(
             f"seed={seed} "
             f"hidden_dims=({play_hidden_dim},{auction_hidden_dim},{play_value_hidden_dim},{auction_value_hidden_dim}) "
             f"epochs=({play_epochs},{auction_epochs},{play_value_epochs},{auction_value_epochs}) "
-            f"lrs=({play_learning_rate:.4f},{auction_learning_rate:.4f},{play_value_learning_rate:.4f},{auction_value_learning_rate:.4f})"
+            f"lrs=({play_learning_rate:.4f},{auction_learning_rate:.4f},{play_value_learning_rate:.4f},{auction_value_learning_rate:.4f}) "
+            f"workers={workers}"
         ),
     )
     _log_progress(
@@ -1399,133 +1926,221 @@ def train_neural_3p_bundle(
         hidden_dim=auction_value_hidden_dim,
         seed=seed + 3,
     )
-
-    play_progress = LiveProgressDisplay(
-        verbose=verbose,
-        label="train:play-policy",
-        total=play_epochs,
-        started_at=time.perf_counter(),
-    )
-    play_progress.start(detail=f"examples={len(play_examples)}")
-    play_history = play_model.train_choice_examples(
-        play_examples,
-        epochs=play_epochs,
-        learning_rate=play_learning_rate,
-        l2=l2,
-        seed=seed,
-        gradient_clip=gradient_clip,
-        progress_callback=_make_choice_epoch_logger(
-            progress=play_progress,
-        ),
-    )
-    play_progress.stop(
-        completed=play_epochs,
-        detail=(
-            f"loss={play_history[-1]['loss']:.4f} "
-            f"acc={play_history[-1]['accuracy']:.3f}"
-        ),
-    )
-    _log_progress(
-        verbose=verbose,
-        label="train:models",
-        completed=1,
-        total=4,
-        started_at=started_at,
-        detail=f"play_policy acc={play_history[-1]['accuracy']:.3f}",
-    )
-    auction_progress = LiveProgressDisplay(
-        verbose=verbose,
-        label="train:auction-policy",
-        total=auction_epochs,
-        started_at=time.perf_counter(),
-    )
-    auction_progress.start(detail=f"examples={len(auction_examples)}")
-    auction_history = auction_model.train_choice_examples(
-        auction_examples,
-        epochs=auction_epochs,
-        learning_rate=auction_learning_rate,
-        l2=l2,
-        seed=seed + 1,
-        gradient_clip=gradient_clip,
-        progress_callback=_make_choice_epoch_logger(
-            progress=auction_progress,
-        ),
-    )
-    auction_progress.stop(
-        completed=auction_epochs,
-        detail=(
-            f"loss={auction_history[-1]['loss']:.4f} "
-            f"acc={auction_history[-1]['accuracy']:.3f}"
-        ),
-    )
-    _log_progress(
-        verbose=verbose,
-        label="train:models",
-        completed=2,
-        total=4,
-        started_at=started_at,
-        detail=f"auction_policy acc={auction_history[-1]['accuracy']:.3f}",
-    )
-    play_value_progress = LiveProgressDisplay(
-        verbose=verbose,
-        label="train:play-value",
-        total=play_value_epochs,
-        started_at=time.perf_counter(),
-    )
-    play_value_progress.start(detail=f"examples={len(play_value_examples)}")
-    play_value_history = play_value_model.train_regression_examples(
-        play_value_examples,
-        epochs=play_value_epochs,
-        learning_rate=play_value_learning_rate,
-        l2=l2,
-        seed=seed + 2,
-        gradient_clip=gradient_clip,
-        progress_callback=_make_regression_epoch_logger(
-            progress=play_value_progress,
-        ),
-    )
-    play_value_progress.stop(
-        completed=play_value_epochs,
-        detail=f"mse={play_value_history[-1]['mse']:.4f}",
-    )
-    _log_progress(
-        verbose=verbose,
-        label="train:models",
-        completed=3,
-        total=4,
-        started_at=started_at,
-        detail=f"play_value mse={play_value_history[-1]['mse']:.4f}",
-    )
-    auction_value_progress = LiveProgressDisplay(
-        verbose=verbose,
-        label="train:auction-value",
-        total=auction_value_epochs,
-        started_at=time.perf_counter(),
-    )
-    auction_value_progress.start(detail=f"examples={len(auction_value_examples)}")
-    auction_value_history = auction_value_model.train_regression_examples(
-        auction_value_examples,
-        epochs=auction_value_epochs,
-        learning_rate=auction_value_learning_rate,
-        l2=l2,
-        seed=seed + 3,
-        gradient_clip=gradient_clip,
-        progress_callback=_make_regression_epoch_logger(
-            progress=auction_value_progress,
-        ),
-    )
-    auction_value_progress.stop(
-        completed=auction_value_epochs,
-        detail=f"mse={auction_value_history[-1]['mse']:.4f}",
-    )
-    _log_progress(
-        verbose=verbose,
-        label="train:models",
-        completed=4,
-        total=4,
-        started_at=started_at,
-        detail=f"auction_value mse={auction_value_history[-1]['mse']:.4f}",
-    )
+    resolved_workers = _resolve_worker_count(workers=workers, work_items=4)
+    if resolved_workers <= 1:
+        play_progress = LiveProgressDisplay(
+            verbose=verbose,
+            label="train:play-policy",
+            total=play_epochs,
+            started_at=time.perf_counter(),
+        )
+        play_progress.start(detail=f"examples={len(play_examples)}")
+        play_history = play_model.train_choice_examples(
+            play_examples,
+            epochs=play_epochs,
+            learning_rate=play_learning_rate,
+            l2=l2,
+            seed=seed,
+            gradient_clip=gradient_clip,
+            progress_callback=_make_choice_epoch_logger(
+                progress=play_progress,
+            ),
+        )
+        play_progress.stop(
+            completed=play_epochs,
+            detail=(
+                f"loss={play_history[-1]['loss']:.4f} "
+                f"acc={play_history[-1]['accuracy']:.3f}"
+            ),
+        )
+        _log_progress(
+            verbose=verbose,
+            label="train:models",
+            completed=1,
+            total=4,
+            started_at=started_at,
+            detail=f"play_policy acc={play_history[-1]['accuracy']:.3f}",
+        )
+        auction_progress = LiveProgressDisplay(
+            verbose=verbose,
+            label="train:auction-policy",
+            total=auction_epochs,
+            started_at=time.perf_counter(),
+        )
+        auction_progress.start(detail=f"examples={len(auction_examples)}")
+        auction_history = auction_model.train_choice_examples(
+            auction_examples,
+            epochs=auction_epochs,
+            learning_rate=auction_learning_rate,
+            l2=l2,
+            seed=seed + 1,
+            gradient_clip=gradient_clip,
+            progress_callback=_make_choice_epoch_logger(
+                progress=auction_progress,
+            ),
+        )
+        auction_progress.stop(
+            completed=auction_epochs,
+            detail=(
+                f"loss={auction_history[-1]['loss']:.4f} "
+                f"acc={auction_history[-1]['accuracy']:.3f}"
+            ),
+        )
+        _log_progress(
+            verbose=verbose,
+            label="train:models",
+            completed=2,
+            total=4,
+            started_at=started_at,
+            detail=f"auction_policy acc={auction_history[-1]['accuracy']:.3f}",
+        )
+        play_value_progress = LiveProgressDisplay(
+            verbose=verbose,
+            label="train:play-value",
+            total=play_value_epochs,
+            started_at=time.perf_counter(),
+        )
+        play_value_progress.start(detail=f"examples={len(play_value_examples)}")
+        play_value_history = play_value_model.train_regression_examples(
+            play_value_examples,
+            epochs=play_value_epochs,
+            learning_rate=play_value_learning_rate,
+            l2=l2,
+            seed=seed + 2,
+            gradient_clip=gradient_clip,
+            progress_callback=_make_regression_epoch_logger(
+                progress=play_value_progress,
+            ),
+        )
+        play_value_progress.stop(
+            completed=play_value_epochs,
+            detail=f"mse={play_value_history[-1]['mse']:.4f}",
+        )
+        _log_progress(
+            verbose=verbose,
+            label="train:models",
+            completed=3,
+            total=4,
+            started_at=started_at,
+            detail=f"play_value mse={play_value_history[-1]['mse']:.4f}",
+        )
+        auction_value_progress = LiveProgressDisplay(
+            verbose=verbose,
+            label="train:auction-value",
+            total=auction_value_epochs,
+            started_at=time.perf_counter(),
+        )
+        auction_value_progress.start(detail=f"examples={len(auction_value_examples)}")
+        auction_value_history = auction_value_model.train_regression_examples(
+            auction_value_examples,
+            epochs=auction_value_epochs,
+            learning_rate=auction_value_learning_rate,
+            l2=l2,
+            seed=seed + 3,
+            gradient_clip=gradient_clip,
+            progress_callback=_make_regression_epoch_logger(
+                progress=auction_value_progress,
+            ),
+        )
+        auction_value_progress.stop(
+            completed=auction_value_epochs,
+            detail=f"mse={auction_value_history[-1]['mse']:.4f}",
+        )
+        _log_progress(
+            verbose=verbose,
+            label="train:models",
+            completed=4,
+            total=4,
+            started_at=started_at,
+            detail=f"auction_value mse={auction_value_history[-1]['mse']:.4f}",
+        )
+    else:
+        _log(
+            verbose,
+            f"[train] parallel model training across {resolved_workers} workers",
+        )
+        component_tasks = [
+            {
+                "name": "play_model",
+                "kind": "choice",
+                "model": play_model,
+                "examples": play_examples,
+                "epochs": play_epochs,
+                "learning_rate": play_learning_rate,
+                "l2": l2,
+                "seed": seed,
+                "gradient_clip": gradient_clip,
+            },
+            {
+                "name": "auction_model",
+                "kind": "choice",
+                "model": auction_model,
+                "examples": auction_examples,
+                "epochs": auction_epochs,
+                "learning_rate": auction_learning_rate,
+                "l2": l2,
+                "seed": seed + 1,
+                "gradient_clip": gradient_clip,
+            },
+            {
+                "name": "play_value_model",
+                "kind": "regression",
+                "model": play_value_model,
+                "examples": play_value_examples,
+                "epochs": play_value_epochs,
+                "learning_rate": play_value_learning_rate,
+                "l2": l2,
+                "seed": seed + 2,
+                "gradient_clip": gradient_clip,
+            },
+            {
+                "name": "auction_value_model",
+                "kind": "regression",
+                "model": auction_value_model,
+                "examples": auction_value_examples,
+                "epochs": auction_value_epochs,
+                "learning_rate": auction_value_learning_rate,
+                "l2": l2,
+                "seed": seed + 3,
+                "gradient_clip": gradient_clip,
+            },
+        ]
+        results_by_name: dict[str, dict] = {}
+        executor, executor_kind = _create_parallel_executor(max_workers=resolved_workers)
+        if executor_kind != "process":
+            _log(verbose, f"[train] falling back to {executor_kind} workers for model training")
+        with executor:
+            futures = [
+                executor.submit(_train_model_component_worker, task)
+                for task in component_tasks
+            ]
+            completed_components = 0
+            for future in as_completed(futures):
+                result = future.result()
+                results_by_name[result["name"]] = result
+                completed_components += 1
+                history = result["history"]
+                final_metrics = history[-1]
+                if result["name"].endswith("value_model"):
+                    detail = f"{result['name']} mse={final_metrics['mse']:.4f}"
+                else:
+                    detail = f"{result['name']} acc={final_metrics['accuracy']:.3f}"
+                _log_progress(
+                    verbose=verbose,
+                    label="train:models",
+                    completed=completed_components,
+                    total=4,
+                    started_at=started_at,
+                    detail=detail,
+                )
+        play_model = ScalarMLP.from_dict(results_by_name["play_model"]["model"])
+        auction_model = ScalarMLP.from_dict(results_by_name["auction_model"]["model"])
+        play_value_model = ScalarMLP.from_dict(results_by_name["play_value_model"]["model"])
+        auction_value_model = ScalarMLP.from_dict(results_by_name["auction_value_model"]["model"])
+        play_history = results_by_name["play_model"]["history"]
+        auction_history = results_by_name["auction_model"]["history"]
+        play_value_history = results_by_name["play_value_model"]["history"]
+        auction_value_history = results_by_name["auction_value_model"]["history"]
 
     bundle = {
         "version": bundle_version,
@@ -1598,6 +2213,7 @@ def train_with_dagger(
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
     teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
+    workers: int = DEFAULT_WORKERS,
     bot_id: str = "neural-3p-v2",
     verbose: bool = False,
 ) -> tuple[dict, dict]:
@@ -1609,7 +2225,8 @@ def train_with_dagger(
             f"warm_start_lr_scale={warm_start_lr_scale:.2f} "
             f"warm_start_epoch_scale={warm_start_epoch_scale:.2f} "
             f"teacher_sample_scale={teacher_sample_scale:.2f} "
-            f"teacher_target_temperature={teacher_target_temperature:.2f}"
+            f"teacher_target_temperature={teacher_target_temperature:.2f} "
+            f"workers={workers}"
         ),
     )
     aggregate_dataset, bootstrap_report = collect_teacher_training_dataset(
@@ -1620,6 +2237,7 @@ def train_with_dagger(
         student_agreement_keep_prob=student_agreement_keep_prob,
         teacher_sample_scale=teacher_sample_scale,
         teacher_target_temperature=teacher_target_temperature,
+        workers=workers,
         verbose=verbose,
     )
     _log(verbose, f"[dagger] bootstrap dataset {_format_dataset_counts(aggregate_dataset)}")
@@ -1655,9 +2273,27 @@ def train_with_dagger(
             "training_mode": "search_distillation",
             "teacher_target_temperature": teacher_target_temperature,
         },
+        workers=workers,
         verbose=verbose,
     )
+    previous_iteration_snapshot: dict[str, object] | None = None
+    bootstrap_snapshot = _build_training_iteration_snapshot(
+        dataset=aggregate_dataset,
+        training_report=training_report,
+    )
     _log(verbose, f"[dagger] post-bootstrap {_format_training_metrics(training_report)}")
+    _log(
+        verbose,
+        _render_iteration_comparison_table(
+            prefix="[dagger]",
+            title="post-bootstrap comparison",
+            current_snapshot=bootstrap_snapshot,
+            previous_snapshot=previous_iteration_snapshot,
+            metrics=TRAINING_ITERATION_METRICS,
+            footer_note="baseline teacher-distillation pass",
+        ),
+    )
+    previous_iteration_snapshot = bootstrap_snapshot
 
     dagger_reports: list[dict] = []
     for dagger_iteration in range(dagger_iterations):
@@ -1671,6 +2307,7 @@ def train_with_dagger(
             student_agreement_keep_prob=student_agreement_keep_prob,
             teacher_sample_scale=teacher_sample_scale,
             teacher_target_temperature=teacher_target_temperature,
+            workers=workers,
             verbose=verbose,
         )
         aggregate_dataset.extend(dagger_dataset)
@@ -1716,12 +2353,29 @@ def train_with_dagger(
                 "training_mode": "search_distillation",
                 "teacher_target_temperature": teacher_target_temperature,
             },
+            workers=workers,
             verbose=verbose,
         )
         _log(
             verbose,
             f"[dagger] iteration {dagger_iteration + 1}/{dagger_iterations} {_format_training_metrics(training_report)}",
         )
+        iteration_snapshot = _build_training_iteration_snapshot(
+            dataset=aggregate_dataset,
+            training_report=training_report,
+        )
+        _log(
+            verbose,
+            _render_iteration_comparison_table(
+                prefix="[dagger]",
+                title=f"iteration {dagger_iteration + 1}/{dagger_iterations} comparison",
+                current_snapshot=iteration_snapshot,
+                previous_snapshot=previous_iteration_snapshot,
+                metrics=TRAINING_ITERATION_METRICS,
+                footer_note="student rollout relabeling merged into aggregate dataset",
+            ),
+        )
+        previous_iteration_snapshot = iteration_snapshot
         dagger_reports.append(
             {
                 "iteration": dagger_iteration + 1,
@@ -1893,6 +2547,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="where to write the trained model bundle",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help="number of worker processes for rollout collection and model training",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress live training progress logs and only print the final JSON summary",
@@ -1944,6 +2604,7 @@ def main() -> None:
         student_agreement_keep_prob=args.student_agreement_keep_prob,
         teacher_sample_scale=args.teacher_sample_scale,
         teacher_target_temperature=args.teacher_target_temperature,
+        workers=args.workers,
         bot_id=args.bot_id,
         verbose=not args.quiet,
     )

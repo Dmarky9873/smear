@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import as_completed
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
@@ -11,6 +13,7 @@ try:
     from .bots.neural_3p_bot import NeuralThreePlayerBot
     from .simulator import compare_models_objectively
     from .train_neural_3p_bot import (
+        ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
         DEFAULT_AUCTION_ROLLOUT_DEPTH,
         DEFAULT_AUCTION_VALUE_HIDDEN_DIM,
@@ -22,8 +25,13 @@ try:
         DEFAULT_TEACHER_POOL,
         DEFAULT_TEACHER_SAMPLE_SCALE,
         DEFAULT_TEACHER_TARGET_TEMPERATURE,
+        DEFAULT_WORKERS,
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WARM_START_EPOCH_SCALE,
+        LiveProgressDisplay,
+        _create_parallel_executor,
+        _resolve_worker_count,
+        _render_iteration_comparison_table,
         load_model_bundle,
         parse_teacher_specs,
         save_model_bundle,
@@ -33,6 +41,7 @@ except ImportError:
     from bots.neural_3p_bot import NeuralThreePlayerBot
     from simulator import compare_models_objectively
     from train_neural_3p_bot import (
+        ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
         DEFAULT_AUCTION_ROLLOUT_DEPTH,
         DEFAULT_AUCTION_VALUE_HIDDEN_DIM,
@@ -44,8 +53,13 @@ except ImportError:
         DEFAULT_TEACHER_POOL,
         DEFAULT_TEACHER_SAMPLE_SCALE,
         DEFAULT_TEACHER_TARGET_TEMPERATURE,
+        DEFAULT_WORKERS,
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WARM_START_EPOCH_SCALE,
+        LiveProgressDisplay,
+        _create_parallel_executor,
+        _resolve_worker_count,
+        _render_iteration_comparison_table,
         load_model_bundle,
         parse_teacher_specs,
         save_model_bundle,
@@ -54,6 +68,103 @@ except ImportError:
 
 
 DEFAULT_RUN_ROOT = NeuralThreePlayerBot.MODEL_DIR / "self_train_runs"
+TRAINING_CYCLE_METRICS: tuple[ComparisonMetric, ...] = (
+    ComparisonMetric(
+        key="play_accuracy",
+        label="Play accuracy",
+        kind="float",
+        digits=3,
+        higher_is_better=True,
+        tolerance=5e-4,
+    ),
+    ComparisonMetric(
+        key="auction_accuracy",
+        label="Auction accuracy",
+        kind="float",
+        digits=3,
+        higher_is_better=True,
+        tolerance=5e-4,
+    ),
+    ComparisonMetric(
+        key="play_value_mse",
+        label="Play value MSE",
+        kind="float",
+        digits=4,
+        higher_is_better=False,
+        tolerance=5e-5,
+    ),
+    ComparisonMetric(
+        key="auction_value_mse",
+        label="Auction value MSE",
+        kind="float",
+        digits=4,
+        higher_is_better=False,
+        tolerance=5e-5,
+    ),
+    ComparisonMetric(
+        key="candidate_vs_incumbent",
+        label="Vs incumbent",
+        kind="percent",
+        digits=1,
+        higher_is_better=True,
+        tolerance=0.05,
+    ),
+    ComparisonMetric(
+        key="candidate_vs_greedy",
+        label="Vs greedy",
+        kind="percent",
+        digits=1,
+        higher_is_better=True,
+        tolerance=0.05,
+    ),
+    ComparisonMetric(
+        key="candidate_vs_optimal",
+        label="Vs optimal",
+        kind="percent",
+        digits=1,
+        higher_is_better=True,
+        tolerance=0.05,
+    ),
+    ComparisonMetric(
+        key="training_elapsed_seconds",
+        label="Train time",
+        kind="duration",
+        higher_is_better=False,
+        tolerance=0.5,
+    ),
+    ComparisonMetric(
+        key="evaluation_elapsed_seconds",
+        label="Eval time",
+        kind="duration",
+        higher_is_better=False,
+        tolerance=0.5,
+    ),
+    ComparisonMetric(
+        key="cycle_elapsed_seconds",
+        label="Cycle time",
+        kind="duration",
+        higher_is_better=False,
+        tolerance=0.5,
+    ),
+    ComparisonMetric(
+        key="decision",
+        label="Decision",
+        kind="text",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class BundleBotFactory:
+    label: str
+    bundle: dict
+
+    @property
+    def __name__(self) -> str:
+        return self.label
+
+    def __call__(self, player_name: str):
+        return NeuralThreePlayerBot(player_name, model_bundle=self.bundle)
 
 
 def resolve_initial_model_path(explicit_path: Path | None) -> Path:
@@ -65,11 +176,7 @@ def resolve_initial_model_path(explicit_path: Path | None) -> Path:
 
 
 def make_named_factory(label: str, bundle: dict):
-    def _factory(player_name: str):
-        return NeuralThreePlayerBot(player_name, model_bundle=bundle)
-
-    _factory.__name__ = label
-    return _factory
+    return BundleBotFactory(label=label, bundle=bundle)
 
 
 def _log(verbose: bool, message: str) -> None:
@@ -109,6 +216,134 @@ def _format_eval_summary(evaluation_report: dict) -> str:
         f"candidate_vs_greedy={vs_greedy['candidate']['win_percentage']:.1f}% "
         f"candidate_vs_optimal={vs_optimal['candidate']['win_percentage']:.1f}%"
     )
+
+
+def _compare_models_worker(task: dict) -> dict:
+    return compare_models_objectively(
+        task["n"],
+        task["alpha"],
+        task["model1"],
+        task["model2"],
+        show_progress=False,
+        seed=task["seed"],
+        three_player=True,
+        progress_label=task["progress_label"],
+    )
+
+
+def _compare_models_maybe_parallel(
+    *,
+    n: int,
+    alpha: int,
+    model1,
+    model2,
+    seed: int,
+    progress_label: str,
+    workers: int,
+    verbose: bool,
+) -> dict:
+    if workers <= 1 or n <= 1:
+        return compare_models_objectively(
+            n,
+            alpha,
+            model1,
+            model2,
+            show_progress=verbose,
+            seed=seed,
+            three_player=True,
+            progress_label=progress_label,
+        )
+
+    resolved_workers = _resolve_worker_count(workers=workers, work_items=n)
+    started_at = time.perf_counter()
+    progress = LiveProgressDisplay(
+        verbose=verbose,
+        label=progress_label,
+        total=n,
+        started_at=started_at,
+    )
+    progress.start(detail=f"workers={resolved_workers}")
+    tasks = [
+        {
+            "n": 1,
+            "alpha": alpha,
+            "model1": model1,
+            "model2": model2,
+            "seed": seed + (index * 1_000),
+            "progress_label": progress_label,
+        }
+        for index in range(n)
+    ]
+    merged_report: dict | None = None
+    completed_games = 0
+    executor, executor_kind = _create_parallel_executor(max_workers=resolved_workers)
+    if executor_kind != "process":
+        _log(verbose, f"[{progress_label}] falling back to {executor_kind} workers")
+    with executor:
+        futures = [executor.submit(_compare_models_worker, task) for task in tasks]
+        for future in as_completed(futures):
+            shard_report = future.result()
+            merged_report = (
+                shard_report
+                if merged_report is None
+                else _merge_evaluation_reports(merged_report, shard_report)
+            )
+            completed_games += shard_report["games_played"]
+            progress.update(
+                completed=completed_games,
+                detail=f"workers={resolved_workers}",
+            )
+    progress.stop(completed=n, detail=f"workers={resolved_workers}")
+    if merged_report is None:
+        raise ValueError("parallel evaluation produced no reports")
+    wall_elapsed_seconds = time.perf_counter() - started_at
+    total_games = merged_report["games_played"]
+    total_rounds = merged_report["average_rounds_played"] * total_games
+    merged_report = {
+        **merged_report,
+        "elapsed_seconds": wall_elapsed_seconds,
+        "average_seconds_per_game": (
+            wall_elapsed_seconds / total_games if total_games > 0 else None
+        ),
+        "average_seconds_per_round": (
+            wall_elapsed_seconds / total_rounds if total_rounds > 0 else None
+        ),
+        "games_per_second": (
+            total_games / wall_elapsed_seconds if wall_elapsed_seconds > 0 else None
+        ),
+        "rounds_per_second": (
+            total_rounds / wall_elapsed_seconds if wall_elapsed_seconds > 0 else None
+        ),
+    }
+    return merged_report
+
+
+def _build_cycle_snapshot(
+    *,
+    training_report: dict,
+    evaluation_report: dict,
+    evaluation_elapsed_seconds: float,
+    cycle_elapsed_seconds: float,
+) -> dict[str, object]:
+    training_metrics = training_report["training"]
+    snapshot = {
+        "play_accuracy": training_metrics["play_history"][-1]["accuracy"],
+        "auction_accuracy": training_metrics["auction_history"][-1]["accuracy"],
+        "play_value_mse": training_metrics["play_value_history"][-1]["mse"],
+        "auction_value_mse": training_metrics["auction_value_history"][-1]["mse"],
+        "candidate_vs_incumbent": evaluation_report["vs_incumbent"]["models"]["candidate"]["win_percentage"],
+        "candidate_vs_greedy": None,
+        "candidate_vs_optimal": None,
+        "training_elapsed_seconds": training_metrics.get("elapsed_seconds"),
+        "evaluation_elapsed_seconds": evaluation_elapsed_seconds,
+        "cycle_elapsed_seconds": cycle_elapsed_seconds,
+        "decision": "promoted" if evaluation_report["accepted"] else "kept",
+    }
+    if evaluation_report.get("vs_greedy") is not None:
+        snapshot["candidate_vs_greedy"] = evaluation_report["vs_greedy"]["models"]["candidate"]["win_percentage"]
+    if evaluation_report.get("vs_optimal_bot") is not None:
+        snapshot["candidate_vs_optimal"] = evaluation_report["vs_optimal_bot"]["models"]["candidate"]["win_percentage"]
+    return snapshot
 
 
 def _candidate_score(evaluation_report: dict) -> float:
@@ -205,29 +440,30 @@ def _run_incumbent_baselines(
     eval_games: int,
     eval_games_vs_optimal: int,
     seed: int,
+    workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> dict:
     incumbent_factory = make_named_factory("incumbent", incumbent_bundle)
     return {
-        "vs_greedy": compare_models_objectively(
-            eval_games,
-            alpha,
-            incumbent_factory,
-            "greedy",
-            show_progress=verbose,
+        "vs_greedy": _compare_models_maybe_parallel(
+            n=eval_games,
+            alpha=alpha,
+            model1=incumbent_factory,
+            model2="greedy",
             seed=seed + 3_000,
-            three_player=True,
             progress_label="eval:incumbent-vs-greedy",
+            workers=workers,
+            verbose=verbose,
         ),
-        "vs_optimal": compare_models_objectively(
-            eval_games_vs_optimal,
-            alpha,
-            incumbent_factory,
-            "optimal-bot",
-            show_progress=verbose,
+        "vs_optimal": _compare_models_maybe_parallel(
+            n=eval_games_vs_optimal,
+            alpha=alpha,
+            model1=incumbent_factory,
+            model2="optimal-bot",
             seed=seed + 4_000,
-            three_player=True,
             progress_label="eval:incumbent-vs-optimal",
+            workers=workers,
+            verbose=verbose,
         ),
     }
 
@@ -242,6 +478,7 @@ def evaluate_candidate(
     precheck_games: int,
     seed: int,
     incumbent_baselines: dict | None = None,
+    workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> dict:
     candidate_factory = make_named_factory("candidate", candidate_bundle)
@@ -254,15 +491,15 @@ def evaluate_candidate(
             f"full_eval_games={eval_games}"
         ),
     )
-    precheck_vs_incumbent = compare_models_objectively(
-        precheck_games,
-        alpha,
-        candidate_factory,
-        incumbent_factory,
-        show_progress=verbose,
+    precheck_vs_incumbent = _compare_models_maybe_parallel(
+        n=precheck_games,
+        alpha=alpha,
+        model1=candidate_factory,
+        model2=incumbent_factory,
         seed=seed,
-        three_player=True,
         progress_label="eval:precheck",
+        workers=workers,
+        verbose=verbose,
     )
     precheck_candidate_wp = precheck_vs_incumbent["models"]["candidate"]["win_percentage"]
     precheck_incumbent_wp = precheck_vs_incumbent["models"]["incumbent"]["win_percentage"]
@@ -273,15 +510,15 @@ def evaluate_candidate(
     if eval_games <= precheck_games:
         vs_incumbent = precheck_vs_incumbent
     else:
-        remaining_vs_incumbent = compare_models_objectively(
-            eval_games - precheck_games,
-            alpha,
-            candidate_factory,
-            incumbent_factory,
-            show_progress=verbose,
+        remaining_vs_incumbent = _compare_models_maybe_parallel(
+            n=eval_games - precheck_games,
+            alpha=alpha,
+            model1=candidate_factory,
+            model2=incumbent_factory,
             seed=seed + 50_000,
-            three_player=True,
             progress_label="eval:head-to-head",
+            workers=workers,
+            verbose=verbose,
         )
         vs_incumbent = _merge_evaluation_reports(
             precheck_vs_incumbent,
@@ -297,25 +534,25 @@ def evaluate_candidate(
         )
 
     _log(verbose, "[eval] candidate baselines vs greedy and optimal-bot")
-    vs_greedy = compare_models_objectively(
-        eval_games,
-        alpha,
-        candidate_factory,
-        "greedy",
-        show_progress=verbose,
+    vs_greedy = _compare_models_maybe_parallel(
+        n=eval_games,
+        alpha=alpha,
+        model1=candidate_factory,
+        model2="greedy",
         seed=seed + 1_000,
-        three_player=True,
         progress_label="eval:candidate-vs-greedy",
+        workers=workers,
+        verbose=verbose,
     )
-    vs_optimal = compare_models_objectively(
-        eval_games_vs_optimal,
-        alpha,
-        candidate_factory,
-        "optimal-bot",
-        show_progress=verbose,
+    vs_optimal = _compare_models_maybe_parallel(
+        n=eval_games_vs_optimal,
+        alpha=alpha,
+        model1=candidate_factory,
+        model2="optimal-bot",
         seed=seed + 2_000,
-        three_player=True,
         progress_label="eval:candidate-vs-optimal",
+        workers=workers,
+        verbose=verbose,
     )
     if incumbent_baselines is None:
         _log(verbose, "[eval] building incumbent baseline cache")
@@ -325,6 +562,7 @@ def evaluate_candidate(
             eval_games=eval_games,
             eval_games_vs_optimal=eval_games_vs_optimal,
             seed=seed,
+            workers=workers,
             verbose=verbose,
         )
     incumbent_vs_greedy = incumbent_baselines["vs_greedy"]
@@ -388,7 +626,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--run-root",
         type=Path,
         default=DEFAULT_RUN_ROOT,
-        help="directory where the overnight run folder should be created",
+        help="directory where the self-train run folder should be created",
     )
     parser.add_argument(
         "--promote-to",
@@ -452,6 +690,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--play-rollout-depth", type=int, default=DEFAULT_PLAY_ROLLOUT_DEPTH)
     parser.add_argument("--auction-rollout-depth", type=int, default=DEFAULT_AUCTION_ROLLOUT_DEPTH)
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help="number of worker processes for rollout collection, evaluation, and model training",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress live cycle logs and only print the final JSON summary",
@@ -469,7 +713,7 @@ def main() -> None:
     verbose = not args.quiet
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = args.run_root / f"neural-3p-overnight-{timestamp}"
+    run_dir = args.run_root / f"neural-3p-train-{timestamp}"
     checkpoints_dir = run_dir / "checkpoints"
     run_dir.mkdir(parents=True, exist_ok=False)
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -494,6 +738,7 @@ def main() -> None:
                 "precheck_games": args.precheck_games,
                 "teacher_sample_scale": args.teacher_sample_scale,
                 "teacher_target_temperature": args.teacher_target_temperature,
+                "workers": args.workers,
                 "seed": args.seed,
             }
         ),
@@ -502,19 +747,20 @@ def main() -> None:
     _log(
         verbose,
         (
-            f"[overnight] run_dir={run_dir} initial_model={initial_model_path} "
+            f"[self-train] run_dir={run_dir} initial_model={initial_model_path} "
             f"teacher_pool={args.teacher_pool}"
         ),
     )
     _log(
         verbose,
         (
-            f"[overnight] config duration={args.duration_hours:.2f}h alpha={args.alpha} "
+            f"[self-train] config duration={args.duration_hours:.2f}h alpha={args.alpha} "
             f"bootstrap_matches={args.bootstrap_matches} dagger_matches={args.dagger_matches} "
             f"dagger_iterations={args.dagger_iterations} eval_games={args.eval_games} "
             f"eval_games_vs_optimal={args.eval_games_vs_optimal} precheck_games={args.precheck_games} "
             f"teacher_sample_scale={args.teacher_sample_scale:.2f} "
-            f"teacher_target_temperature={args.teacher_target_temperature:.2f}"
+            f"teacher_target_temperature={args.teacher_target_temperature:.2f} "
+            f"workers={args.workers}"
         ),
     )
 
@@ -522,7 +768,8 @@ def main() -> None:
     deadline = started_at + (args.duration_hours * 3600.0)
     cycle_index = 1
     incumbent_baseline_cache: dict | None = None
-    _log(verbose, "[overnight] incumbent baseline cache will be built lazily")
+    previous_cycle_snapshot: dict[str, object] | None = None
+    _log(verbose, "[self-train] incumbent baseline cache will be built lazily")
 
     while True:
         if args.max_cycles is not None and cycle_index > args.max_cycles:
@@ -534,7 +781,7 @@ def main() -> None:
         _log(
             verbose,
             (
-                f"[overnight] cycle {cycle_index} start seed={cycle_seed} "
+                f"[self-train] cycle {cycle_index} start seed={cycle_seed} "
                 f"elapsed_hours={(time.time() - started_at) / 3600.0:.2f} "
                 f"time_left={_format_seconds(max(0.0, deadline - time.time()))}"
             ),
@@ -572,11 +819,12 @@ def main() -> None:
                 student_agreement_keep_prob=args.student_agreement_keep_prob,
                 teacher_sample_scale=args.teacher_sample_scale,
                 teacher_target_temperature=args.teacher_target_temperature,
+                workers=args.workers,
                 bot_id="neural-3p-v2",
                 verbose=verbose,
             )
         except FloatingPointError as exc:
-            _log(verbose, f"[overnight] cycle {cycle_index} aborted due to non-finite training: {exc}")
+            _log(verbose, f"[self-train] cycle {cycle_index} aborted due to non-finite training: {exc}")
             cycle_report = {
                 "cycle": cycle_index,
                 "elapsed_hours": (time.time() - started_at) / 3600.0,
@@ -593,7 +841,7 @@ def main() -> None:
         _log(
             verbose,
             (
-                f"[overnight] cycle {cycle_index} trained checkpoint={candidate_path} "
+                f"[self-train] cycle {cycle_index} trained checkpoint={candidate_path} "
                 f"play_acc={training_report['training']['play_history'][-1]['accuracy']:.3f} "
                 f"auction_acc={training_report['training']['auction_history'][-1]['accuracy']:.3f} "
                 f"play_value_mse={training_report['training']['play_value_history'][-1]['mse']:.4f} "
@@ -612,6 +860,7 @@ def main() -> None:
             precheck_games=min(args.precheck_games, args.eval_games),
             seed=cycle_seed,
             incumbent_baselines=incumbent_baseline_cache,
+            workers=args.workers,
             verbose=verbose,
         )
         evaluation_elapsed = time.perf_counter() - evaluation_started_at
@@ -627,7 +876,7 @@ def main() -> None:
             _log(
                 verbose,
                 (
-                    "[overnight] incumbent baseline cache populated "
+                    "[self-train] incumbent baseline cache populated "
                     f"incumbent_vs_greedy={incumbent_baseline_cache['vs_greedy']['models']['incumbent']['win_percentage']:.1f}% "
                     f"incumbent_vs_optimal={incumbent_baseline_cache['vs_optimal']['models']['incumbent']['win_percentage']:.1f}%"
                 ),
@@ -635,7 +884,7 @@ def main() -> None:
         _log(
             verbose,
             (
-                f"[overnight] cycle {cycle_index} eval {_format_eval_summary(evaluation_report)} "
+                f"[self-train] cycle {cycle_index} eval {_format_eval_summary(evaluation_report)} "
                 f"eval_elapsed={_format_seconds(evaluation_elapsed)}"
             ),
         )
@@ -649,10 +898,30 @@ def main() -> None:
             save_model_bundle(current_best_bundle, best_path)
             _log(
                 verbose,
-                f"[overnight] cycle {cycle_index} promoted candidate to {best_path}",
+                f"[self-train] cycle {cycle_index} promoted candidate to {best_path}",
             )
         else:
-            _log(verbose, f"[overnight] cycle {cycle_index} kept incumbent")
+            _log(verbose, f"[self-train] cycle {cycle_index} kept incumbent")
+
+        cycle_elapsed_seconds = time.perf_counter() - cycle_started_at
+        cycle_snapshot = _build_cycle_snapshot(
+            training_report=training_report,
+            evaluation_report=evaluation_report,
+            evaluation_elapsed_seconds=evaluation_elapsed,
+            cycle_elapsed_seconds=cycle_elapsed_seconds,
+        )
+        _log(
+            verbose,
+            _render_iteration_comparison_table(
+                prefix="[self-train]",
+                title=f"cycle {cycle_index} comparison",
+                current_snapshot=cycle_snapshot,
+                previous_snapshot=previous_cycle_snapshot,
+                metrics=TRAINING_CYCLE_METRICS,
+                footer_note="compares this candidate cycle against the previous self-train cycle",
+            ),
+        )
+        previous_cycle_snapshot = cycle_snapshot
 
         cycle_report = {
             "cycle": cycle_index,
@@ -662,7 +931,7 @@ def main() -> None:
             "training": training_report,
             "evaluation": evaluation_report,
             "timing": {
-                "cycle_elapsed_seconds": time.perf_counter() - cycle_started_at,
+                "cycle_elapsed_seconds": cycle_elapsed_seconds,
                 "training_elapsed_seconds": training_report["training"].get("elapsed_seconds"),
                 "evaluation_elapsed_seconds": evaluation_elapsed,
             },
@@ -674,7 +943,7 @@ def main() -> None:
 
     if args.promote_to is not None:
         save_model_bundle(current_best_bundle, args.promote_to)
-        _log(verbose, f"[overnight] wrote promoted best model to {args.promote_to}")
+        _log(verbose, f"[self-train] wrote promoted best model to {args.promote_to}")
 
     print(
         json.dumps(

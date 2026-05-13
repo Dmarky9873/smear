@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import as_completed
 from copy import deepcopy
 import json
 import math
@@ -20,8 +21,9 @@ try:
     from .engine import apply_auction_action_for_search, apply_trick_action_to_state
     from .gameplay import MatchController
     from .models import Play
-    from .self_train_neural_3p_overnight import evaluate_candidate
+    from .self_train_neural_3p import evaluate_candidate
     from .train_neural_3p_bot import (
+        ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
         DEFAULT_AUCTION_ROLLOUT_DEPTH,
         DEFAULT_AUCTION_VALUE_HIDDEN_DIM,
@@ -30,11 +32,18 @@ try:
         DEFAULT_PLAY_ROLLOUT_DEPTH,
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
         DEFAULT_PLAY_VALUE_WEIGHT,
+        DEFAULT_WORKERS,
         LiveProgressDisplay,
         PendingValueExample,
         TrainingDataset,
+        TRAINING_ITERATION_METRICS,
+        _build_training_iteration_snapshot,
+        _create_parallel_executor,
         _format_seconds,
         _format_training_metrics,
+        _merge_count_dict,
+        _render_iteration_comparison_table,
+        _resolve_worker_count,
         _resolve_round_value_targets,
         load_model_bundle,
         ordered_legal_auction_actions,
@@ -52,8 +61,9 @@ except ImportError:
     from engine import apply_auction_action_for_search, apply_trick_action_to_state
     from gameplay import MatchController
     from models import Play
-    from self_train_neural_3p_overnight import evaluate_candidate
+    from self_train_neural_3p import evaluate_candidate
     from train_neural_3p_bot import (
+        ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
         DEFAULT_AUCTION_ROLLOUT_DEPTH,
         DEFAULT_AUCTION_VALUE_HIDDEN_DIM,
@@ -62,11 +72,18 @@ except ImportError:
         DEFAULT_PLAY_ROLLOUT_DEPTH,
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
         DEFAULT_PLAY_VALUE_WEIGHT,
+        DEFAULT_WORKERS,
         LiveProgressDisplay,
         PendingValueExample,
         TrainingDataset,
+        TRAINING_ITERATION_METRICS,
+        _build_training_iteration_snapshot,
+        _create_parallel_executor,
         _format_seconds,
         _format_training_metrics,
+        _merge_count_dict,
+        _render_iteration_comparison_table,
+        _resolve_worker_count,
         _resolve_round_value_targets,
         load_model_bundle,
         ordered_legal_auction_actions,
@@ -91,6 +108,110 @@ DEFAULT_EPSILON = 0.08
 DEFAULT_TEMPERATURE_DECAY = 0.96
 DEFAULT_EPSILON_DECAY = 0.94
 THREE_PLAYER_NAMES = ["Player 1", "Player 2", "Player 3"]
+SELF_PLAY_TRAINING_METRICS: tuple[ComparisonMetric, ...] = (
+    ComparisonMetric(
+        key="play_temperature",
+        label="Play temp",
+        kind="float",
+        digits=2,
+        higher_is_better=False,
+        tolerance=5e-3,
+    ),
+    ComparisonMetric(
+        key="auction_temperature",
+        label="Auction temp",
+        kind="float",
+        digits=2,
+        higher_is_better=False,
+        tolerance=5e-3,
+    ),
+    ComparisonMetric(
+        key="epsilon",
+        label="Epsilon",
+        kind="float",
+        digits=2,
+        higher_is_better=False,
+        tolerance=5e-3,
+    ),
+    *TRAINING_ITERATION_METRICS,
+)
+SELF_PLAY_OUTER_METRICS: tuple[ComparisonMetric, ...] = (
+    ComparisonMetric(
+        key="play_accuracy",
+        label="Play accuracy",
+        kind="float",
+        digits=3,
+        higher_is_better=True,
+        tolerance=5e-4,
+    ),
+    ComparisonMetric(
+        key="auction_accuracy",
+        label="Auction accuracy",
+        kind="float",
+        digits=3,
+        higher_is_better=True,
+        tolerance=5e-4,
+    ),
+    ComparisonMetric(
+        key="play_value_mse",
+        label="Play value MSE",
+        kind="float",
+        digits=4,
+        higher_is_better=False,
+        tolerance=5e-5,
+    ),
+    ComparisonMetric(
+        key="auction_value_mse",
+        label="Auction value MSE",
+        kind="float",
+        digits=4,
+        higher_is_better=False,
+        tolerance=5e-5,
+    ),
+    ComparisonMetric(
+        key="candidate_vs_incumbent",
+        label="Vs incumbent",
+        kind="percent",
+        digits=1,
+        higher_is_better=True,
+        tolerance=0.05,
+    ),
+    ComparisonMetric(
+        key="candidate_vs_greedy",
+        label="Vs greedy",
+        kind="percent",
+        digits=1,
+        higher_is_better=True,
+        tolerance=0.05,
+    ),
+    ComparisonMetric(
+        key="candidate_vs_optimal",
+        label="Vs optimal",
+        kind="percent",
+        digits=1,
+        higher_is_better=True,
+        tolerance=0.05,
+    ),
+    ComparisonMetric(
+        key="training_elapsed_seconds",
+        label="Train time",
+        kind="duration",
+        higher_is_better=False,
+        tolerance=0.5,
+    ),
+    ComparisonMetric(
+        key="iteration_elapsed_seconds",
+        label="Iteration time",
+        kind="duration",
+        higher_is_better=False,
+        tolerance=0.5,
+    ),
+    ComparisonMetric(
+        key="decision",
+        label="Decision",
+        kind="text",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -140,6 +261,53 @@ def _resolve_initial_model_path(explicit_path: Path | None) -> Path:
     return NeuralThreePlayerBot.MODEL_FILE_V1
 
 
+def _build_self_play_training_snapshot(
+    *,
+    aggregate_dataset: TrainingDataset,
+    training_report: dict,
+    play_temperature: float,
+    auction_temperature: float,
+    epsilon: float,
+) -> dict[str, object]:
+    snapshot = _build_training_iteration_snapshot(
+        dataset=aggregate_dataset,
+        training_report=training_report,
+    )
+    snapshot.update(
+        {
+            "play_temperature": play_temperature,
+            "auction_temperature": auction_temperature,
+            "epsilon": epsilon,
+        }
+    )
+    return snapshot
+
+
+def _build_self_play_outer_snapshot(
+    *,
+    training_report: dict,
+    evaluation_report: dict,
+    iteration_elapsed_seconds: float,
+) -> dict[str, object]:
+    snapshot = {
+        "play_accuracy": training_report["play_history"][-1]["accuracy"],
+        "auction_accuracy": training_report["auction_history"][-1]["accuracy"],
+        "play_value_mse": training_report["play_value_history"][-1]["mse"],
+        "auction_value_mse": training_report["auction_value_history"][-1]["mse"],
+        "candidate_vs_incumbent": evaluation_report["vs_incumbent"]["models"]["candidate"]["win_percentage"],
+        "candidate_vs_greedy": None,
+        "candidate_vs_optimal": None,
+        "training_elapsed_seconds": training_report.get("elapsed_seconds"),
+        "iteration_elapsed_seconds": iteration_elapsed_seconds,
+        "decision": "promoted" if evaluation_report["accepted"] else "kept",
+    }
+    if evaluation_report.get("vs_greedy") is not None:
+        snapshot["candidate_vs_greedy"] = evaluation_report["vs_greedy"]["models"]["candidate"]["win_percentage"]
+    if evaluation_report.get("vs_optimal_bot") is not None:
+        snapshot["candidate_vs_optimal"] = evaluation_report["vs_optimal_bot"]["models"]["candidate"]["win_percentage"]
+    return snapshot
+
+
 def _sample_index(
     *,
     scores: list[float],
@@ -180,7 +348,48 @@ def _build_self_play_bots(model_bundle: dict) -> dict[str, NeuralThreePlayerBot]
     }
 
 
-def collect_self_play_training_dataset(
+def _collect_self_play_training_dataset_worker(task: dict) -> tuple[TrainingDataset, dict]:
+    return _collect_self_play_training_dataset_sequential(**task)
+
+
+def _merge_self_play_shard_reports(
+    *,
+    match_count: int,
+    alpha: int,
+    worker_count: int,
+    aggregate_dataset: TrainingDataset,
+    shard_reports: list[dict],
+    elapsed_seconds: float,
+) -> dict:
+    forced_auction_actions = 0
+    forced_play_actions = 0
+    sampled_auction_actions = 0
+    sampled_play_actions = 0
+    worker_elapsed_seconds = 0.0
+    for shard_report in shard_reports:
+        forced_auction_actions += shard_report["forced_auction_actions"]
+        forced_play_actions += shard_report["forced_play_actions"]
+        sampled_auction_actions += shard_report["sampled_auction_actions"]
+        sampled_play_actions += shard_report["sampled_play_actions"]
+        worker_elapsed_seconds += shard_report["elapsed_seconds"]
+    return {
+        "matches": match_count,
+        "alpha": alpha,
+        "play_policy_examples": len(aggregate_dataset.play_policy_examples),
+        "auction_policy_examples": len(aggregate_dataset.auction_policy_examples),
+        "play_value_examples": len(aggregate_dataset.play_value_examples),
+        "auction_value_examples": len(aggregate_dataset.auction_value_examples),
+        "forced_auction_actions": forced_auction_actions,
+        "forced_play_actions": forced_play_actions,
+        "sampled_auction_actions": sampled_auction_actions,
+        "sampled_play_actions": sampled_play_actions,
+        "elapsed_seconds": elapsed_seconds,
+        "worker_elapsed_seconds": worker_elapsed_seconds,
+        "workers": worker_count,
+    }
+
+
+def _collect_self_play_training_dataset_sequential(
     *,
     model_bundle: dict,
     match_count: int,
@@ -470,6 +679,121 @@ def collect_self_play_training_dataset(
     return dataset, report
 
 
+def collect_self_play_training_dataset(
+    *,
+    model_bundle: dict,
+    match_count: int,
+    alpha: int,
+    seed: int,
+    play_temperature: float,
+    auction_temperature: float,
+    epsilon: float,
+    policy_advantage_threshold: float,
+    policy_advantage_scale: float,
+    value_weight_scale: float,
+    winner_policy_weight: float,
+    workers: int = DEFAULT_WORKERS,
+    verbose: bool = False,
+) -> tuple[TrainingDataset, dict]:
+    if workers <= 1 or match_count <= 1:
+        return _collect_self_play_training_dataset_sequential(
+            model_bundle=model_bundle,
+            match_count=match_count,
+            alpha=alpha,
+            seed=seed,
+            play_temperature=play_temperature,
+            auction_temperature=auction_temperature,
+            epsilon=epsilon,
+            policy_advantage_threshold=policy_advantage_threshold,
+            policy_advantage_scale=policy_advantage_scale,
+            value_weight_scale=value_weight_scale,
+            winner_policy_weight=winner_policy_weight,
+            verbose=verbose,
+        )
+
+    resolved_workers = _resolve_worker_count(workers=workers, work_items=match_count)
+    aggregate_dataset = TrainingDataset()
+    shard_reports: list[dict] = []
+    started_at = time.perf_counter()
+    progress = LiveProgressDisplay(
+        verbose=verbose,
+        label="collect:self-play",
+        total=match_count,
+        started_at=started_at,
+    )
+    _log(
+        verbose,
+        (
+            f"[collect:self-play] start matches={match_count} alpha={alpha} "
+            f"seed={seed} play_temp={play_temperature:.2f} "
+            f"auction_temp={auction_temperature:.2f} epsilon={epsilon:.2f} "
+            f"workers={resolved_workers}"
+        ),
+    )
+    progress.start(detail=_format_dataset_counts(aggregate_dataset))
+    tasks = [
+        {
+            "model_bundle": model_bundle,
+            "match_count": 1,
+            "alpha": alpha,
+            "seed": seed + (match_index * 1_000),
+            "play_temperature": play_temperature,
+            "auction_temperature": auction_temperature,
+            "epsilon": epsilon,
+            "policy_advantage_threshold": policy_advantage_threshold,
+            "policy_advantage_scale": policy_advantage_scale,
+            "value_weight_scale": value_weight_scale,
+            "winner_policy_weight": winner_policy_weight,
+            "verbose": False,
+        }
+        for match_index in range(match_count)
+    ]
+    completed_matches = 0
+    executor, executor_kind = _create_parallel_executor(max_workers=resolved_workers)
+    if executor_kind != "process":
+        _log(verbose, f"[collect:self-play] falling back to {executor_kind} workers")
+    with executor:
+        futures = [
+            executor.submit(_collect_self_play_training_dataset_worker, task)
+            for task in tasks
+        ]
+        for future in as_completed(futures):
+            shard_dataset, shard_report = future.result()
+            aggregate_dataset.extend(shard_dataset)
+            shard_reports.append(shard_report)
+            completed_matches += shard_report["matches"]
+            progress.update(
+                completed=completed_matches,
+                detail=_format_dataset_counts(aggregate_dataset),
+            )
+    elapsed_seconds = time.perf_counter() - started_at
+    progress.stop(
+        completed=match_count,
+        detail=_format_dataset_counts(aggregate_dataset),
+    )
+    report = _merge_self_play_shard_reports(
+        match_count=match_count,
+        alpha=alpha,
+        worker_count=resolved_workers,
+        aggregate_dataset=aggregate_dataset,
+        shard_reports=shard_reports,
+        elapsed_seconds=elapsed_seconds,
+    )
+    _log(
+        verbose,
+        (
+            f"[collect:self-play] done {_format_dataset_counts(aggregate_dataset)} "
+            f"elapsed={_format_seconds(elapsed_seconds)} "
+            f"forced_auction={report['forced_auction_actions']} "
+            f"forced_play={report['forced_play_actions']} "
+            f"sampled_auction={report['sampled_auction_actions']} "
+            f"sampled_play={report['sampled_play_actions']} "
+            f"workers={resolved_workers}"
+        ),
+    )
+    return aggregate_dataset, report
+
+
 def train_with_self_play(
     *,
     initial_bundle: dict,
@@ -505,11 +829,13 @@ def train_with_self_play(
     value_weight_scale: float = DEFAULT_VALUE_WEIGHT_SCALE,
     winner_policy_weight: float = DEFAULT_WINNER_POLICY_WEIGHT,
     gradient_clip: float = 3.0,
+    workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     current_bundle = initial_bundle
     replay_history = SelfPlayDatasetHistory()
     iteration_reports: list[dict] = []
+    previous_iteration_snapshot: dict[str, object] | None = None
 
     for iteration_index in range(self_play_iterations):
         iteration_temperature = max(
@@ -529,7 +855,8 @@ def train_with_self_play(
             (
                 f"[self-play] iteration {iteration_index + 1}/{self_play_iterations} "
                 f"matches={self_play_matches} play_temp={iteration_temperature:.2f} "
-                f"auction_temp={iteration_auction_temperature:.2f} epsilon={iteration_epsilon:.2f}"
+                f"auction_temp={iteration_auction_temperature:.2f} epsilon={iteration_epsilon:.2f} "
+                f"workers={workers}"
             ),
         )
         iteration_dataset, collection_report = collect_self_play_training_dataset(
@@ -544,6 +871,7 @@ def train_with_self_play(
             policy_advantage_scale=policy_advantage_scale,
             value_weight_scale=value_weight_scale,
             winner_policy_weight=winner_policy_weight,
+            workers=workers,
             verbose=verbose,
         )
         aggregate_dataset = replay_history.append(
@@ -590,6 +918,7 @@ def train_with_self_play(
                 "training_mode": "self_play",
                 "seed_bot_id": initial_bundle.get("bot_id", "neural-3p-v2"),
             },
+            workers=workers,
             verbose=verbose,
         )
         _log(
@@ -599,6 +928,25 @@ def train_with_self_play(
                 f"{_format_training_metrics(training_report)}"
             ),
         )
+        iteration_snapshot = _build_self_play_training_snapshot(
+            aggregate_dataset=aggregate_dataset,
+            training_report=training_report,
+            play_temperature=iteration_temperature,
+            auction_temperature=iteration_auction_temperature,
+            epsilon=iteration_epsilon,
+        )
+        _log(
+            verbose,
+            _render_iteration_comparison_table(
+                prefix="[self-play]",
+                title=f"iteration {iteration_index + 1}/{self_play_iterations} comparison",
+                current_snapshot=iteration_snapshot,
+                previous_snapshot=previous_iteration_snapshot,
+                metrics=SELF_PLAY_TRAINING_METRICS,
+                footer_note="compares this self-play training pass against the previous self-play pass",
+            ),
+        )
+        previous_iteration_snapshot = iteration_snapshot
         iteration_reports.append(
             {
                 "iteration": iteration_index + 1,
@@ -672,6 +1020,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_WINNER_POLICY_WEIGHT,
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help="number of worker processes for self-play collection, training, and evaluation",
+    )
     parser.add_argument("--quiet", action="store_true")
     return parser
 
@@ -707,6 +1061,7 @@ def main() -> None:
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
                 "precheck_games": args.precheck_games,
                 "winner_policy_weight": args.winner_policy_weight,
+                "workers": args.workers,
                 "seed": args.seed,
             }
         ),
@@ -716,7 +1071,7 @@ def main() -> None:
         verbose,
         (
             f"[self-play] run_dir={run_dir} initial_model={initial_model_path} "
-            f"self_play_matches={args.self_play_matches}"
+            f"self_play_matches={args.self_play_matches} workers={args.workers}"
         ),
     )
 
@@ -724,6 +1079,7 @@ def main() -> None:
     deadline = started_at + (args.duration_hours * 3600.0)
     iteration_index = 1
     incumbent_baseline_cache: dict | None = None
+    previous_outer_snapshot: dict[str, object] | None = None
 
     while True:
         if args.max_iterations is not None and iteration_index > args.max_iterations:
@@ -773,6 +1129,7 @@ def main() -> None:
             value_weight_scale=args.value_weight_scale,
             winner_policy_weight=args.winner_policy_weight,
             gradient_clip=args.gradient_clip,
+            workers=args.workers,
             verbose=verbose,
         )
 
@@ -797,6 +1154,7 @@ def main() -> None:
             precheck_games=min(args.precheck_games, args.eval_games),
             seed=args.seed + (iteration_index * 10_000),
             incumbent_baselines=incumbent_baseline_cache,
+            workers=args.workers,
             verbose=verbose,
         )
         if (
@@ -819,6 +1177,25 @@ def main() -> None:
         else:
             _log(verbose, f"[self-play] iteration {iteration_index} kept incumbent")
 
+        iteration_elapsed_seconds = time.perf_counter() - iteration_started_at
+        outer_snapshot = _build_self_play_outer_snapshot(
+            training_report=training_report,
+            evaluation_report=evaluation_report,
+            iteration_elapsed_seconds=iteration_elapsed_seconds,
+        )
+        _log(
+            verbose,
+            _render_iteration_comparison_table(
+                prefix="[self-play]",
+                title=f"outer iteration {iteration_index} comparison",
+                current_snapshot=outer_snapshot,
+                previous_snapshot=previous_outer_snapshot,
+                metrics=SELF_PLAY_OUTER_METRICS,
+                footer_note="compares this promoted-candidate attempt against the previous outer self-play iteration",
+            ),
+        )
+        previous_outer_snapshot = outer_snapshot
+
         cycle_report = {
             "iteration": iteration_index,
             "elapsed_hours": (time.time() - started_at) / 3600.0,
@@ -827,7 +1204,7 @@ def main() -> None:
             "training": report,
             "evaluation": evaluation_report,
             "timing": {
-                "iteration_elapsed_seconds": time.perf_counter() - iteration_started_at,
+                "iteration_elapsed_seconds": iteration_elapsed_seconds,
             },
         }
         with report_path.open("a", encoding="utf-8") as handle:

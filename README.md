@@ -226,7 +226,7 @@ The leaderboard now includes a `c95` column, which is the approximate 95% confid
 Useful flags:
 
 - `--games 100` stops after a fixed number of matches.
-- `--duration-hours 8` is useful for overnight runs.
+- `--duration-hours 8` is useful for longer unattended runs.
 - `--workers 1` disables parallel workers and runs serially in the current process.
 - `--bots random greedy stupid` restricts the pool to a chosen subset.
 - `--include-hidden` also adds the hidden legacy bot ids to the default pool.

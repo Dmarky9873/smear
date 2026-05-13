@@ -17,6 +17,8 @@ from backend.bots.registry import build_ready_bot, list_ready_bot_metadata
 from backend.models import AuctionState, Card, Play, Player, RoundState, Team, TrickState
 from backend.self_play_neural_3p_v3 import train_with_self_play
 from backend.train_neural_3p_bot import (
+    ComparisonMetric,
+    _render_iteration_comparison_table,
     collect_teacher_training_dataset,
     load_model_bundle,
     parse_teacher_specs,
@@ -387,11 +389,45 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         self.assertAlmostEqual(sum(play_soft_examples[0].target_distribution), 1.0)
         self.assertAlmostEqual(sum(auction_soft_examples[0].target_distribution), 1.0)
 
+    def test_iteration_comparison_table_lists_changed_and_same_metrics(self):
+        table = _render_iteration_comparison_table(
+            prefix="[test]",
+            title="comparison",
+            current_snapshot={
+                "play_accuracy": 0.82,
+                "decision": "promoted",
+            },
+            previous_snapshot={
+                "play_accuracy": 0.80,
+                "decision": "promoted",
+            },
+            metrics=(
+                ComparisonMetric(
+                    key="play_accuracy",
+                    label="Play accuracy",
+                    kind="float",
+                    digits=3,
+                    higher_is_better=True,
+                    tolerance=1e-6,
+                ),
+                ComparisonMetric(
+                    key="decision",
+                    label="Decision",
+                    kind="text",
+                ),
+            ),
+        )
+
+        self.assertIn("| Play accuracy | 0.800", table)
+        self.assertIn("| Decision      | promoted", table)
+        self.assertIn("[test] changed=1 same=1 new=0", table)
+        self.assertIn("[test] same: Decision", table)
+
     def test_train_with_dagger_runs_small_end_to_end_cycle(self):
         bundle, report = train_with_dagger(
             teacher_specs=parse_teacher_specs("greedy"),
-            bootstrap_matches=1,
-            dagger_matches=1,
+            bootstrap_matches=2,
+            dagger_matches=2,
             alpha=1,
             dagger_iterations=1,
             seed=0,
@@ -408,12 +444,14 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             play_value_learning_rate=0.03,
             auction_value_learning_rate=0.03,
             l2=0.0,
+            workers=2,
             bot_id="neural-3p-v2",
         )
 
         self.assertEqual(bundle["version"], 2)
         self.assertEqual(len(report["dagger_iterations"]), 1)
         self.assertGreater(report["bootstrap"]["play_policy_examples"], 0)
+        self.assertEqual(report["bootstrap"]["workers"], 2)
 
     def test_train_with_self_play_runs_small_end_to_end_cycle(self):
         bundle, report = train_with_self_play(
@@ -450,6 +488,7 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             value_weight_scale=1.0,
             winner_policy_weight=0.5,
             gradient_clip=1.0,
+            workers=2,
         )
 
         self.assertEqual(bundle["version"], 3)
@@ -459,6 +498,7 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         collection_report = report["self_play_iterations"][0]["collection"]
         self.assertGreater(collection_report["play_policy_examples"], 0)
         self.assertGreater(collection_report["auction_policy_examples"], 0)
+        self.assertEqual(collection_report["workers"], 2)
 
 
 if __name__ == "__main__":

@@ -112,6 +112,13 @@ class ContinuousSimResult:
     def elapsed_seconds(self) -> float:
         return self.ended_at - self.started_at
 
+    @property
+    def games_per_hour(self) -> float:
+        elapsed_seconds = self.elapsed_seconds
+        if elapsed_seconds <= 0:
+            return 0.0
+        return (self.games_completed / elapsed_seconds) * 3600.0
+
 
 @dataclass(frozen=True)
 class MatchProgressSnapshot:
@@ -344,6 +351,9 @@ def _compact_bot_name(bot_id: str) -> str:
         "random": "rnd",
         "greedy": "grd",
         "stupid": "stp",
+        "neural-3p-v1": "n3v1",
+        "neural-3p-v2": "n3v2",
+        "neural-3p-v3": "n3v3",
         "o-one-trick-minmax": "o1",
     }
     if bot_id in compact_names:
@@ -785,6 +795,16 @@ def _format_schedule_summary(
     )
 
 
+def _games_per_hour(
+    *,
+    completed_games: int,
+    elapsed_seconds: float,
+) -> float:
+    if completed_games <= 0 or elapsed_seconds <= 0:
+        return 0.0
+    return (completed_games / elapsed_seconds) * 3600.0
+
+
 def _render_match_progress_line(
     *,
     slot_index: int,
@@ -855,14 +875,24 @@ def _render_live_progress_lines(
     last_result_text: str | None,
     schedule_mode: str,
     cycle_size: int | None,
+    started_at: float,
 ) -> list[str]:
+    elapsed_seconds = max(0.0, time.perf_counter() - started_at)
+    games_per_hour = _games_per_hour(
+        completed_games=completed_games,
+        elapsed_seconds=elapsed_seconds,
+    )
     if max_games is None:
         overall_summary = f"{completed_games} games complete"
     else:
         overall_summary = f"{completed_games}/{max_games} games complete"
 
     lines = [
-        f"Continuous sim | {overall_summary} | {len(active_tasks_by_slot)}/{slot_count} running",
+        (
+            f"Continuous sim | {overall_summary} | "
+            f"{len(active_tasks_by_slot)}/{slot_count} running | "
+            f"elapsed={elapsed_seconds:.1f}s | {games_per_hour:.1f} games/hour"
+        ),
         f"Last result | {last_result_text or 'none yet'}",
         _format_schedule_summary(
             schedule_mode=schedule_mode,
@@ -902,6 +932,7 @@ def _write_progress_snapshot(
     last_result_text: str | None,
     schedule_mode: str,
     cycle_size: int | None,
+    started_at: float,
 ) -> None:
     display.render(
         _render_live_progress_lines(
@@ -915,6 +946,7 @@ def _write_progress_snapshot(
             last_result_text=last_result_text,
             schedule_mode=schedule_mode,
             cycle_size=cycle_size,
+            started_at=started_at,
         )
     )
 
@@ -1350,6 +1382,7 @@ def run_continuous_sim(
             last_result_text=last_result_text,
             schedule_mode=schedule_mode,
             cycle_size=cycle_size,
+            started_at=started_at,
         )
 
     executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
@@ -1630,7 +1663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "\nFinal leaderboard "
         f"after {result.games_completed} game"
         f"{'' if result.games_completed == 1 else 's'} "
-        f"({result.elapsed_seconds:.2f}s):",
+        f"({result.elapsed_seconds:.2f}s, {result.games_per_hour:.1f} games/hour):",
         flush=True,
     )
     print(render_leaderboard(result.ratings), flush=True)

@@ -25,7 +25,11 @@ try:
     from .legacy_omniscient_minimax_one_trick_bot import (
         LegacyOmniscientMinimaxOneTrickPlayer,
     )
-    from .neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
+    from .neural_3p_bot import (
+        NeuralThreePlayerBot,
+        NeuralThreePlayerV1Bot,
+        NeuralThreePlayerV3Bot,
+    )
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from .omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from .optimal_bot import OptimalBotPlayer
@@ -53,7 +57,11 @@ except ImportError:
     from bots.legacy_omniscient_minimax_one_trick_bot import (
         LegacyOmniscientMinimaxOneTrickPlayer,
     )
-    from bots.neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
+    from bots.neural_3p_bot import (
+        NeuralThreePlayerBot,
+        NeuralThreePlayerV1Bot,
+        NeuralThreePlayerV3Bot,
+    )
     from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from bots.optimal_bot import OptimalBotPlayer
@@ -199,8 +207,24 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
             "A dependency-free 3-player singleton neural bot with mixed-teacher "
             "distillation, DAgger relabeling, and a value-guided one-ply lookahead."
         ),
-        factory=lambda player_name: NeuralThreePlayerBot(player_name),
+        factory=lambda player_name: NeuralThreePlayerBot(
+            player_name,
+            model_path=NeuralThreePlayerBot.MODEL_FILE_V2,
+        ),
         rating_fingerprint="neural-3p-v2:v1",
+    ),
+    ReadyBotSpec(
+        id="neural-3p-v3",
+        label="Neural 3P v3",
+        description=(
+            "A dependency-free 3-player singleton neural bot trained from v2 by "
+            "advantage-weighted self-play and promoted head-to-head."
+        ),
+        factory=lambda player_name: NeuralThreePlayerV3Bot(
+            player_name,
+            model_path=NeuralThreePlayerBot.MODEL_FILE_V3,
+        ),
+        rating_fingerprint="neural-3p-v3:v1",
     ),
     ReadyBotSpec(
         id="1-trick-minmax",

@@ -13,6 +13,8 @@ import threading
 from typing import Callable
 
 try:
+    from .bots.human_information_minimax_n_trick_bot import HumanInformationMinimaxNTrickPlayer
+    from .bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from .bots.neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
     from .bots.neural_3p_features import (
         encode_auction_candidate,
@@ -23,12 +25,16 @@ try:
         ordered_legal_cards,
     )
     from .bots.neural_model import ChoiceExample, RegressionExample, ScalarMLP
+    from .bots.optimal_bot import OptimalBotPlayer
+    from .bots.optimal_bot_tuning import OptimalBotCandidate
     from .bots.registry import build_ready_bot, get_ready_bot_spec
     from .bots.search_eval import evaluate_terminal_round_utility
     from .engine import apply_auction_action_for_search, apply_trick_action_to_state
     from .gameplay import MatchController
     from .models import AuctionEvent, Card, Play
 except ImportError:
+    from bots.human_information_minimax_n_trick_bot import HumanInformationMinimaxNTrickPlayer
+    from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from bots.neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
     from bots.neural_3p_features import (
         encode_auction_candidate,
@@ -39,6 +45,8 @@ except ImportError:
         ordered_legal_cards,
     )
     from bots.neural_model import ChoiceExample, RegressionExample, ScalarMLP
+    from bots.optimal_bot import OptimalBotPlayer
+    from bots.optimal_bot_tuning import OptimalBotCandidate
     from bots.registry import build_ready_bot, get_ready_bot_spec
     from bots.search_eval import evaluate_terminal_round_utility
     from engine import apply_auction_action_for_search, apply_trick_action_to_state
@@ -60,6 +68,8 @@ DEFAULT_WARM_START_LR_SCALE = 0.35
 DEFAULT_WARM_START_EPOCH_SCALE = 0.6
 DEFAULT_GRADIENT_CLIP = 3.0
 DEFAULT_STUDENT_AGREEMENT_KEEP_PROB = 0.2
+DEFAULT_TEACHER_SAMPLE_SCALE = 0.6
+DEFAULT_TEACHER_TARGET_TEMPERATURE = 0.35
 THREE_PLAYER_NAMES = ["Player 1", "Player 2", "Player 3"]
 
 
@@ -76,6 +86,14 @@ class PendingValueExample:
     weight: float = 1.0
 
 
+@dataclass(frozen=True)
+class TeacherDecision:
+    action: Card | AuctionEvent
+    bot_id: str
+    candidate_actions: list[Card | AuctionEvent] | None = None
+    target_distribution: list[float] | None = None
+
+
 @dataclass
 class TrainingDataset:
     play_policy_examples: list[ChoiceExample] = field(default_factory=list)
@@ -90,15 +108,133 @@ class TrainingDataset:
         self.auction_value_examples.extend(other.auction_value_examples)
 
 
+def _scaled_count(count: int, scale: float, *, minimum: int = 1) -> int:
+    if count <= 0:
+        return 0
+    if scale <= 0:
+        raise ValueError("scale must be positive")
+    return max(minimum, int(round(count * scale)))
+
+
+def _scaled_optimal_candidate(
+    candidate: OptimalBotCandidate,
+    *,
+    sample_scale: float,
+) -> OptimalBotCandidate:
+    return OptimalBotCandidate(
+        id=f"{candidate.id}-train-x{sample_scale:.2f}",
+        depth=candidate.depth,
+        play_determinization_samples=_scaled_count(
+            candidate.play_determinization_samples,
+            sample_scale,
+        ),
+        min_play_determinization_samples=min(
+            candidate.min_play_determinization_samples,
+            _scaled_count(
+                candidate.play_determinization_samples,
+                sample_scale,
+            ),
+        ),
+        auction_determinization_samples=_scaled_count(
+            candidate.auction_determinization_samples,
+            sample_scale,
+        ),
+        three_player_auction_determinization_samples=_scaled_count(
+            candidate.three_player_auction_determinization_samples,
+            sample_scale,
+        ),
+    )
+
+
+def _configure_teacher_bot_for_training(
+    bot,
+    *,
+    sample_scale: float,
+):
+    if sample_scale >= 0.999:
+        return bot
+
+    if isinstance(bot, OptimalBotPlayer):
+        bot.THREE_PLAYER_PROFILE = _scaled_optimal_candidate(
+            bot.THREE_PLAYER_PROFILE,
+            sample_scale=sample_scale,
+        )
+        bot.MULTIPLAYER_PROFILE = _scaled_optimal_candidate(
+            bot.MULTIPLAYER_PROFILE,
+            sample_scale=sample_scale,
+        )
+        bot.PROFILE = bot.MULTIPLAYER_PROFILE
+        return bot
+
+    if isinstance(bot, HumanInformationMinimaxNTrickPlayer):
+        original_samples = int(bot.DETERMINIZATION_SAMPLES)
+        bot.DETERMINIZATION_SAMPLES = _scaled_count(
+            original_samples,
+            sample_scale,
+        )
+        bot.MIN_DETERMINIZATION_SAMPLES = min(
+            int(bot.MIN_DETERMINIZATION_SAMPLES),
+            bot.DETERMINIZATION_SAMPLES,
+        )
+        bot.AUCTION_DETERMINIZATION_SAMPLES = _scaled_count(
+            int(bot.AUCTION_DETERMINIZATION_SAMPLES),
+            sample_scale,
+        )
+        bot.THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES = _scaled_count(
+            int(bot.THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES),
+            sample_scale,
+        )
+        return bot
+
+    if isinstance(bot, OmniscientMinimaxNTrickPlayer):
+        bot.AUCTION_DETERMINIZATION_SAMPLES = _scaled_count(
+            int(bot.AUCTION_DETERMINIZATION_SAMPLES),
+            sample_scale,
+        )
+        return bot
+
+    return bot
+
+
+class TrainingBotProvider:
+    def __init__(
+        self,
+        *,
+        teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
+    ):
+        self._teacher_sample_scale = teacher_sample_scale
+        self._bots: dict[tuple[str, str], object] = {}
+
+    def get_bot(self, *, bot_id: str, player_name: str):
+        cache_key = (bot_id, player_name)
+        bot = self._bots.get(cache_key)
+        if bot is None:
+            bot = build_ready_bot(bot_id, player_name)
+            bot = _configure_teacher_bot_for_training(
+                bot,
+                sample_scale=self._teacher_sample_scale,
+            )
+            self._bots[cache_key] = bot
+        return bot
+
+
 class TeacherOracle:
-    def __init__(self, teacher_specs: list[TeacherSpec], seed: int):
+    def __init__(
+        self,
+        teacher_specs: list[TeacherSpec],
+        seed: int,
+        *,
+        bot_provider: TrainingBotProvider,
+        teacher_target_temperature: float,
+    ):
         if not teacher_specs:
             raise ValueError("teacher_specs must not be empty")
         self._teacher_specs = list(teacher_specs)
         self._rng = random.Random(seed)
-        self._bots = {}
+        self._bot_provider = bot_provider
+        self._teacher_target_temperature = teacher_target_temperature
 
-    def _sample_teacher_spec(self) -> TeacherSpec:
+    def sample_teacher_spec(self) -> TeacherSpec:
         total_weight = sum(spec.weight for spec in self._teacher_specs)
         threshold = self._rng.random() * total_weight
         running_total = 0.0
@@ -108,17 +244,10 @@ class TeacherOracle:
                 return spec
         return self._teacher_specs[-1]
 
-    def _get_bot(self, bot_id: str, player_name: str):
-        cache_key = (bot_id, player_name)
-        bot = self._bots.get(cache_key)
-        if bot is None:
-            bot = build_ready_bot(bot_id, player_name)
-            self._bots[cache_key] = bot
-        return bot
-
     def choose_auction_action(
         self,
         *,
+        teacher_spec: TeacherSpec | None = None,
         auction_state,
         player_name: str,
         hand: set[Card],
@@ -126,9 +255,12 @@ class TeacherOracle:
         teams: list[tuple[str, ...]],
         match_scores: dict[str, int],
         target_score: int,
-    ) -> tuple[AuctionEvent, str]:
-        teacher_spec = self._sample_teacher_spec()
-        bot = self._get_bot(teacher_spec.bot_id, player_name)
+    ) -> TeacherDecision:
+        selected_teacher = teacher_spec or self.sample_teacher_spec()
+        bot = self._bot_provider.get_bot(
+            bot_id=selected_teacher.bot_id,
+            player_name=player_name,
+        )
         bot._cards = set(hand)
         if hasattr(bot, "set_match_context"):
             bot.set_match_context(
@@ -139,11 +271,17 @@ class TeacherOracle:
                 auction_state=auction_state,
                 round_state=None,
             )
-        return bot.choose_auction_action(auction_state), teacher_spec.bot_id
+        return _build_teacher_decision_for_auction(
+            bot=bot,
+            auction_state=auction_state,
+            bot_id=selected_teacher.bot_id,
+            temperature=self._teacher_target_temperature,
+        )
 
     def choose_card(
         self,
         *,
+        teacher_spec: TeacherSpec | None = None,
         round_state,
         player_name: str,
         auction_state,
@@ -151,9 +289,12 @@ class TeacherOracle:
         teams: list[tuple[str, ...]],
         match_scores: dict[str, int],
         target_score: int,
-    ) -> tuple[Card, str]:
-        teacher_spec = self._sample_teacher_spec()
-        bot = self._get_bot(teacher_spec.bot_id, player_name)
+    ) -> TeacherDecision:
+        selected_teacher = teacher_spec or self.sample_teacher_spec()
+        bot = self._bot_provider.get_bot(
+            bot_id=selected_teacher.bot_id,
+            player_name=player_name,
+        )
         bot._cards = set(round_state.current_player.cards)
         if hasattr(bot, "set_match_context"):
             bot.set_match_context(
@@ -164,7 +305,143 @@ class TeacherOracle:
                 auction_state=auction_state,
                 round_state=round_state,
             )
-        return bot.choose_card(round_state), teacher_spec.bot_id
+        return _build_teacher_decision_for_card(
+            bot=bot,
+            round_state=round_state,
+            bot_id=selected_teacher.bot_id,
+            temperature=self._teacher_target_temperature,
+        )
+
+
+def _softmax_distribution(
+    scores: list[float],
+    *,
+    temperature: float,
+) -> list[float]:
+    if not scores:
+        raise ValueError("scores must not be empty")
+    clamped_temperature = max(temperature, 1e-3)
+    max_score = max(scores)
+    exp_scores = [
+        math.exp((score - max_score) / clamped_temperature)
+        for score in scores
+    ]
+    total = sum(exp_scores)
+    if total <= 0.0:
+        raise ValueError("teacher scores produced a non-positive softmax total")
+    return [value / total for value in exp_scores]
+
+
+def _extract_scored_candidates(raw_candidates) -> list[tuple[object, float]] | None:
+    if raw_candidates is None:
+        return None
+    parsed_candidates: list[tuple[object, float]] = []
+    for candidate in raw_candidates:
+        if not isinstance(candidate, (tuple, list)) or len(candidate) < 2:
+            return None
+        action = candidate[0]
+        try:
+            score = float(candidate[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(score):
+            return None
+        parsed_candidates.append((action, score))
+    if not parsed_candidates:
+        return None
+    return parsed_candidates
+
+
+def _call_optional_scoring_method(
+    bot,
+    method_name: str,
+    state,
+) -> list[tuple[object, float]] | None:
+    scoring_method = getattr(bot, method_name, None)
+    if scoring_method is None:
+        return None
+    try:
+        raw_candidates = scoring_method(state, show_progress=False)
+    except TypeError:
+        raw_candidates = scoring_method(state)
+    return _extract_scored_candidates(raw_candidates)
+
+
+def _build_soft_teacher_decision(
+    *,
+    action: Card | AuctionEvent,
+    bot_id: str,
+    scored_candidates: list[tuple[object, float]] | None,
+    temperature: float,
+) -> TeacherDecision:
+    if not scored_candidates:
+        return TeacherDecision(action=action, bot_id=bot_id)
+
+    candidate_actions = [candidate_action for candidate_action, _score in scored_candidates]
+    if action not in candidate_actions:
+        return TeacherDecision(action=action, bot_id=bot_id)
+
+    return TeacherDecision(
+        action=action,
+        bot_id=bot_id,
+        candidate_actions=list(candidate_actions),
+        target_distribution=_softmax_distribution(
+            [score for _candidate_action, score in scored_candidates],
+            temperature=temperature,
+        ),
+    )
+
+
+def _build_teacher_decision_for_auction(
+    *,
+    bot,
+    auction_state,
+    bot_id: str,
+    temperature: float,
+    selected_action: AuctionEvent | None = None,
+) -> TeacherDecision:
+    scored_candidates = _call_optional_scoring_method(
+        bot,
+        "score_auction_candidates",
+        auction_state,
+    )
+    if selected_action is None:
+        if scored_candidates is not None and hasattr(bot, "select_best_scored_auction_action"):
+            selected_action = bot.select_best_scored_auction_action(scored_candidates)
+        else:
+            selected_action = bot.choose_auction_action(auction_state)
+    return _build_soft_teacher_decision(
+        action=selected_action,
+        bot_id=bot_id,
+        scored_candidates=scored_candidates,
+        temperature=temperature,
+    )
+
+
+def _build_teacher_decision_for_card(
+    *,
+    bot,
+    round_state,
+    bot_id: str,
+    temperature: float,
+    selected_card: Card | None = None,
+) -> TeacherDecision:
+    scored_candidates = _call_optional_scoring_method(
+        bot,
+        "score_card_candidates",
+        round_state,
+    )
+    if selected_card is None:
+        if scored_candidates is not None and hasattr(bot, "select_best_scored_card"):
+            selected_card = bot.select_best_scored_card(scored_candidates)
+        else:
+            selected_card = bot.choose_card(round_state)
+    return _build_soft_teacher_decision(
+        action=selected_card,
+        bot_id=bot_id,
+        scored_candidates=scored_candidates,
+        temperature=temperature,
+    )
 
 
 def _log(verbose: bool, message: str) -> None:
@@ -480,23 +757,33 @@ def _build_match_controller_for_actor(
     teacher_specs: list[TeacherSpec],
     student_bundle: dict | None,
     seat_rng: random.Random,
+    bot_provider: TrainingBotProvider,
 ) -> MatchController:
     if actor_mode == "teacher":
-        player_bot_ids = [
-            seat_rng.choices(
+        sampled_bot_ids = {
+            player_name: seat_rng.choices(
                 [spec.bot_id for spec in teacher_specs],
                 weights=[spec.weight for spec in teacher_specs],
                 k=1,
             )[0]
-            for _ in THREE_PLAYER_NAMES
-        ]
-        return MatchController.create(
+            for player_name in THREE_PLAYER_NAMES
+        }
+        controller = MatchController.create(
             num_players=3,
             player_names=THREE_PLAYER_NAMES,
             teams=None,
-            player_bot_ids=player_bot_ids,
+            player_bot_ids={player_name: None for player_name in THREE_PLAYER_NAMES},
+            bots={
+                player_name: bot_provider.get_bot(
+                    bot_id=bot_id,
+                    player_name=player_name,
+                )
+                for player_name, bot_id in sampled_bot_ids.items()
+            },
             auto_run_bots=False,
         )
+        controller.session.player_bot_ids = sampled_bot_ids
+        return controller
 
     if student_bundle is None:
         raise ValueError("student_bundle is required for student rollouts")
@@ -543,6 +830,8 @@ def _collect_rollout_examples(
     seed: int,
     student_bundle: dict | None = None,
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+    teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
+    teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     if actor_mode not in {"teacher", "student"}:
@@ -553,11 +842,22 @@ def _collect_rollout_examples(
         raise ValueError("alpha must be positive")
 
     dataset = TrainingDataset()
-    teacher_oracle = TeacherOracle(teacher_specs, seed + 10_000)
+    bot_provider = TrainingBotProvider(
+        teacher_sample_scale=teacher_sample_scale,
+    )
+    teacher_oracle = TeacherOracle(
+        teacher_specs,
+        seed + 10_000,
+        bot_provider=bot_provider,
+        teacher_target_temperature=teacher_target_temperature,
+    )
     seat_rng = random.Random(seed)
     example_rng = random.Random(seed + 20_000)
     teacher_label_counts: dict[str, int] = {}
     acting_bot_counts: dict[str, int] = {}
+    forced_auction_actions = 0
+    forced_play_actions = 0
+    teacher_queries = 0
     teacher_weight_map = _teacher_weight_by_bot_id(teacher_specs)
     started_at = time.perf_counter()
     progress = LiveProgressDisplay(
@@ -583,6 +883,7 @@ def _collect_rollout_examples(
             teacher_specs=teacher_specs,
             student_bundle=student_bundle,
             seat_rng=seat_rng,
+            bot_provider=bot_provider,
         )
         round_start_match_scores = dict(controller.session.match_scores)
         pending_play_values: list[PendingValueExample] = []
@@ -601,45 +902,77 @@ def _collect_rollout_examples(
                     auction_state = controller.session.auction.state
                     legal_actions = ordered_legal_auction_actions(auction_state)
                     acting_hand = set(bot.cards)
-                    environment_action = bot.choose_auction_action(auction_state)
-                    if environment_action not in legal_actions:
-                        raise ValueError(
-                            f"actor selected illegal auction action {environment_action}"
-                        )
+                    forced_action = legal_actions[0] if len(legal_actions) == 1 else None
+                    if forced_action is not None:
+                        forced_auction_actions += 1
+                        environment_action = forced_action
+                    else:
+                        environment_action = bot.choose_auction_action(auction_state)
+                        if environment_action not in legal_actions:
+                            raise ValueError(
+                                f"actor selected illegal auction action {environment_action}"
+                            )
 
                     if actor_mode == "teacher":
-                        teacher_action = environment_action
                         teacher_bot_id = controller.session.player_bot_ids[player_name]
                         if teacher_bot_id is None:
                             raise ValueError("teacher rollout was missing a configured bot id")
-                    else:
-                        teacher_action, teacher_bot_id = teacher_oracle.choose_auction_action(
+                        teacher_decision = _build_teacher_decision_for_auction(
+                            bot=bot,
                             auction_state=auction_state,
-                            player_name=player_name,
-                            hand=acting_hand,
-                            player_names=controller.session.player_names,
-                            teams=controller.session.teams,
-                            match_scores=controller.session.match_scores,
-                            target_score=controller.session.target_score,
+                            bot_id=teacher_bot_id,
+                            temperature=teacher_target_temperature,
+                            selected_action=environment_action,
                         )
-                        if teacher_action not in legal_actions:
-                            raise ValueError(
-                                f"teacher oracle selected illegal auction action {teacher_action}"
+                        teacher_action = teacher_decision.action
+                        keep_policy_example = forced_action is None
+                    else:
+                        if forced_action is not None:
+                            sampled_teacher_spec = teacher_oracle.sample_teacher_spec()
+                            teacher_decision = TeacherDecision(
+                                action=forced_action,
+                                bot_id=sampled_teacher_spec.bot_id,
                             )
+                            teacher_action = teacher_decision.action
+                            teacher_bot_id = teacher_decision.bot_id
+                            keep_policy_example = False
+                        else:
+                            teacher_queries += 1
+                            teacher_decision = teacher_oracle.choose_auction_action(
+                                auction_state=auction_state,
+                                player_name=player_name,
+                                hand=acting_hand,
+                                player_names=controller.session.player_names,
+                                teams=controller.session.teams,
+                                match_scores=controller.session.match_scores,
+                                target_score=controller.session.target_score,
+                            )
+                            teacher_action = teacher_decision.action
+                            teacher_bot_id = teacher_decision.bot_id
+                            if teacher_action not in legal_actions:
+                                raise ValueError(
+                                    f"teacher oracle selected illegal auction action {teacher_action}"
+                                )
+                            keep_policy_example = True
                     example_weight = _policy_example_weight(
                         actor_mode=actor_mode,
                         teacher_weight=teacher_weight_map.get(teacher_bot_id, 1.0),
                         teacher_matches_environment=(teacher_action == environment_action),
                     )
-                    keep_policy_example = True
                     if (
-                        actor_mode == "student"
+                        keep_policy_example
+                        and actor_mode == "student"
                         and teacher_action == environment_action
                         and example_rng.random() > student_agreement_keep_prob
                     ):
                         keep_policy_example = False
 
                     if keep_policy_example:
+                        policy_actions = (
+                            teacher_decision.candidate_actions
+                            if teacher_decision.candidate_actions is not None
+                            else legal_actions
+                        )
                         dataset.auction_policy_examples.append(
                             ChoiceExample(
                                 candidate_features=[
@@ -651,10 +984,11 @@ def _collect_rollout_examples(
                                         match_scores=controller.session.match_scores,
                                         target_score=controller.session.target_score,
                                     )
-                                    for legal_action in legal_actions
+                                    for legal_action in policy_actions
                                 ],
-                                chosen_index=legal_actions.index(teacher_action),
+                                chosen_index=policy_actions.index(teacher_action),
                                 weight=example_weight,
+                                target_distribution=teacher_decision.target_distribution,
                             )
                         )
                     teacher_label_counts[teacher_bot_id] = (
@@ -689,43 +1023,75 @@ def _collect_rollout_examples(
 
                 round_state = controller.session.game.round_state
                 legal_cards = ordered_legal_cards(round_state)
-                environment_card = bot.choose_card(round_state)
-                if environment_card not in legal_cards:
-                    raise ValueError(f"actor selected illegal card {environment_card.code}")
+                forced_card = legal_cards[0] if len(legal_cards) == 1 else None
+                if forced_card is not None:
+                    forced_play_actions += 1
+                    environment_card = forced_card
+                else:
+                    environment_card = bot.choose_card(round_state)
+                    if environment_card not in legal_cards:
+                        raise ValueError(f"actor selected illegal card {environment_card.code}")
 
                 if actor_mode == "teacher":
-                    teacher_card = environment_card
                     teacher_bot_id = controller.session.player_bot_ids[player_name]
                     if teacher_bot_id is None:
                         raise ValueError("teacher rollout was missing a configured bot id")
-                else:
-                    teacher_card, teacher_bot_id = teacher_oracle.choose_card(
+                    teacher_decision = _build_teacher_decision_for_card(
+                        bot=bot,
                         round_state=round_state,
-                        player_name=player_name,
-                        auction_state=controller.session.auction.state,
-                        player_names=controller.session.player_names,
-                        teams=controller.session.teams,
-                        match_scores=controller.session.match_scores,
-                        target_score=controller.session.target_score,
+                        bot_id=teacher_bot_id,
+                        temperature=teacher_target_temperature,
+                        selected_card=environment_card,
                     )
-                    if teacher_card not in legal_cards:
-                        raise ValueError(
-                            f"teacher oracle selected illegal card {teacher_card.code}"
+                    teacher_card = teacher_decision.action
+                    keep_policy_example = forced_card is None
+                else:
+                    if forced_card is not None:
+                        sampled_teacher_spec = teacher_oracle.sample_teacher_spec()
+                        teacher_decision = TeacherDecision(
+                            action=forced_card,
+                            bot_id=sampled_teacher_spec.bot_id,
                         )
+                        teacher_card = teacher_decision.action
+                        teacher_bot_id = teacher_decision.bot_id
+                        keep_policy_example = False
+                    else:
+                        teacher_queries += 1
+                        teacher_decision = teacher_oracle.choose_card(
+                            round_state=round_state,
+                            player_name=player_name,
+                            auction_state=controller.session.auction.state,
+                            player_names=controller.session.player_names,
+                            teams=controller.session.teams,
+                            match_scores=controller.session.match_scores,
+                            target_score=controller.session.target_score,
+                        )
+                        teacher_card = teacher_decision.action
+                        teacher_bot_id = teacher_decision.bot_id
+                        if teacher_card not in legal_cards:
+                            raise ValueError(
+                                f"teacher oracle selected illegal card {teacher_card.code}"
+                            )
+                        keep_policy_example = True
                 example_weight = _policy_example_weight(
                     actor_mode=actor_mode,
                     teacher_weight=teacher_weight_map.get(teacher_bot_id, 1.0),
                     teacher_matches_environment=(teacher_card == environment_card),
                 )
-                keep_policy_example = True
                 if (
-                    actor_mode == "student"
+                    keep_policy_example
+                    and actor_mode == "student"
                     and teacher_card == environment_card
                     and example_rng.random() > student_agreement_keep_prob
                 ):
                     keep_policy_example = False
 
                 if keep_policy_example:
+                    policy_cards = (
+                        teacher_decision.candidate_actions
+                        if teacher_decision.candidate_actions is not None
+                        else legal_cards
+                    )
                     dataset.play_policy_examples.append(
                         ChoiceExample(
                             candidate_features=[
@@ -737,10 +1103,11 @@ def _collect_rollout_examples(
                                     target_score=controller.session.target_score,
                                     auction_state=controller.session.auction.state,
                                 )
-                                for legal_card in legal_cards
+                                for legal_card in policy_cards
                             ],
-                            chosen_index=legal_cards.index(teacher_card),
+                            chosen_index=policy_cards.index(teacher_card),
                             weight=example_weight,
+                            target_distribution=teacher_decision.target_distribution,
                         )
                     )
                 teacher_label_counts[teacher_bot_id] = (
@@ -823,6 +1190,9 @@ def _collect_rollout_examples(
         "auction_policy_examples": len(dataset.auction_policy_examples),
         "play_value_examples": len(dataset.play_value_examples),
         "auction_value_examples": len(dataset.auction_value_examples),
+        "forced_auction_actions": forced_auction_actions,
+        "forced_play_actions": forced_play_actions,
+        "teacher_queries": teacher_queries,
         "elapsed_seconds": time.perf_counter() - started_at,
     }
     progress.stop(
@@ -835,6 +1205,8 @@ def _collect_rollout_examples(
             f"[collect:{actor_mode}] done "
             f"{_format_dataset_counts(dataset)} "
             f"elapsed={_format_seconds(report['elapsed_seconds'])} "
+            f"forced_auction={forced_auction_actions} forced_play={forced_play_actions} "
+            f"teacher_queries={teacher_queries} "
             f"labels={report['teacher_label_counts']}"
         ),
     )
@@ -865,6 +1237,8 @@ def collect_teacher_training_dataset(
     alpha: int,
     seed: int,
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+    teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
+    teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     return _collect_rollout_examples(
@@ -874,6 +1248,8 @@ def collect_teacher_training_dataset(
         alpha=alpha,
         seed=seed,
         student_agreement_keep_prob=student_agreement_keep_prob,
+        teacher_sample_scale=teacher_sample_scale,
+        teacher_target_temperature=teacher_target_temperature,
         verbose=verbose,
     )
 
@@ -886,6 +1262,8 @@ def collect_dagger_training_dataset(
     alpha: int,
     seed: int,
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+    teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
+    teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     return _collect_rollout_examples(
@@ -896,6 +1274,8 @@ def collect_dagger_training_dataset(
         seed=seed,
         student_bundle=student_bundle,
         student_agreement_keep_prob=student_agreement_keep_prob,
+        teacher_sample_scale=teacher_sample_scale,
+        teacher_target_temperature=teacher_target_temperature,
         verbose=verbose,
     )
 
@@ -950,6 +1330,8 @@ def train_neural_3p_bundle(
     auction_rollout_depth: int = DEFAULT_AUCTION_ROLLOUT_DEPTH,
     gradient_clip: float = DEFAULT_GRADIENT_CLIP,
     bot_id: str = "neural-3p-v2",
+    bundle_version: int = 2,
+    extra_metadata: dict | None = None,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     if not play_examples:
@@ -1146,7 +1528,7 @@ def train_neural_3p_bundle(
     )
 
     bundle = {
-        "version": 2,
+        "version": bundle_version,
         "bot_id": bot_id,
         "teacher_pool": _serialize_teacher_specs(teacher_specs),
         "play_model": play_model.to_dict(),
@@ -1162,6 +1544,8 @@ def train_neural_3p_bundle(
             "auction_rollout_depth": auction_rollout_depth,
         },
     }
+    if extra_metadata:
+        bundle.update(extra_metadata)
     training_report = {
         "play_history": play_history,
         "auction_history": auction_history,
@@ -1212,6 +1596,8 @@ def train_with_dagger(
     warm_start_epoch_scale: float = DEFAULT_WARM_START_EPOCH_SCALE,
     gradient_clip: float = DEFAULT_GRADIENT_CLIP,
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+    teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
+    teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
     bot_id: str = "neural-3p-v2",
     verbose: bool = False,
 ) -> tuple[dict, dict]:
@@ -1221,7 +1607,9 @@ def train_with_dagger(
             f"[dagger] bootstrap_matches={bootstrap_matches} dagger_matches={dagger_matches} "
             f"dagger_iterations={dagger_iterations} teacher_pool={_format_teacher_pool(teacher_specs)} "
             f"warm_start_lr_scale={warm_start_lr_scale:.2f} "
-            f"warm_start_epoch_scale={warm_start_epoch_scale:.2f}"
+            f"warm_start_epoch_scale={warm_start_epoch_scale:.2f} "
+            f"teacher_sample_scale={teacher_sample_scale:.2f} "
+            f"teacher_target_temperature={teacher_target_temperature:.2f}"
         ),
     )
     aggregate_dataset, bootstrap_report = collect_teacher_training_dataset(
@@ -1230,6 +1618,8 @@ def train_with_dagger(
         alpha=alpha,
         seed=seed,
         student_agreement_keep_prob=student_agreement_keep_prob,
+        teacher_sample_scale=teacher_sample_scale,
+        teacher_target_temperature=teacher_target_temperature,
         verbose=verbose,
     )
     _log(verbose, f"[dagger] bootstrap dataset {_format_dataset_counts(aggregate_dataset)}")
@@ -1261,6 +1651,10 @@ def train_with_dagger(
         auction_rollout_depth=auction_rollout_depth,
         gradient_clip=gradient_clip,
         bot_id=bot_id,
+        extra_metadata={
+            "training_mode": "search_distillation",
+            "teacher_target_temperature": teacher_target_temperature,
+        },
         verbose=verbose,
     )
     _log(verbose, f"[dagger] post-bootstrap {_format_training_metrics(training_report)}")
@@ -1275,6 +1669,8 @@ def train_with_dagger(
             alpha=alpha,
             seed=seed + 1_000 + dagger_iteration,
             student_agreement_keep_prob=student_agreement_keep_prob,
+            teacher_sample_scale=teacher_sample_scale,
+            teacher_target_temperature=teacher_target_temperature,
             verbose=verbose,
         )
         aggregate_dataset.extend(dagger_dataset)
@@ -1316,6 +1712,10 @@ def train_with_dagger(
             auction_rollout_depth=auction_rollout_depth,
             gradient_clip=gradient_clip,
             bot_id=bot_id,
+            extra_metadata={
+                "training_mode": "search_distillation",
+                "teacher_target_temperature": teacher_target_temperature,
+            },
             verbose=verbose,
         )
         _log(
@@ -1338,6 +1738,7 @@ def train_with_dagger(
         "dagger_iterations": dagger_reports,
         "training": training_report,
         "teacher_pool": _serialize_teacher_specs(teacher_specs),
+        "teacher_target_temperature": teacher_target_temperature,
     }
     return bundle, report
 
@@ -1445,6 +1846,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="when student and teacher agree during DAgger, keep this fraction of policy examples",
     )
     parser.add_argument(
+        "--teacher-sample-scale",
+        type=float,
+        default=DEFAULT_TEACHER_SAMPLE_SCALE,
+        help="scale search-teacher determinization sample counts during training collection",
+    )
+    parser.add_argument(
+        "--teacher-target-temperature",
+        type=float,
+        default=DEFAULT_TEACHER_TARGET_TEMPERATURE,
+        help="softmax temperature used when distilling teacher search scores into policy targets",
+    )
+    parser.add_argument(
         "--play-value-weight",
         type=float,
         default=DEFAULT_PLAY_VALUE_WEIGHT,
@@ -1529,6 +1942,8 @@ def main() -> None:
         warm_start_epoch_scale=args.warm_start_epoch_scale,
         gradient_clip=args.gradient_clip,
         student_agreement_keep_prob=args.student_agreement_keep_prob,
+        teacher_sample_scale=args.teacher_sample_scale,
+        teacher_target_temperature=args.teacher_target_temperature,
         bot_id=args.bot_id,
         verbose=not args.quiet,
     )

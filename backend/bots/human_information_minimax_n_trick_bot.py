@@ -393,10 +393,15 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
             return self.THREE_PLAYER_AUCTION_DETERMINIZATION_SAMPLES
         return self.AUCTION_DETERMINIZATION_SAMPLES
 
-    def choose_card(self, round_state: RoundState) -> Card:
+    def score_card_candidates(
+        self,
+        round_state: RoundState,
+        *,
+        show_progress: bool = False,
+    ) -> list[tuple[Card, float]]:
         if round_state.current_player.name != self.name:
             raise ValueError(
-                f"{self.name} cannot choose a card for {round_state.current_player.name}"
+                f"{self.name} cannot score cards for {round_state.current_player.name}"
             )
 
         known_hand = set(round_state.current_player.cards)
@@ -416,16 +421,16 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
         else:
             self._opening_suit_override = None
 
-        best_card = None
-        best_score = float("-inf")
         total_units = len(legal_actions) * len(determinizations)
         completed_units = 0
         transposition_table: dict[tuple, SearchTranspositionEntry] = {}
         auction_state = self._play_auction_state()
-        self.begin_progress(
-            label=f"Searching {self.depth} tricks ahead",
-            total_units=total_units,
-        )
+        scored_cards: list[tuple[Card, float]] = []
+        if show_progress:
+            self.begin_progress(
+                label=f"Searching {self.depth} tricks ahead",
+                total_units=total_units,
+            )
 
         try:
             for card in legal_actions:
@@ -459,21 +464,25 @@ class HumanInformationMinimaxNTrickPlayer(OmniscientMinimaxNTrickPlayer):
                         undo_trick_action_for_search(determinized_state, undo)
 
                     completed_units += 1
-                    self.update_progress(
-                        completed_units=completed_units,
-                        detail=f"{card.code} in world {sample_index}/{len(determinizations)}",
-                    )
+                    if show_progress:
+                        self.update_progress(
+                            completed_units=completed_units,
+                            detail=f"{card.code} in world {sample_index}/{len(determinizations)}",
+                        )
 
-                average_score = total_score / len(determinizations)
-                if average_score > best_score:
-                    best_score = average_score
-                    best_card = card
+                scored_cards.append((card, total_score / len(determinizations)))
         finally:
-            self.clear_progress()
+            if show_progress:
+                self.clear_progress()
 
-        if best_card is None:
-            raise ValueError("human-information minimax bot could not find a legal card")
-        return best_card
+        return scored_cards
+
+    def choose_card(self, round_state: RoundState) -> Card:
+        scored_cards = self.score_card_candidates(
+            round_state,
+            show_progress=True,
+        )
+        return self.select_best_scored_card(scored_cards)
 
 
 MinimaxNTrickPlayer = HumanInformationMinimaxNTrickPlayer

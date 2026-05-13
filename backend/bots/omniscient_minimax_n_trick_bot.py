@@ -534,10 +534,29 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         )
         return value, exact_value
 
-    def choose_card(self, round_state: RoundState) -> Card:
+    def select_best_scored_card(
+        self,
+        scored_cards: list[tuple[Card, float]],
+    ) -> Card:
+        best_card = None
+        best_score = float("-inf")
+        for card, score in scored_cards:
+            if score > best_score:
+                best_score = score
+                best_card = card
+        if best_card is None:
+            raise ValueError("omniscient minimax bot could not find a legal card")
+        return best_card
+
+    def score_card_candidates(
+        self,
+        round_state: RoundState,
+        *,
+        show_progress: bool = False,
+    ) -> list[tuple[Card, float]]:
         if round_state.current_player.name != self.name:
             raise ValueError(
-                f"{self.name} cannot choose a card for {round_state.current_player.name}"
+                f"{self.name} cannot score cards for {round_state.current_player.name}"
             )
 
         ensure_captured_plays_synchronized(round_state)
@@ -556,16 +575,16 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
         else:
             self._opening_suit_override = None
 
-        best_card = None
-        best_score = float("-inf")
         alpha = float("-inf")
         beta = float("inf")
         transposition_table: dict[tuple, SearchTranspositionEntry] = {}
         auction_state = self._play_auction_state()
-        self.begin_progress(
-            label=f"Searching {self.depth} tricks ahead",
-            total_units=len(legal_actions),
-        )
+        scored_cards: list[tuple[Card, float]] = []
+        if show_progress:
+            self.begin_progress(
+                label=f"Searching {self.depth} tricks ahead",
+                total_units=len(legal_actions),
+            )
 
         try:
             for index, card in enumerate(legal_actions, start=1):
@@ -590,21 +609,25 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                 finally:
                     undo_trick_action_for_search(round_state, undo)
 
-                if score > best_score:
-                    best_score = score
-                    best_card = card
-
-                alpha = max(alpha, best_score)
-                self.update_progress(
-                    completed_units=index,
-                    detail=f"Evaluated {card.code}",
-                )
+                scored_cards.append((card, score))
+                alpha = max(alpha, score)
+                if show_progress:
+                    self.update_progress(
+                        completed_units=index,
+                        detail=f"Evaluated {card.code}",
+                    )
         finally:
-            self.clear_progress()
+            if show_progress:
+                self.clear_progress()
 
-        if best_card is None:
-            raise ValueError("omniscient minimax bot could not find a legal card")
-        return best_card
+        return scored_cards
+
+    def choose_card(self, round_state: RoundState) -> Card:
+        scored_cards = self.score_card_candidates(
+            round_state,
+            show_progress=True,
+        )
+        return self.select_best_scored_card(scored_cards)
 
     def _auction_seed_payload(
         self,
@@ -843,29 +866,56 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
             return (candidate.amount or self.MAX_BID) < (incumbent.amount or self.MAX_BID)
         return False
 
-    def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
-        self._opening_suit_override = None
+    def select_best_scored_auction_action(
+        self,
+        scored_actions: list[tuple[AuctionEvent, float]],
+    ) -> AuctionEvent:
+        best_action: AuctionEvent | None = None
+        best_value = float("-inf")
+        for action, value in scored_actions:
+            if (
+                value > best_value
+                or (
+                    value == best_value
+                    and self._prefer_auction_action(action, best_action)
+                )
+            ):
+                best_value = value
+                best_action = action
+        if best_action is None:
+            raise ValueError("omniscient minimax bot could not find a legal auction action")
+        return best_action
+
+    def score_auction_candidates(
+        self,
+        auction_state: AuctionState,
+        *,
+        show_progress: bool = False,
+    ) -> list[tuple[AuctionEvent, float]]:
         opening_commitment = self._guaranteed_opening_bid_commitment(auction_state)
         legal_actions = self._ordered_auction_actions(
             auction_state,
             maximizing=True,
         )
         if opening_commitment is not None:
-            opening_bid, opening_suit = opening_commitment
-            for action in legal_actions:
-                if action.action == "bid" and action.amount == opening_bid:
-                    self._opening_suit_override = opening_suit
-                    return action
+            opening_bid, _opening_suit = opening_commitment
+            return [
+                (
+                    action,
+                    1.0 if action.action == "bid" and action.amount == opening_bid else 0.0,
+                )
+                for action in legal_actions
+            ]
 
         worlds = self._build_auction_worlds(auction_state)
-        best_action: AuctionEvent | None = None
-        best_value = float("-inf")
+        scored_actions: list[tuple[AuctionEvent, float]] = []
         total_units = len(legal_actions) * len(worlds)
         completed_units = 0
-        self.begin_progress(
-            label="Searching auction",
-            total_units=total_units,
-        )
+        if show_progress:
+            self.begin_progress(
+                label="Searching auction",
+                total_units=total_units,
+            )
 
         try:
             for action in legal_actions:
@@ -889,31 +939,40 @@ class OmniscientMinimaxNTrickPlayer(BotPlayer):
                     finally:
                         undo_auction_action_for_search(auction_state, undo)
                     completed_units += 1
-                    self.update_progress(
-                        completed_units=completed_units,
-                        detail=(
-                            f"{action.action}"
-                            f"{'' if action.amount is None else f' {action.amount}'}"
-                            f" in world {world_index}/{len(worlds)}"
-                        ),
-                    )
+                    if show_progress:
+                        self.update_progress(
+                            completed_units=completed_units,
+                            detail=(
+                                f"{action.action}"
+                                f"{'' if action.amount is None else f' {action.amount}'}"
+                                f" in world {world_index}/{len(worlds)}"
+                            ),
+                        )
 
-                average_value = total_value / len(worlds)
-                if (
-                    average_value > best_value
-                    or (
-                        average_value == best_value
-                        and self._prefer_auction_action(action, best_action)
-                    )
-                ):
-                    best_value = average_value
-                    best_action = action
+                scored_actions.append((action, total_value / len(worlds)))
         finally:
-            self.clear_progress()
+            if show_progress:
+                self.clear_progress()
 
-        if best_action is None:
-            raise ValueError("omniscient minimax bot could not find a legal auction action")
-        return best_action
+        return scored_actions
+
+    def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
+        self._opening_suit_override = None
+        opening_commitment = self._guaranteed_opening_bid_commitment(auction_state)
+        if opening_commitment is not None:
+            opening_bid, opening_suit = opening_commitment
+            for action in self._ordered_auction_actions(
+                auction_state,
+                maximizing=True,
+            ):
+                if action.action == "bid" and action.amount == opening_bid:
+                    self._opening_suit_override = opening_suit
+                    return action
+        scored_actions = self.score_auction_candidates(
+            auction_state,
+            show_progress=True,
+        )
+        return self.select_best_scored_auction_action(scored_actions)
 
 
 OMNISCIENT_MinimaxNTrickPlayer = OmniscientMinimaxNTrickPlayer

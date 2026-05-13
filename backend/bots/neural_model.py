@@ -13,6 +13,7 @@ class ChoiceExample:
     candidate_features: list[list[float]]
     chosen_index: int
     weight: float = 1.0
+    target_distribution: list[float] | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,31 @@ class ScalarMLP:
             return value
         return max(-clip_value, min(clip_value, value))
 
+    @staticmethod
+    def _normalized_target_distribution(example: ChoiceExample) -> list[float]:
+        candidate_count = len(example.candidate_features)
+        if candidate_count <= 0:
+            raise ValueError("training examples must contain candidates")
+
+        if example.target_distribution is None:
+            if not 0 <= example.chosen_index < candidate_count:
+                raise ValueError("chosen_index is out of range for example candidates")
+            distribution = [0.0 for _ in range(candidate_count)]
+            distribution[example.chosen_index] = 1.0
+            return distribution
+
+        if len(example.target_distribution) != candidate_count:
+            raise ValueError(
+                "target_distribution must match the number of example candidates"
+            )
+        if any(value < 0.0 or not math.isfinite(value) for value in example.target_distribution):
+            raise ValueError("target_distribution values must be finite and non-negative")
+
+        total = sum(example.target_distribution)
+        if total <= 0.0:
+            raise ValueError("target_distribution must sum to a positive value")
+        return [value / total for value in example.target_distribution]
+
     def train_choice_examples(
         self,
         examples: list[ChoiceExample],
@@ -201,6 +227,11 @@ class ScalarMLP:
                     raise ValueError("chosen_index is out of range for example candidates")
                 if example.weight <= 0:
                     raise ValueError("training example weight must be positive")
+                target_distribution = self._normalized_target_distribution(example)
+                target_index = max(
+                    range(len(target_distribution)),
+                    key=lambda index: target_distribution[index],
+                )
 
                 hidden_by_candidate: list[list[float]] = []
                 scores: list[float] = []
@@ -210,15 +241,22 @@ class ScalarMLP:
                     scores.append(score)
 
                 predicted_index = max(range(len(scores)), key=lambda index: scores[index])
-                if predicted_index == example.chosen_index:
+                if predicted_index == target_index:
                     epoch_correct += 1
 
                 max_score = max(scores)
                 exp_scores = [math.exp(score - max_score) for score in scores]
                 denom = sum(exp_scores)
                 probabilities = [value / denom for value in exp_scores]
-                chosen_probability = max(probabilities[example.chosen_index], 1e-12)
-                epoch_loss += example.weight * -math.log(chosen_probability)
+                epoch_loss += example.weight * -sum(
+                    target_probability
+                    * math.log(max(probability, 1e-12))
+                    for probability, target_probability in zip(
+                        probabilities,
+                        target_distribution,
+                    )
+                    if target_probability > 0.0
+                )
                 total_weight += example.weight
 
                 grad_w1 = [
@@ -230,9 +268,10 @@ class ScalarMLP:
                 grad_b2 = 0.0
 
                 for candidate_index, candidate_features in enumerate(example.candidate_features):
-                    grad_score = probabilities[candidate_index] * example.weight
-                    if candidate_index == example.chosen_index:
-                        grad_score -= example.weight
+                    grad_score = (
+                        probabilities[candidate_index]
+                        - target_distribution[candidate_index]
+                    ) * example.weight
 
                     hidden = hidden_by_candidate[candidate_index]
                     for hidden_index in range(self.hidden_dim):

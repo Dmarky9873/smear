@@ -7,7 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.continuous_sim import (
+    ContinuousSimResult,
     EloEntry,
+    _compact_bot_name,
     _build_initial_ratings,
     _build_parallel_executor,
     compute_multiplayer_elo_deltas,
@@ -19,6 +21,22 @@ from backend.continuous_sim import (
 
 
 class ContinuousSimHelperTests(unittest.TestCase):
+    def test_continuous_sim_result_exposes_games_per_hour(self):
+        result = ContinuousSimResult(
+            games_completed=120,
+            started_at=100.0,
+            ended_at=3700.0,
+            ratings={},
+        )
+
+        self.assertAlmostEqual(result.elapsed_seconds, 3600.0)
+        self.assertAlmostEqual(result.games_per_hour, 120.0)
+
+    def test_compact_bot_name_shows_neural_versions_explicitly(self):
+        self.assertEqual(_compact_bot_name("neural-3p-v1"), "n3v1")
+        self.assertEqual(_compact_bot_name("neural-3p-v2"), "n3v2")
+        self.assertEqual(_compact_bot_name("neural-3p-v3"), "n3v3")
+
     def test_iter_match_tasks_samples_unique_three_player_matchups(self):
         bot_ids = [f"bot-{index}" for index in range(10)]
 
@@ -232,6 +250,7 @@ class ContinuousSimEntryPointTests(unittest.TestCase):
         self.assertIn("Elo startup: load from JSON if present", completed.stdout)
         self.assertIn("schedule=balanced", completed.stdout)
         self.assertIn("Schedule | balanced", completed.stdout)
+        self.assertIn("games/hour", completed.stdout)
         self.assertIn("random filler", completed.stdout)
         self.assertIn("Final leaderboard after 1 game", completed.stdout)
 

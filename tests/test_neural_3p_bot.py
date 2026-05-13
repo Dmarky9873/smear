@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,8 +15,10 @@ from backend.bots.neural_3p_features import (
 from backend.bots.neural_model import ChoiceExample, RegressionExample, ScalarMLP
 from backend.bots.registry import build_ready_bot, list_ready_bot_metadata
 from backend.models import AuctionState, Card, Play, Player, RoundState, Team, TrickState
+from backend.self_play_neural_3p_v3 import train_with_self_play
 from backend.train_neural_3p_bot import (
     collect_teacher_training_dataset,
+    load_model_bundle,
     parse_teacher_specs,
     save_model_bundle,
     train_neural_3p_bundle,
@@ -199,6 +202,36 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         self.assertEqual(model.predict_index(examples[0].candidate_features), 0)
         self.assertEqual(model.predict_index(examples[1].candidate_features), 1)
 
+    def test_scalar_mlp_can_fit_tiny_soft_target_dataset(self):
+        model = ScalarMLP.initialize(input_dim=2, hidden_dim=6, seed=0)
+        examples = [
+            ChoiceExample(
+                candidate_features=[[1.0, 0.0], [0.0, 1.0]],
+                chosen_index=0,
+                target_distribution=[0.85, 0.15],
+            ),
+            ChoiceExample(
+                candidate_features=[[0.0, 1.0], [1.0, 0.0]],
+                chosen_index=1,
+                target_distribution=[0.10, 0.90],
+            ),
+        ]
+
+        history = model.train_choice_examples(
+            examples,
+            epochs=80,
+            learning_rate=0.1,
+            seed=0,
+        )
+
+        self.assertGreater(history[-1]["accuracy"], 0.99)
+        scores = model.score_many(examples[0].candidate_features)
+        max_score = max(scores)
+        probabilities = [math.exp(score - max_score) for score in scores]
+        total = sum(probabilities)
+        normalized = [value / total for value in probabilities]
+        self.assertGreater(normalized[0], normalized[1])
+
     def test_scalar_mlp_can_fit_tiny_regression_dataset(self):
         model = ScalarMLP.initialize(input_dim=2, hidden_dim=6, seed=0)
         examples = [
@@ -220,12 +253,15 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
     def test_ready_bot_registry_builds_neural_bots(self):
         legacy_bot = build_ready_bot("neural-3p-v1", "A")
         upgraded_bot = build_ready_bot("neural-3p-v2", "A")
+        self_play_bot = build_ready_bot("neural-3p-v3", "A")
 
         self.assertIsInstance(legacy_bot, NeuralThreePlayerV1Bot)
         self.assertIsInstance(upgraded_bot, NeuralThreePlayerBot)
+        self.assertIsInstance(self_play_bot, NeuralThreePlayerBot)
         bot_ids = {bot["id"] for bot in list_ready_bot_metadata()}
         self.assertIn("neural-3p-v1", bot_ids)
         self.assertIn("neural-3p-v2", bot_ids)
+        self.assertIn("neural-3p-v3", bot_ids)
 
     def test_neural_bot_chooses_legal_card_in_supported_context(self):
         round_state = self._build_supported_round_state()
@@ -325,6 +361,32 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
 
         self.assertIn(chosen_card, ordered_legal_cards(round_state))
 
+    def test_search_teacher_collection_emits_soft_policy_targets(self):
+        teacher_specs = parse_teacher_specs("1-trick-minmax")
+        dataset, _collection_report = collect_teacher_training_dataset(
+            teacher_specs=teacher_specs,
+            match_count=1,
+            alpha=1,
+            seed=0,
+            teacher_target_temperature=0.35,
+        )
+
+        play_soft_examples = [
+            example
+            for example in dataset.play_policy_examples
+            if example.target_distribution is not None
+        ]
+        auction_soft_examples = [
+            example
+            for example in dataset.auction_policy_examples
+            if example.target_distribution is not None
+        ]
+
+        self.assertGreater(len(play_soft_examples), 0)
+        self.assertGreater(len(auction_soft_examples), 0)
+        self.assertAlmostEqual(sum(play_soft_examples[0].target_distribution), 1.0)
+        self.assertAlmostEqual(sum(auction_soft_examples[0].target_distribution), 1.0)
+
     def test_train_with_dagger_runs_small_end_to_end_cycle(self):
         bundle, report = train_with_dagger(
             teacher_specs=parse_teacher_specs("greedy"),
@@ -352,6 +414,51 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         self.assertEqual(bundle["version"], 2)
         self.assertEqual(len(report["dagger_iterations"]), 1)
         self.assertGreater(report["bootstrap"]["play_policy_examples"], 0)
+
+    def test_train_with_self_play_runs_small_end_to_end_cycle(self):
+        bundle, report = train_with_self_play(
+            initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+            self_play_matches=2,
+            alpha=1,
+            self_play_iterations=1,
+            replay_window=1,
+            seed=0,
+            play_hidden_dim=8,
+            auction_hidden_dim=8,
+            play_value_hidden_dim=8,
+            auction_value_hidden_dim=8,
+            play_epochs=1,
+            auction_epochs=1,
+            play_value_epochs=1,
+            auction_value_epochs=1,
+            play_learning_rate=0.02,
+            auction_learning_rate=0.02,
+            play_value_learning_rate=0.02,
+            auction_value_learning_rate=0.02,
+            l2=0.0,
+            play_value_weight=0.5,
+            auction_value_weight=0.3,
+            play_rollout_depth=1,
+            auction_rollout_depth=1,
+            play_temperature=0.8,
+            auction_temperature=0.7,
+            epsilon=0.05,
+            temperature_decay=1.0,
+            epsilon_decay=1.0,
+            policy_advantage_threshold=-0.25,
+            policy_advantage_scale=2.0,
+            value_weight_scale=1.0,
+            winner_policy_weight=0.5,
+            gradient_clip=1.0,
+        )
+
+        self.assertEqual(bundle["version"], 3)
+        self.assertEqual(bundle["bot_id"], "neural-3p-v3")
+        self.assertEqual(bundle["training_mode"], "self_play")
+        self.assertEqual(len(report["self_play_iterations"]), 1)
+        collection_report = report["self_play_iterations"][0]["collection"]
+        self.assertGreater(collection_report["play_policy_examples"], 0)
+        self.assertGreater(collection_report["auction_policy_examples"], 0)
 
 
 if __name__ == "__main__":

@@ -43,7 +43,9 @@ class NeuralThreePlayerBot(BotPlayer):
 
     MODEL_DIR = Path(__file__).with_name("models")
     MODEL_FILE_V1 = MODEL_DIR / "neural_3p_v1.json"
-    MODEL_FILE = MODEL_DIR / "neural_3p_v2.json"
+    MODEL_FILE_V2 = MODEL_DIR / "neural_3p_v2.json"
+    MODEL_FILE_V3 = MODEL_DIR / "neural_3p_v3.json"
+    MODEL_FILE = MODEL_FILE_V2
     DEFAULT_PLAY_ROLLOUT_DEPTH = 3
     DEFAULT_AUCTION_ROLLOUT_DEPTH = 1
     _model_cache: dict[Path, dict] = {}
@@ -84,7 +86,7 @@ class NeuralThreePlayerBot(BotPlayer):
         source: str,
     ) -> dict:
         version = int(payload.get("version", 0))
-        if version not in {1, 2}:
+        if version not in {1, 2, 3}:
             raise ValueError(f"unsupported neural bot model version in {source}")
         return payload
 
@@ -132,6 +134,71 @@ class NeuralThreePlayerBot(BotPlayer):
             int(inference.get("auction_rollout_depth", self.DEFAULT_AUCTION_ROLLOUT_DEPTH)),
             1,
         )
+
+    def estimate_play_state_value(
+        self,
+        round_state: RoundState,
+        *,
+        perspective_player_name: str | None = None,
+    ) -> float:
+        return self._estimate_leaf_play_value(
+            round_state=round_state,
+            perspective_player_name=perspective_player_name or self.name,
+        )
+
+    def estimate_auction_state_value(
+        self,
+        auction_state: AuctionState,
+        *,
+        perspective_player_name: str | None = None,
+    ) -> float:
+        return self._estimate_leaf_auction_value(
+            auction_state=auction_state,
+            perspective_player_name=perspective_player_name or self.name,
+        )
+
+    def score_play_candidates(
+        self,
+        round_state: RoundState,
+        *,
+        perspective_player_name: str | None = None,
+    ) -> list[tuple[Card, float, list[float]]]:
+        acting_player_name = perspective_player_name or self.name
+        legal_cards = ordered_legal_cards(round_state)
+        scored_candidates: list[tuple[Card, float, list[float]]] = []
+        for card in legal_cards:
+            features = encode_play_candidate(
+                round_state=round_state,
+                acting_player_name=acting_player_name,
+                candidate_card=card,
+                match_scores=self._context_match_scores,
+                target_score=self._context_target_score,
+                auction_state=self._context_auction_state,
+            )
+            score = (
+                (self._play_policy_weight * self._play_model.score(features))
+                + (
+                    self._play_value_weight
+                    * (
+                        self._rollout_play_value(
+                            round_state=apply_trick_action_to_state(
+                                round_state,
+                                Play(round_state.current_player, card),
+                            ),
+                            perspective_player_name=acting_player_name,
+                            remaining_depth=self._play_rollout_depth - 1,
+                        )
+                        if self._play_rollout_depth > 1
+                        else self._estimate_play_successor_value(
+                            round_state=round_state,
+                            perspective_player_name=acting_player_name,
+                            candidate_card=card,
+                        )
+                    )
+                )
+            )
+            scored_candidates.append((card, score, features))
+        return scored_candidates
 
     def set_match_context(
         self,
@@ -326,47 +393,18 @@ class NeuralThreePlayerBot(BotPlayer):
         )
 
     def _choose_card_with_model(self, round_state: RoundState) -> Card:
-        legal_cards = ordered_legal_cards(round_state)
-        if not legal_cards:
+        scored_candidates = self.score_play_candidates(round_state)
+        if not scored_candidates:
             raise ValueError("neural bot could not find a legal card")
 
-        feature_rows = [
-            encode_play_candidate(
-                round_state=round_state,
-                acting_player_name=self.name,
-                candidate_card=card,
-                match_scores=self._context_match_scores,
-                target_score=self._context_target_score,
-                auction_state=self._context_auction_state,
-            )
-            for card in legal_cards
-        ]
-        best_index = max(
-            range(len(legal_cards)),
-            key=lambda index: (
-                (self._play_policy_weight * self._play_model.score(feature_rows[index]))
-                + (
-                    self._play_value_weight * (
-                        self._rollout_play_value(
-                            round_state=apply_trick_action_to_state(
-                                round_state,
-                                Play(round_state.current_player, legal_cards[index]),
-                            ),
-                            perspective_player_name=self.name,
-                            remaining_depth=self._play_rollout_depth - 1,
-                        )
-                        if self._play_rollout_depth > 1
-                        else self._estimate_play_successor_value(
-                            round_state=round_state,
-                            perspective_player_name=self.name,
-                            candidate_card=legal_cards[index],
-                        )
-                    )
-                ),
-                legal_cards[index].code,
+        best_card, _, _ = max(
+            scored_candidates,
+            key=lambda item: (
+                item[1],
+                item[0].code,
             ),
         )
-        return legal_cards[best_index]
+        return best_card
 
     def choose_card(self, round_state: RoundState) -> Card:
         if round_state.current_player.name != self.name:
@@ -456,6 +494,47 @@ class NeuralThreePlayerBot(BotPlayer):
             + self._auction_value_weight * successor_value
         )
 
+    def score_auction_candidates(
+        self,
+        auction_state: AuctionState,
+        *,
+        perspective_player_name: str | None = None,
+    ) -> list[tuple[AuctionEvent, float, list[float]]]:
+        acting_player_name = perspective_player_name or self.name
+        legal_actions = ordered_legal_auction_actions(auction_state)
+        scored_candidates: list[tuple[AuctionEvent, float, list[float]]] = []
+        for action in legal_actions:
+            features = encode_auction_candidate(
+                auction_state=auction_state,
+                acting_player_name=acting_player_name,
+                hand=set(self.cards),
+                candidate_action=action,
+                match_scores=self._context_match_scores,
+                target_score=self._context_target_score,
+            )
+            successor_value = (
+                self._rollout_auction_value(
+                    auction_state=self._successor_auction_state(
+                        auction_state=auction_state,
+                        candidate_action=action,
+                    ),
+                    perspective_player_name=acting_player_name,
+                    remaining_depth=self._auction_rollout_depth - 1,
+                )
+                if self._auction_rollout_depth > 1
+                else self._estimate_auction_successor_value(
+                    auction_state=auction_state,
+                    perspective_player_name=acting_player_name,
+                    candidate_action=action,
+                )
+            )
+            score = (
+                (self._auction_policy_weight * self._auction_model.score(features))
+                + (self._auction_value_weight * successor_value)
+            )
+            scored_candidates.append((action, score, features))
+        return scored_candidates
+
     def _rollout_auction_value(
         self,
         *,
@@ -503,48 +582,19 @@ class NeuralThreePlayerBot(BotPlayer):
         self,
         auction_state: AuctionState,
     ) -> AuctionEvent:
-        legal_actions = ordered_legal_auction_actions(auction_state)
-        if not legal_actions:
+        scored_candidates = self.score_auction_candidates(auction_state)
+        if not scored_candidates:
             raise ValueError("neural bot could not find a legal auction action")
 
-        feature_rows = [
-            encode_auction_candidate(
-                auction_state=auction_state,
-                acting_player_name=self.name,
-                hand=set(self.cards),
-                candidate_action=action,
-                match_scores=self._context_match_scores,
-                target_score=self._context_target_score,
-            )
-            for action in legal_actions
-        ]
-        best_index = max(
-            range(len(legal_actions)),
-            key=lambda index: (
-                (self._auction_policy_weight * self._auction_model.score(feature_rows[index]))
-                + (
-                    self._auction_value_weight * (
-                        self._rollout_auction_value(
-                            auction_state=self._successor_auction_state(
-                                auction_state=auction_state,
-                                candidate_action=legal_actions[index],
-                            ),
-                            perspective_player_name=self.name,
-                            remaining_depth=self._auction_rollout_depth - 1,
-                        )
-                        if self._auction_rollout_depth > 1
-                        else self._estimate_auction_successor_value(
-                            auction_state=auction_state,
-                            perspective_player_name=self.name,
-                            candidate_action=legal_actions[index],
-                        )
-                    )
-                ),
-                -(legal_actions[index].amount or 0),
-                legal_actions[index].action == "bid",
+        best_action, _, _ = max(
+            scored_candidates,
+            key=lambda item: (
+                item[1],
+                -(item[0].amount or 0),
+                item[0].action == "bid",
             ),
         )
-        return legal_actions[best_index]
+        return best_action
 
     def choose_auction_action(self, auction_state: AuctionState) -> AuctionEvent:
         if auction_state.current_bidder_name != self.name:
@@ -564,3 +614,4 @@ class NeuralThreePlayerBot(BotPlayer):
 
 
 NeuralThreePlayerV1Bot = NeuralThreePlayerBot
+NeuralThreePlayerV3Bot = NeuralThreePlayerBot

@@ -20,6 +20,8 @@ try:
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
         DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
         DEFAULT_TEACHER_POOL,
+        DEFAULT_TEACHER_SAMPLE_SCALE,
+        DEFAULT_TEACHER_TARGET_TEMPERATURE,
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WARM_START_EPOCH_SCALE,
         load_model_bundle,
@@ -40,6 +42,8 @@ except ImportError:
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
         DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
         DEFAULT_TEACHER_POOL,
+        DEFAULT_TEACHER_SAMPLE_SCALE,
+        DEFAULT_TEACHER_TARGET_TEMPERATURE,
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WARM_START_EPOCH_SCALE,
         load_model_bundle,
@@ -431,6 +435,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     )
+    parser.add_argument(
+        "--teacher-sample-scale",
+        type=float,
+        default=DEFAULT_TEACHER_SAMPLE_SCALE,
+        help="scale search-teacher determinization sample counts during training collection",
+    )
+    parser.add_argument(
+        "--teacher-target-temperature",
+        type=float,
+        default=DEFAULT_TEACHER_TARGET_TEMPERATURE,
+        help="softmax temperature used when distilling teacher search scores into policy targets",
+    )
     parser.add_argument("--play-value-weight", type=float, default=0.8)
     parser.add_argument("--auction-value-weight", type=float, default=0.55)
     parser.add_argument("--play-rollout-depth", type=int, default=DEFAULT_PLAY_ROLLOUT_DEPTH)
@@ -476,6 +492,8 @@ def main() -> None:
                 "eval_games": args.eval_games,
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
                 "precheck_games": args.precheck_games,
+                "teacher_sample_scale": args.teacher_sample_scale,
+                "teacher_target_temperature": args.teacher_target_temperature,
                 "seed": args.seed,
             }
         ),
@@ -494,7 +512,9 @@ def main() -> None:
             f"[overnight] config duration={args.duration_hours:.2f}h alpha={args.alpha} "
             f"bootstrap_matches={args.bootstrap_matches} dagger_matches={args.dagger_matches} "
             f"dagger_iterations={args.dagger_iterations} eval_games={args.eval_games} "
-            f"eval_games_vs_optimal={args.eval_games_vs_optimal} precheck_games={args.precheck_games}"
+            f"eval_games_vs_optimal={args.eval_games_vs_optimal} precheck_games={args.precheck_games} "
+            f"teacher_sample_scale={args.teacher_sample_scale:.2f} "
+            f"teacher_target_temperature={args.teacher_target_temperature:.2f}"
         ),
     )
 
@@ -550,6 +570,8 @@ def main() -> None:
                 warm_start_epoch_scale=args.warm_start_epoch_scale,
                 gradient_clip=args.gradient_clip,
                 student_agreement_keep_prob=args.student_agreement_keep_prob,
+                teacher_sample_scale=args.teacher_sample_scale,
+                teacher_target_temperature=args.teacher_target_temperature,
                 bot_id="neural-3p-v2",
                 verbose=verbose,
             )

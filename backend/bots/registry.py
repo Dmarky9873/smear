@@ -67,9 +67,16 @@ class ReadyBotSpec:
     factory: Callable[[str], BotPlayer]
 
 
-def _build_n_trick_specs() -> tuple[ReadyBotSpec, ...]:
+MAX_VISIBLE_PRESET_DEPTH = 3
+
+
+def _build_n_trick_specs(
+    *,
+    min_depth: int = 2,
+    max_depth: int = HAND_SIZE,
+) -> tuple[ReadyBotSpec, ...]:
     specs: list[ReadyBotSpec] = []
-    for depth in range(2, HAND_SIZE + 1):
+    for depth in range(min_depth, max_depth + 1):
         specs.append(
             ReadyBotSpec(
                 id=f"{depth}-trick-minmax",
@@ -101,9 +108,13 @@ def _build_n_trick_specs() -> tuple[ReadyBotSpec, ...]:
     return tuple(specs)
 
 
-def _build_legacy_n_trick_specs() -> tuple[ReadyBotSpec, ...]:
+def _build_legacy_n_trick_specs(
+    *,
+    min_depth: int = 2,
+    max_depth: int = HAND_SIZE,
+) -> tuple[ReadyBotSpec, ...]:
     specs: list[ReadyBotSpec] = []
-    for depth in range(2, HAND_SIZE + 1):
+    for depth in range(min_depth, max_depth + 1):
         specs.append(
             ReadyBotSpec(
                 id=f"legacy-{depth}-trick-minmax",
@@ -178,7 +189,7 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         factory=lambda player_name: OmniscientMinimaxOneTrickPlayer(
             player_name),
     ),
-    *_build_n_trick_specs(),
+    *_build_n_trick_specs(max_depth=MAX_VISIBLE_PRESET_DEPTH),
 )
 
 HIDDEN_BOTS: tuple[ReadyBotSpec, ...] = (
@@ -206,6 +217,7 @@ HIDDEN_BOTS: tuple[ReadyBotSpec, ...] = (
             player_name
         ),
     ),
+    *_build_n_trick_specs(min_depth=MAX_VISIBLE_PRESET_DEPTH + 1),
     *_build_legacy_n_trick_specs(),
 )
 

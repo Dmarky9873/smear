@@ -1,5 +1,7 @@
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +11,8 @@ from backend.continuous_sim import (
     _build_parallel_executor,
     compute_multiplayer_elo_deltas,
     iter_match_tasks,
+    load_persisted_ratings,
+    save_persisted_ratings,
 )
 
 
@@ -70,6 +74,29 @@ class ContinuousSimHelperTests(unittest.TestCase):
         self.assertAlmostEqual(deltas["beta"], 0.0)
         self.assertAlmostEqual(deltas["gamma"], -16.0)
 
+    def test_persisted_elo_round_trips_through_json_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            elo_file = Path(temp_dir) / "elo.json"
+            original_ratings = {
+                "alpha": EloEntry(
+                    rating=1512.5,
+                    games_played=4,
+                    wins=2,
+                    draws=1,
+                    losses=1,
+                )
+            }
+
+            save_persisted_ratings(elo_file, original_ratings)
+            loaded_ratings = load_persisted_ratings(elo_file)
+
+        self.assertEqual(set(loaded_ratings), {"alpha"})
+        self.assertAlmostEqual(loaded_ratings["alpha"].rating, 1512.5)
+        self.assertEqual(loaded_ratings["alpha"].games_played, 4)
+        self.assertEqual(loaded_ratings["alpha"].wins, 2)
+        self.assertEqual(loaded_ratings["alpha"].draws, 1)
+        self.assertEqual(loaded_ratings["alpha"].losses, 1)
+
     @patch("backend.continuous_sim.ProcessPoolExecutor", side_effect=PermissionError)
     def test_parallel_executor_falls_back_to_threads_when_processes_unavailable(
         self,
@@ -85,27 +112,31 @@ class ContinuousSimHelperTests(unittest.TestCase):
 class ContinuousSimEntryPointTests(unittest.TestCase):
     def test_console_entrypoint_runs_single_serial_three_player_game(self):
         repo_root = Path(__file__).resolve().parents[1]
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "continuous-sim",
-                "--games",
-                "1",
-                "--workers",
-                "1",
-                "--alpha",
-                "1",
-                "--seed",
-                "0",
-                "--bots",
-                "greedy",
-                "stupid",
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            elo_file = Path(temp_dir) / "elo.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "continuous-sim",
+                    "--games",
+                    "1",
+                    "--workers",
+                    "1",
+                    "--alpha",
+                    "1",
+                    "--seed",
+                    "0",
+                    "--elo-file",
+                    str(elo_file),
+                    "--bots",
+                    "greedy",
+                    "stupid",
+                ],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
         self.assertEqual(
             completed.returncode,
@@ -116,8 +147,144 @@ class ContinuousSimEntryPointTests(unittest.TestCase):
         self.assertIn("Continuous sim |", completed.stdout)
         self.assertIn("Elo", completed.stdout)
         self.assertIn("Matches", completed.stdout)
+        self.assertIn("Elo file:", completed.stdout)
+        self.assertIn("Elo startup: load from JSON if present", completed.stdout)
         self.assertIn("random filler", completed.stdout)
         self.assertIn("Final leaderboard after 1 game", completed.stdout)
+
+    def test_console_entrypoint_reuses_saved_elo_file_on_second_run(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            elo_file = Path(temp_dir) / "elo.json"
+            command = [
+                sys.executable,
+                "continuous-sim",
+                "--games",
+                "1",
+                "--workers",
+                "1",
+                "--alpha",
+                "1",
+                "--seed",
+                "0",
+                "--elo-file",
+                str(elo_file),
+                "--bots",
+                "greedy",
+                "stupid",
+            ]
+
+            first_run = subprocess.run(
+                command,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                first_run.returncode,
+                0,
+                msg=f"stdout:\n{first_run.stdout}\nstderr:\n{first_run.stderr}",
+            )
+
+            first_payload = json.loads(elo_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                first_payload["ratings"]["greedy"]["games_played"],
+                1,
+            )
+            self.assertEqual(
+                first_payload["ratings"]["stupid"]["games_played"],
+                1,
+            )
+            self.assertNotIn("random", first_payload["ratings"])
+
+            second_run = subprocess.run(
+                command,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                second_run.returncode,
+                0,
+                msg=f"stdout:\n{second_run.stdout}\nstderr:\n{second_run.stderr}",
+            )
+
+            second_payload = json.loads(elo_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                second_payload["ratings"]["greedy"]["games_played"],
+                2,
+            )
+            self.assertEqual(
+                second_payload["ratings"]["stupid"]["games_played"],
+                2,
+            )
+
+    def test_console_entrypoint_fresh_ratings_ignores_saved_elo_on_startup(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            elo_file = Path(temp_dir) / "elo.json"
+            seed_payload = {
+                "version": 1,
+                "ratings": {
+                    "greedy": {
+                        "rating": 1750.0,
+                        "games_played": 10,
+                        "wins": 8,
+                        "draws": 0,
+                        "losses": 2,
+                    },
+                    "stupid": {
+                        "rating": 1250.0,
+                        "games_played": 10,
+                        "wins": 2,
+                        "draws": 0,
+                        "losses": 8,
+                    },
+                },
+            }
+            elo_file.write_text(json.dumps(seed_payload), encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "continuous-sim",
+                    "--games",
+                    "1",
+                    "--workers",
+                    "1",
+                    "--alpha",
+                    "1",
+                    "--seed",
+                    "0",
+                    "--elo-file",
+                    str(elo_file),
+                    "--fresh-ratings",
+                    "--bots",
+                    "greedy",
+                    "stupid",
+                ],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+            )
+            self.assertIn(
+                "Elo startup: fresh from --initial-rating",
+                completed.stdout,
+            )
+
+            payload = json.loads(elo_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["ratings"]["greedy"]["games_played"], 1)
+            self.assertEqual(payload["ratings"]["stupid"]["games_played"], 1)
+            self.assertNotEqual(payload["ratings"]["greedy"]["rating"], 1750.0)
 
 
 if __name__ == "__main__":

@@ -866,12 +866,21 @@ class MinimaxNTrickBotTests(unittest.TestCase):
         self.assertIsInstance(bot, OmniscientMinimaxNTrickPlayer)
         self.assertEqual(bot.depth, 3)
 
+    def test_registry_still_builds_hidden_deeper_depth_presets(self):
+        bot = build_ready_bot("6-trick-minmax", "A")
+        self.assertIsInstance(bot, HumanInformationMinimaxNTrickPlayer)
+        self.assertEqual(bot.depth, 6)
+
     def test_registry_metadata_lists_n_trick_presets(self):
         bot_ids = {bot["id"] for bot in list_ready_bot_metadata()}
         self.assertIn("2-trick-minmax", bot_ids)
         self.assertIn("o-2-trick-minmax", bot_ids)
-        self.assertIn("6-trick-minmax", bot_ids)
-        self.assertIn("o-6-trick-minmax", bot_ids)
+        self.assertIn("3-trick-minmax", bot_ids)
+        self.assertIn("o-3-trick-minmax", bot_ids)
+        self.assertNotIn("4-trick-minmax", bot_ids)
+        self.assertNotIn("o-4-trick-minmax", bot_ids)
+        self.assertNotIn("6-trick-minmax", bot_ids)
+        self.assertNotIn("o-6-trick-minmax", bot_ids)
 
 
 if __name__ == "__main__":

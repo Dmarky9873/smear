@@ -207,7 +207,7 @@ For a long-running console-only ladder across the ready bot pool, use `continuou
 python continuous-sim --duration-hours 8 --workers 4
 ```
 
-By default it uses every visible ready bot, samples three distinct bots per game, runs those free-for-all matches continuously, and keeps a live console panel updated with the current Elo table plus compact per-match progress rows.
+By default it uses every visible ready bot, samples three distinct bots per game, runs those free-for-all matches continuously, and keeps a live console panel updated with the current Elo table plus compact per-match progress rows. The visible ready bot set is intentionally capped at the functional presets up through 3-trick depth; deeper minimax presets remain hidden because they are too slow for normal interactive use.
 
 When only two bots are selected, `continuous-sim` fills the third seat with a `random` player so the game can still run as a three-player match. That filler seat is shown in the live match rows, but the Elo table continues to track only the selected bot pool.
 
@@ -217,6 +217,8 @@ The Elo update is multiplayer-aware rather than winner-only:
 - Higher final match score at termination counts as a win for that pairwise comparison, lower score counts as a loss, and equal scores count as a draw.
 - The total Elo delta for the match is the average of those pairwise updates, scaled by the configured `--k-factor` (default `32`).
 
+By default `continuous-sim` persists ratings in `continuous-sim-elo.json` at the repo root and loads that file again on the next run, so later runs keep updating the same Elo history instead of starting over. Use `--fresh-ratings` if you want to ignore the saved ladder at startup and begin from `--initial-rating`, and use `--elo-file /path/to/file.json` to point at a different ladder file.
+
 Useful flags:
 
 - `--games 100` stops after a fixed number of matches.
@@ -224,6 +226,8 @@ Useful flags:
 - `--workers 1` disables parallel workers and runs serially in the current process.
 - `--bots random greedy stupid` restricts the pool to a chosen subset.
 - `--include-hidden` also adds the hidden legacy bot ids to the default pool.
+- `--elo-file /tmp/nightly-elo.json` saves and reloads Elo from a specific JSON file.
+- `--fresh-ratings` starts from the configured initial rating instead of loading the saved Elo JSON first.
 
 ### Frontend
 

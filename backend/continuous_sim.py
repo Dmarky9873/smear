@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing as mp
 import os
 import queue
@@ -16,6 +17,7 @@ from concurrent.futures import (
     wait,
 )
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Iterable, Sequence
 
 try:
@@ -32,11 +34,13 @@ DEFAULT_ALPHA = 50
 DEFAULT_INITIAL_ELO = 1500.0
 DEFAULT_K_FACTOR = 32.0
 DEFAULT_PLAYERS_PER_GAME = 3
+DEFAULT_ELO_FILE = Path("continuous-sim-elo.json")
 MAX_PLAYERS = 8
 MIN_PLAYERS = 3
 MIN_RATED_BOTS = 2
 FILLER_BOT_ID = "random"
 FILLER_SEAT_KEY = "random-filler"
+ELO_FILE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -893,11 +897,112 @@ def _build_initial_ratings(
     bot_ids: Sequence[str],
     *,
     initial_rating: float,
+    persisted_ratings: dict[str, EloEntry] | None = None,
 ) -> dict[str, EloEntry]:
+    ratings: dict[str, EloEntry] = {}
+    for bot_id in bot_ids:
+        entry = None if persisted_ratings is None else persisted_ratings.get(bot_id)
+        if entry is None:
+            entry = EloEntry(rating=initial_rating)
+            if persisted_ratings is not None:
+                persisted_ratings[bot_id] = entry
+        ratings[bot_id] = entry
+    return ratings
+
+
+def _serialize_elo_entry(entry: EloEntry) -> dict[str, float | int]:
     return {
-        bot_id: EloEntry(rating=initial_rating)
-        for bot_id in bot_ids
+        "rating": round(entry.rating, 6),
+        "games_played": entry.games_played,
+        "wins": entry.wins,
+        "draws": entry.draws,
+        "losses": entry.losses,
     }
+
+
+def _deserialize_elo_entry(
+    bot_id: str,
+    payload: object,
+) -> EloEntry:
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid Elo entry for {bot_id}: expected object")
+
+    try:
+        rating = float(payload["rating"])
+        games_played = int(payload.get("games_played", 0))
+        wins = int(payload.get("wins", 0))
+        draws = int(payload.get("draws", 0))
+        losses = int(payload.get("losses", 0))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid Elo entry for {bot_id}") from exc
+
+    if rating <= 0:
+        raise ValueError(f"invalid Elo entry for {bot_id}: rating must be positive")
+    if min(games_played, wins, draws, losses) < 0:
+        raise ValueError(
+            f"invalid Elo entry for {bot_id}: counters must be non-negative"
+        )
+    if wins + draws + losses > games_played:
+        raise ValueError(
+            f"invalid Elo entry for {bot_id}: result counters exceed games played"
+        )
+
+    return EloEntry(
+        rating=rating,
+        games_played=games_played,
+        wins=wins,
+        draws=draws,
+        losses=losses,
+    )
+
+
+def load_persisted_ratings(elo_file: Path) -> dict[str, EloEntry]:
+    if not elo_file.exists():
+        return {}
+
+    try:
+        payload = json.loads(elo_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid Elo JSON in {elo_file}: {exc.msg}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid Elo JSON in {elo_file}: expected top-level object")
+
+    ratings_payload = payload.get("ratings", payload)
+    version = payload.get("version")
+    if version is not None and version != ELO_FILE_VERSION:
+        raise ValueError(
+            f"unsupported Elo file version in {elo_file}: {version}"
+        )
+    if not isinstance(ratings_payload, dict):
+        raise ValueError(f"invalid Elo JSON in {elo_file}: expected ratings object")
+
+    ratings: dict[str, EloEntry] = {}
+    for bot_id, entry_payload in ratings_payload.items():
+        if not isinstance(bot_id, str) or not bot_id:
+            raise ValueError(f"invalid Elo JSON in {elo_file}: bad bot id")
+        ratings[bot_id] = _deserialize_elo_entry(bot_id, entry_payload)
+    return ratings
+
+
+def save_persisted_ratings(
+    elo_file: Path,
+    ratings: dict[str, EloEntry],
+) -> None:
+    elo_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": ELO_FILE_VERSION,
+        "ratings": {
+            bot_id: _serialize_elo_entry(entry)
+            for bot_id, entry in sorted(ratings.items())
+        },
+    }
+    temp_file = elo_file.with_name(f".{elo_file.name}.tmp")
+    temp_file.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temp_file, elo_file)
 
 
 def _build_parallel_executor(
@@ -927,6 +1032,8 @@ def run_continuous_sim(
     workers: int,
     seed: int | None,
     leaderboard_every: int,
+    elo_file: Path | None = None,
+    load_from_elo_file: bool = True,
 ) -> ContinuousSimResult:
     if alpha <= 0:
         raise ValueError("alpha must be positive")
@@ -945,10 +1052,19 @@ def run_continuous_sim(
 
     resolved_bot_ids = list(bot_ids)
     validate_bot_pool_for_matches(resolved_bot_ids)
+    if elo_file is None:
+        persisted_ratings = None
+    elif load_from_elo_file:
+        persisted_ratings = load_persisted_ratings(elo_file)
+    else:
+        persisted_ratings = {}
     ratings = _build_initial_ratings(
         resolved_bot_ids,
         initial_rating=initial_rating,
+        persisted_ratings=persisted_ratings,
     )
+    if elo_file is not None and persisted_ratings is not None:
+        save_persisted_ratings(elo_file, persisted_ratings)
     started_at = time.perf_counter()
     deadline = (
         time.monotonic() + duration_seconds
@@ -983,6 +1099,8 @@ def run_continuous_sim(
             k_factor=k_factor,
         )
         last_result_text = _format_recent_result(outcome)
+        if elo_file is not None and persisted_ratings is not None:
+            save_persisted_ratings(elo_file, persisted_ratings)
 
     def next_task() -> MatchTask:
         nonlocal scheduled_games
@@ -1100,6 +1218,9 @@ def run_continuous_sim(
             progress_manager.shutdown()
         progress_display.clear()
 
+    if elo_file is not None and persisted_ratings is not None:
+        save_persisted_ratings(elo_file, persisted_ratings)
+
     ended_at = time.perf_counter()
     return ContinuousSimResult(
         games_completed=completed_games,
@@ -1179,6 +1300,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=1,
         help="print the full leaderboard after every N completed matches",
     )
+    parser.add_argument(
+        "--elo-file",
+        type=Path,
+        default=DEFAULT_ELO_FILE,
+        help="JSON file used to load and persist Elo across runs",
+    )
+    parser.add_argument(
+        "--fresh-ratings",
+        action="store_true",
+        help=(
+            "ignore any saved Elo JSON at startup and begin this run from "
+            "--initial-rating instead"
+        ),
+    )
     return parser
 
 
@@ -1205,6 +1340,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         flush=True,
     )
     print(f"Bot pool: {', '.join(bot_ids)}", flush=True)
+    print(f"Elo file: {args.elo_file}", flush=True)
+    print(
+        "Elo startup: "
+        + (
+            "fresh from --initial-rating"
+            if args.fresh_ratings
+            else "load from JSON if present"
+        ),
+        flush=True,
+    )
     if args.games is None and duration_seconds is None:
         print("Run limit: until interrupted", flush=True)
     else:
@@ -1226,10 +1371,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             workers=args.workers,
             seed=args.seed,
             leaderboard_every=args.leaderboard_every,
+            elo_file=args.elo_file,
+            load_from_elo_file=not args.fresh_ratings,
         )
     except KeyboardInterrupt:
         print("\nInterrupted by user.", flush=True)
         return 130
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr, flush=True)
+        return 2
 
     if result.executor_kind != "serial":
         print(f"Parallel executor: {result.executor_kind}", flush=True)

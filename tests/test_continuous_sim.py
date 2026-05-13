@@ -36,6 +36,7 @@ class ContinuousSimHelperTests(unittest.TestCase):
         self.assertEqual(_compact_bot_name("neural-3p-v1"), "n3v1")
         self.assertEqual(_compact_bot_name("neural-3p-v2"), "n3v2")
         self.assertEqual(_compact_bot_name("neural-3p-v3"), "n3v3")
+        self.assertEqual(_compact_bot_name("neural-3p-v4"), "n3v4")
 
     def test_iter_match_tasks_samples_unique_three_player_matchups(self):
         bot_ids = [f"bot-{index}" for index in range(10)]

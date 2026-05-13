@@ -45,6 +45,7 @@ class NeuralThreePlayerBot(BotPlayer):
     MODEL_FILE_V1 = MODEL_DIR / "neural_3p_v1.json"
     MODEL_FILE_V2 = MODEL_DIR / "neural_3p_v2.json"
     MODEL_FILE_V3 = MODEL_DIR / "neural_3p_v3.json"
+    MODEL_FILE_V4 = MODEL_DIR / "neural_3p_v4.json"
     MODEL_FILE = MODEL_FILE_V2
     DEFAULT_PLAY_ROLLOUT_DEPTH = 3
     DEFAULT_AUCTION_ROLLOUT_DEPTH = 1
@@ -619,3 +620,20 @@ class NeuralThreePlayerV1Bot(NeuralThreePlayerBot):
 
 class NeuralThreePlayerV3Bot(NeuralThreePlayerBot):
     MODEL_FILE = NeuralThreePlayerBot.MODEL_FILE_V3
+
+
+class NeuralThreePlayerV4Bot(NeuralThreePlayerBot):
+    MODEL_FILE = NeuralThreePlayerBot.MODEL_FILE_V4
+    FALLBACK_MODEL_FILE = NeuralThreePlayerBot.MODEL_FILE_V3
+
+    @classmethod
+    def _load_model_bundle(cls, model_path: Path) -> dict:
+        if not model_path.exists() and model_path == cls.MODEL_FILE:
+            fallback_path = cls.FALLBACK_MODEL_FILE
+            if fallback_path.exists():
+                fallback_bundle = deepcopy(super()._load_model_bundle(fallback_path))
+                fallback_bundle["bot_id"] = "neural-3p-v4"
+                fallback_bundle.setdefault("seed_bot_id", "neural-3p-v3")
+                fallback_bundle.setdefault("training_mode", "alternating_seed")
+                return fallback_bundle
+        return super()._load_model_bundle(model_path)

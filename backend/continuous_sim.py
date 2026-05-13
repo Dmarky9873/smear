@@ -354,6 +354,7 @@ def _compact_bot_name(bot_id: str) -> str:
         "neural-3p-v1": "n3v1",
         "neural-3p-v2": "n3v2",
         "neural-3p-v3": "n3v3",
+        "neural-3p-v4": "n3v4",
         "o-one-trick-minmax": "o1",
     }
     if bot_id in compact_names:

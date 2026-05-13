@@ -8,6 +8,7 @@ from backend.bots.neural_3p_bot import (
     NeuralThreePlayerBot,
     NeuralThreePlayerV1Bot,
     NeuralThreePlayerV3Bot,
+    NeuralThreePlayerV4Bot,
 )
 from backend.bots.neural_3p_features import (
     encode_auction_candidate,
@@ -34,10 +35,11 @@ from backend.self_play_neural_3p_v3 import (
     save_replay_shard,
     train_with_self_play,
 )
-from backend.self_train_neural_3p import (
+from backend.self_train_neural_3p_v2 import (
     _build_incumbent_baseline_cache_from_evaluation,
     candidate_meets_promotion_criteria,
 )
+from backend.self_train_neural_3p_v4 import train_with_alternating_phases
 from backend.train_neural_3p_bot import (
     ComparisonMetric,
     _render_iteration_comparison_table,
@@ -336,14 +338,17 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         legacy_bot = build_ready_bot("neural-3p-v1", "A")
         upgraded_bot = build_ready_bot("neural-3p-v2", "A")
         self_play_bot = build_ready_bot("neural-3p-v3", "A")
+        alternating_bot = build_ready_bot("neural-3p-v4", "A")
 
         self.assertIsInstance(legacy_bot, NeuralThreePlayerV1Bot)
         self.assertIsInstance(upgraded_bot, NeuralThreePlayerBot)
         self.assertIsInstance(self_play_bot, NeuralThreePlayerBot)
+        self.assertIsInstance(alternating_bot, NeuralThreePlayerV4Bot)
         bot_ids = {bot["id"] for bot in list_ready_bot_metadata()}
         self.assertIn("neural-3p-v1", bot_ids)
         self.assertIn("neural-3p-v2", bot_ids)
         self.assertIn("neural-3p-v3", bot_ids)
+        self.assertIn("neural-3p-v4", bot_ids)
 
     def test_neural_bot_chooses_legal_card_in_supported_context(self):
         round_state = self._build_supported_round_state()
@@ -442,6 +447,33 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             chosen_card = trained_bot.choose_card(round_state)
 
         self.assertIn(chosen_card, ordered_legal_cards(round_state))
+
+    def test_save_model_bundle_creates_missing_parent_directories(self):
+        bundle = {
+            "version": 2,
+            "bot_id": "neural-3p-v2",
+            "play_model": ScalarMLP.initialize(input_dim=2, hidden_dim=2, seed=1).to_dict(),
+            "auction_model": ScalarMLP.initialize(input_dim=2, hidden_dim=2, seed=2).to_dict(),
+            "play_value_model": ScalarMLP.initialize(input_dim=2, hidden_dim=2, seed=3).to_dict(),
+            "auction_value_model": ScalarMLP.initialize(input_dim=2, hidden_dim=2, seed=4).to_dict(),
+            "teacher_pool": [],
+            "inference": {
+                "play_policy_weight": 1.0,
+                "play_value_weight": 0.5,
+                "auction_policy_weight": 1.0,
+                "auction_value_weight": 0.3,
+                "play_rollout_depth": 1,
+                "auction_rollout_depth": 1,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "nested" / "checkpoints" / "model.json"
+            save_model_bundle(bundle, output_path)
+
+            self.assertTrue(output_path.exists())
+            saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_payload["bot_id"], "neural-3p-v2")
 
     def test_search_teacher_collection_emits_soft_policy_targets(self):
         teacher_specs = parse_teacher_specs("1-trick-minmax")
@@ -586,6 +618,63 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             training_report["trainer_backend"],
             resolve_training_backend(DEFAULT_TRAINING_BACKEND),
         )
+
+    def test_train_with_alternating_phases_runs_small_cycle(self):
+        _, report = train_with_alternating_phases(
+            initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+            teacher_specs=parse_teacher_specs("greedy"),
+            alpha=1,
+            bootstrap_matches=1,
+            dagger_matches=1,
+            dagger_iterations=1,
+            self_play_matches=1,
+            replay_window=2,
+            persisted_replay_limit=2,
+            seed=0,
+            play_hidden_dim=8,
+            auction_hidden_dim=8,
+            play_value_hidden_dim=8,
+            auction_value_hidden_dim=8,
+            play_epochs=1,
+            auction_epochs=1,
+            play_value_epochs=1,
+            auction_value_epochs=1,
+            play_learning_rate=0.02,
+            auction_learning_rate=0.02,
+            play_value_learning_rate=0.02,
+            auction_value_learning_rate=0.02,
+            l2=0.0,
+            play_value_weight=0.5,
+            auction_value_weight=0.3,
+            play_rollout_depth=1,
+            auction_rollout_depth=1,
+            warm_start_lr_scale=0.8,
+            warm_start_epoch_scale=0.8,
+            gradient_clip=1.0,
+            play_temperature=0.8,
+            auction_temperature=0.7,
+            epsilon=0.05,
+            temperature_decay=1.0,
+            epsilon_decay=1.0,
+            policy_advantage_threshold=-0.25,
+            policy_advantage_scale=2.0,
+            value_weight_scale=1.0,
+            winner_policy_weight=0.5,
+            eval_games=2,
+            eval_games_vs_optimal=1,
+            precheck_games=1,
+            max_iterations=2,
+            workers=1,
+            start_phase="imitation",
+        )
+
+        self.assertEqual(report["iterations_completed"], 2)
+        self.assertEqual(report["iterations"][0]["phase"], "imitation")
+        self.assertEqual(report["iterations"][1]["phase"], "self-play")
+        self.assertEqual(report["iterations"][0]["candidate_bot_id"], "neural-3p-v4")
+        self.assertEqual(report["iterations"][1]["candidate_bot_id"], "neural-3p-v4")
+        self.assertEqual(report["iterations"][0]["candidate_version"], 3)
+        self.assertEqual(report["iterations"][1]["candidate_version"], 3)
 
     def test_train_with_self_play_persists_replay_history_across_calls(self):
         replay_history = SelfPlayDatasetHistory()
@@ -847,9 +936,11 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
     def test_named_bot_versions_default_to_expected_model_files(self):
         v1_bot = NeuralThreePlayerV1Bot("A")
         v3_bot = NeuralThreePlayerV3Bot("B")
+        v4_bot = NeuralThreePlayerV4Bot("C")
 
         self.assertEqual(v1_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V1.name)
         self.assertEqual(v3_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V3.name)
+        self.assertEqual(v4_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V4.name)
 
     def test_resolve_self_play_exploration_anneals_and_respects_floors(self):
         self.assertEqual(

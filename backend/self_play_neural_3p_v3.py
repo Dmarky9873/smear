@@ -22,11 +22,11 @@ try:
     from .engine import apply_auction_action_for_search, apply_trick_action_to_state
     from .gameplay import MatchController
     from .models import Play
-    from .self_train_neural_3p import evaluate_candidate
-    from .self_train_neural_3p import _build_incumbent_baseline_cache_from_evaluation
-    from .self_train_neural_3p import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
-    from .self_train_neural_3p import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
-    from .self_train_neural_3p import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
+    from .self_train_neural_3p_v2 import evaluate_candidate
+    from .self_train_neural_3p_v2 import _build_incumbent_baseline_cache_from_evaluation
+    from .self_train_neural_3p_v2 import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
+    from .self_train_neural_3p_v2 import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
+    from .self_train_neural_3p_v2 import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
     from .train_neural_3p_bot import (
         ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
@@ -70,11 +70,11 @@ except ImportError:
     from engine import apply_auction_action_for_search, apply_trick_action_to_state
     from gameplay import MatchController
     from models import Play
-    from self_train_neural_3p import evaluate_candidate
-    from self_train_neural_3p import _build_incumbent_baseline_cache_from_evaluation
-    from self_train_neural_3p import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
-    from self_train_neural_3p import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
-    from self_train_neural_3p import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
+    from self_train_neural_3p_v2 import evaluate_candidate
+    from self_train_neural_3p_v2 import _build_incumbent_baseline_cache_from_evaluation
+    from self_train_neural_3p_v2 import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
+    from self_train_neural_3p_v2 import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
+    from self_train_neural_3p_v2 import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
     from train_neural_3p_bot import (
         ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
@@ -1139,6 +1139,9 @@ def train_with_self_play(
     replay_history: SelfPlayDatasetHistory | None = None,
     iteration_offset: int = 0,
     workers: int = DEFAULT_WORKERS,
+    bot_id: str = "neural-3p-v3",
+    bundle_version: int = 3,
+    extra_metadata: dict | None = None,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     current_bundle = initial_bundle
@@ -1209,6 +1212,13 @@ def train_with_self_play(
                 ],
             ),
         )
+        self_play_bundle_metadata = {
+            "training_mode": "self_play",
+            "seed_bot_id": initial_bundle.get("bot_id", "neural-3p-v2"),
+        }
+        if extra_metadata:
+            self_play_bundle_metadata.update(extra_metadata)
+
         current_bundle, training_report = train_neural_3p_bundle(
             play_examples=aggregate_dataset.play_policy_examples,
             auction_examples=aggregate_dataset.auction_policy_examples,
@@ -1237,12 +1247,9 @@ def train_with_self_play(
             gradient_clip=gradient_clip,
             trainer_backend=trainer_backend,
             trainer_batch_size=trainer_batch_size,
-            bot_id="neural-3p-v3",
-            bundle_version=3,
-            extra_metadata={
-                "training_mode": "self_play",
-                "seed_bot_id": initial_bundle.get("bot_id", "neural-3p-v2"),
-            },
+            bot_id=bot_id,
+            bundle_version=bundle_version,
+            extra_metadata=self_play_bundle_metadata,
             workers=workers,
             verbose=verbose,
         )

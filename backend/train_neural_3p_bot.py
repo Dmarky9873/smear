@@ -2305,6 +2305,8 @@ def train_with_dagger(
     trainer_batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
     workers: int = DEFAULT_WORKERS,
     bot_id: str = "neural-3p-v2",
+    bundle_version: int = 2,
+    extra_metadata: dict | None = None,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     _log(
@@ -2356,6 +2358,13 @@ def train_with_dagger(
         ),
     )
 
+    dagger_bundle_metadata = {
+        "training_mode": "search_distillation",
+        "teacher_target_temperature": teacher_target_temperature,
+    }
+    if extra_metadata:
+        dagger_bundle_metadata.update(extra_metadata)
+
     bundle, training_report = train_neural_3p_bundle(
         play_examples=aggregate_dataset.play_policy_examples,
         auction_examples=aggregate_dataset.auction_policy_examples,
@@ -2383,10 +2392,8 @@ def train_with_dagger(
         auction_rollout_depth=auction_rollout_depth,
         gradient_clip=gradient_clip,
         bot_id=bot_id,
-        extra_metadata={
-            "training_mode": "search_distillation",
-            "teacher_target_temperature": teacher_target_temperature,
-        },
+        bundle_version=bundle_version,
+        extra_metadata=dagger_bundle_metadata,
         workers=workers,
         trainer_backend=trainer_backend,
         trainer_batch_size=trainer_batch_size,
@@ -2471,10 +2478,8 @@ def train_with_dagger(
             auction_rollout_depth=auction_rollout_depth,
             gradient_clip=gradient_clip,
             bot_id=bot_id,
-            extra_metadata={
-                "training_mode": "search_distillation",
-                "teacher_target_temperature": teacher_target_temperature,
-            },
+            bundle_version=bundle_version,
+            extra_metadata=dagger_bundle_metadata,
             workers=workers,
             trainer_backend=trainer_backend,
             trainer_batch_size=trainer_batch_size,
@@ -2524,7 +2529,9 @@ def train_with_dagger(
 
 
 def save_model_bundle(bundle: dict, output_path: str | Path) -> None:
-    Path(output_path).write_text(json.dumps(bundle), encoding="utf-8")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(bundle), encoding="utf-8")
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

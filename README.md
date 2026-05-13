@@ -201,6 +201,30 @@ For reproducible fair comparisons, add `--seed`. In fair mode, each batch of rot
 python -m backend.simulator --fair --seed 0 60 50 o-3-trick-minmax greedy
 ```
 
+For a long-running console-only ladder across the ready bot pool, use `continuous-sim`:
+
+```bash
+python continuous-sim --duration-hours 8 --workers 4
+```
+
+By default it uses every visible ready bot, samples three distinct bots per game, runs those free-for-all matches continuously, and keeps a live console panel updated with the current Elo table plus compact per-match progress rows.
+
+When only two bots are selected, `continuous-sim` fills the third seat with a `random` player so the game can still run as a three-player match. That filler seat is shown in the live match rows, but the Elo table continues to track only the selected bot pool.
+
+The Elo update is multiplayer-aware rather than winner-only:
+
+- Each match compares every rated bot to every other rated bot in the same three-player game.
+- Higher final match score at termination counts as a win for that pairwise comparison, lower score counts as a loss, and equal scores count as a draw.
+- The total Elo delta for the match is the average of those pairwise updates, scaled by the configured `--k-factor` (default `32`).
+
+Useful flags:
+
+- `--games 100` stops after a fixed number of matches.
+- `--duration-hours 8` is useful for overnight runs.
+- `--workers 1` disables parallel workers and runs serially in the current process.
+- `--bots random greedy stupid` restricts the pool to a chosen subset.
+- `--include-hidden` also adds the hidden legacy bot ids to the default pool.
+
 ### Frontend
 
 In a second terminal, you can either install and run the frontend from the repo root:

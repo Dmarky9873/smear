@@ -1,0 +1,124 @@
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from backend.continuous_sim import (
+    EloEntry,
+    _build_parallel_executor,
+    compute_multiplayer_elo_deltas,
+    iter_match_tasks,
+)
+
+
+class ContinuousSimHelperTests(unittest.TestCase):
+    def test_iter_match_tasks_samples_unique_three_player_matchups(self):
+        bot_ids = [f"bot-{index}" for index in range(10)]
+
+        task = next(
+            iter_match_tasks(
+                bot_ids,
+                alpha=50,
+                seed=0,
+            )
+        )
+
+        self.assertEqual(len(task.participants), 3)
+        rated_bot_ids = [participant.bot_id for participant in task.participants]
+        self.assertEqual(len(rated_bot_ids), 3)
+        self.assertEqual(len(set(rated_bot_ids)), 3)
+        self.assertEqual(
+            sorted(rated_bot_ids),
+            sorted(participant.seat_key for participant in task.participants),
+        )
+        self.assertTrue(set(rated_bot_ids).issubset(set(bot_ids)))
+
+    def test_iter_match_tasks_uses_random_filler_with_two_bots(self):
+        task = next(
+            iter_match_tasks(
+                ["greedy", "stupid"],
+                alpha=50,
+                seed=0,
+            )
+        )
+
+        self.assertEqual(len(task.participants), 3)
+        rated_participants = [
+            participant for participant in task.participants if participant.is_rated
+        ]
+        filler_participants = [
+            participant for participant in task.participants if not participant.is_rated
+        ]
+        self.assertEqual(sorted(participant.bot_id for participant in rated_participants), ["greedy", "stupid"])
+        self.assertEqual(len(filler_participants), 1)
+        self.assertEqual(filler_participants[0].bot_id, "random")
+
+    def test_multiplayer_elo_averages_pairwise_results(self):
+        ratings = {
+            "alpha": EloEntry(rating=1500.0),
+            "beta": EloEntry(rating=1500.0),
+            "gamma": EloEntry(rating=1500.0),
+        }
+        deltas = compute_multiplayer_elo_deltas(
+            ratings,
+            {"alpha": 21, "beta": 10, "gamma": 0},
+            k_factor=32.0,
+        )
+
+        self.assertAlmostEqual(deltas["alpha"], 16.0)
+        self.assertAlmostEqual(deltas["beta"], 0.0)
+        self.assertAlmostEqual(deltas["gamma"], -16.0)
+
+    @patch("backend.continuous_sim.ProcessPoolExecutor", side_effect=PermissionError)
+    def test_parallel_executor_falls_back_to_threads_when_processes_unavailable(
+        self,
+        _process_pool_mock,
+    ):
+        executor, executor_kind = _build_parallel_executor(2)
+        try:
+            self.assertEqual(executor_kind, "thread")
+        finally:
+            executor.shutdown(wait=True)
+
+
+class ContinuousSimEntryPointTests(unittest.TestCase):
+    def test_console_entrypoint_runs_single_serial_three_player_game(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "continuous-sim",
+                "--games",
+                "1",
+                "--workers",
+                "1",
+                "--alpha",
+                "1",
+                "--seed",
+                "0",
+                "--bots",
+                "greedy",
+                "stupid",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+        )
+        self.assertIn("Starting continuous simulation", completed.stdout)
+        self.assertIn("Continuous sim |", completed.stdout)
+        self.assertIn("Elo", completed.stdout)
+        self.assertIn("Matches", completed.stdout)
+        self.assertIn("random filler", completed.stdout)
+        self.assertIn("Final leaderboard after 1 game", completed.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

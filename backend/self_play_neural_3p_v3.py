@@ -13,6 +13,7 @@ import sys
 import time
 
 try:
+    from .bots.registry import build_ready_bot, get_ready_bot_spec
     from .bots.neural_3p_bot import NeuralThreePlayerBot
     from .bots.neural_3p_features import (
         encode_auction_state,
@@ -43,6 +44,7 @@ try:
         DEFAULT_WORKERS,
         LiveProgressDisplay,
         PendingValueExample,
+        TeacherSpec,
         TrainingDataset,
         TRAINING_ITERATION_METRICS,
         TRAINING_BACKEND_CHOICES,
@@ -62,6 +64,7 @@ try:
         train_neural_3p_bundle,
     )
 except ImportError:
+    from bots.registry import build_ready_bot, get_ready_bot_spec
     from bots.neural_3p_bot import NeuralThreePlayerBot
     from bots.neural_3p_features import (
         encode_auction_state,
@@ -92,6 +95,7 @@ except ImportError:
         DEFAULT_WORKERS,
         LiveProgressDisplay,
         PendingValueExample,
+        TeacherSpec,
         TrainingDataset,
         TRAINING_ITERATION_METRICS,
         TRAINING_BACKEND_CHOICES,
@@ -130,6 +134,7 @@ DEFAULT_TEMPERATURE_DECAY = 0.96
 DEFAULT_EPSILON_DECAY = 0.94
 THREE_PLAYER_NAMES = ["Player 1", "Player 2", "Player 3"]
 REPLAY_SHARD_FILENAME_RE = re.compile(r"^.+-iteration-\d{3,}\.json$")
+LEAGUE_INCUMBENT_OPPONENT_ID = "incumbent"
 SELF_PLAY_TRAINING_METRICS: tuple[ComparisonMetric, ...] = (
     ComparisonMetric(
         key="play_temperature",
@@ -348,6 +353,59 @@ def _persisted_replay_keep_count(
 ) -> int:
     bounded_window = replay_window if replay_window > 0 else 0
     return max(bounded_window, persisted_replay_limit)
+
+
+def parse_league_opponent_specs(opponent_pool: str | None) -> list[TeacherSpec]:
+    raw_spec = opponent_pool.strip() if opponent_pool is not None else ""
+    if not raw_spec:
+        return []
+
+    specs: list[TeacherSpec] = []
+    for token in raw_spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        bot_id, separator, raw_weight = token.partition(":")
+        cleaned_bot_id = bot_id.strip()
+        if not cleaned_bot_id:
+            raise ValueError(f"invalid league opponent token: {token!r}")
+        if cleaned_bot_id != LEAGUE_INCUMBENT_OPPONENT_ID:
+            get_ready_bot_spec(cleaned_bot_id)
+        if separator:
+            try:
+                weight = float(raw_weight)
+            except ValueError as exc:
+                raise ValueError(f"invalid league opponent weight in {token!r}") from exc
+        else:
+            weight = 1.0
+        if weight <= 0:
+            raise ValueError(f"league opponent weights must be positive: {token!r}")
+        specs.append(TeacherSpec(cleaned_bot_id, weight))
+
+    if not specs:
+        raise ValueError("league opponent pool cannot be empty")
+    return specs
+
+
+def _serialize_league_opponent_specs(
+    league_opponent_specs: list[TeacherSpec],
+) -> list[dict[str, float | str]]:
+    return [
+        {"bot_id": opponent_spec.bot_id, "weight": opponent_spec.weight}
+        for opponent_spec in league_opponent_specs
+    ]
+
+
+def _format_league_pool(league_opponent_specs: list[TeacherSpec]) -> str:
+    if not league_opponent_specs:
+        return "-"
+    formatted_tokens: list[str] = []
+    for opponent_spec in league_opponent_specs:
+        if abs(opponent_spec.weight - 1.0) < 1e-9:
+            formatted_tokens.append(opponent_spec.bot_id)
+        else:
+            formatted_tokens.append(f"{opponent_spec.bot_id}x{opponent_spec.weight:g}")
+    return ", ".join(formatted_tokens)
 
 
 def resolve_self_play_exploration(
@@ -669,14 +727,81 @@ def _sample_index(
     return len(scores) - 1
 
 
-def _build_self_play_bots(model_bundle: dict) -> dict[str, NeuralThreePlayerBot]:
-    return {
-        player_name: NeuralThreePlayerBot(
-            player_name,
-            model_bundle=model_bundle,
+def _build_self_play_match_controller(
+    *,
+    learner_bundle: dict,
+    seat_rng: random.Random,
+    league_opponent_specs: list[TeacherSpec] | None = None,
+    incumbent_bundle: dict | None = None,
+) -> tuple[MatchController, set[str], dict[str, int]]:
+    if not league_opponent_specs:
+        return (
+            MatchController.create(
+                num_players=3,
+                player_names=THREE_PLAYER_NAMES,
+                teams=None,
+                bots={
+                    player_name: NeuralThreePlayerBot(
+                        player_name,
+                        model_bundle=learner_bundle,
+                    )
+                    for player_name in THREE_PLAYER_NAMES
+                },
+                auto_run_bots=False,
+            ),
+            set(THREE_PLAYER_NAMES),
+            {},
         )
-        for player_name in THREE_PLAYER_NAMES
-    }
+
+    learner_player_name = seat_rng.choice(THREE_PLAYER_NAMES)
+    opponent_bot_ids = seat_rng.choices(
+        [opponent_spec.bot_id for opponent_spec in league_opponent_specs],
+        weights=[opponent_spec.weight for opponent_spec in league_opponent_specs],
+        k=len(THREE_PLAYER_NAMES) - 1,
+    )
+    bots: dict[str, object] = {}
+    player_bot_ids: dict[str, str | None] = {}
+    opponent_label_counts: dict[str, int] = {}
+    opponent_index = 0
+    learner_bot_id = learner_bundle.get("bot_id", "league-learner")
+
+    for player_name in THREE_PLAYER_NAMES:
+        if player_name == learner_player_name:
+            bots[player_name] = NeuralThreePlayerBot(
+                player_name,
+                model_bundle=learner_bundle,
+            )
+            player_bot_ids[player_name] = learner_bot_id
+            continue
+
+        sampled_bot_id = opponent_bot_ids[opponent_index]
+        opponent_index += 1
+        player_bot_ids[player_name] = sampled_bot_id
+        opponent_label_counts[sampled_bot_id] = (
+            opponent_label_counts.get(sampled_bot_id, 0) + 1
+        )
+        if sampled_bot_id == LEAGUE_INCUMBENT_OPPONENT_ID:
+            if incumbent_bundle is None:
+                raise ValueError(
+                    "league opponent pool requested incumbent but incumbent_bundle was not provided"
+                )
+            bots[player_name] = NeuralThreePlayerBot(
+                player_name,
+                model_bundle=incumbent_bundle,
+            )
+        else:
+            bots[player_name] = build_ready_bot(sampled_bot_id, player_name)
+
+    controller = MatchController.create(
+        num_players=3,
+        player_names=THREE_PLAYER_NAMES,
+        teams=None,
+        player_bot_ids={player_name: None for player_name in THREE_PLAYER_NAMES},
+        bots=bots,
+        auto_run_bots=False,
+    )
+    controller.session.player_bot_ids = player_bot_ids
+    return controller, {learner_player_name}, opponent_label_counts
 
 
 def _collect_self_play_training_dataset_worker(task: dict) -> tuple[TrainingDataset, dict]:

@@ -239,7 +239,7 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
             player_name,
             model_path=NeuralThreePlayerBot.MODEL_FILE_V4,
         ),
-        rating_fingerprint="neural-3p-v4:v1",
+        rating_fingerprint="neural-3p-v4:v2",
     ),
     ReadyBotSpec(
         id="1-trick-minmax",

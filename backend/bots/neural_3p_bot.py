@@ -44,6 +44,8 @@ class NeuralThreePlayerBot(BotPlayer):
     MODEL_DIR = Path(__file__).with_name("models")
     MODEL_FILE_V1 = MODEL_DIR / "neural_3p_v1.json"
     MODEL_FILE = MODEL_DIR / "neural_3p_v2.json"
+    DEFAULT_PLAY_ROLLOUT_DEPTH = 3
+    DEFAULT_AUCTION_ROLLOUT_DEPTH = 1
     _model_cache: dict[Path, dict] = {}
 
     def __init__(
@@ -122,6 +124,14 @@ class NeuralThreePlayerBot(BotPlayer):
                 0.0 if self._auction_value_model is None else 1.0,
             )
         )
+        self._play_rollout_depth = max(
+            int(inference.get("play_rollout_depth", self.DEFAULT_PLAY_ROLLOUT_DEPTH)),
+            1,
+        )
+        self._auction_rollout_depth = max(
+            int(inference.get("auction_rollout_depth", self.DEFAULT_AUCTION_ROLLOUT_DEPTH)),
+            1,
+        )
 
     def set_match_context(
         self,
@@ -190,6 +200,7 @@ class NeuralThreePlayerBot(BotPlayer):
         self,
         *,
         round_state: RoundState,
+        perspective_player_name: str,
         candidate_card: Card,
     ) -> float:
         if self._play_value_model is None:
@@ -206,18 +217,113 @@ class NeuralThreePlayerBot(BotPlayer):
                 match_scores=self._context_match_scores_for_round(round_state),
                 teams=self._context_teams_for_round(round_state),
                 target_score=self._context_target_score,
-                player_name=self.name,
+                player_name=perspective_player_name,
             )
             return self._normalized_utility(utility)
 
         features = encode_play_state(
             round_state=successor_round,
-            perspective_player_name=self.name,
+            perspective_player_name=perspective_player_name,
             match_scores=self._context_match_scores_for_round(round_state),
             target_score=self._context_target_score,
             auction_state=self._context_auction_state,
         )
         return self._play_value_model.score(features)
+
+    def _estimate_leaf_play_value(
+        self,
+        *,
+        round_state: RoundState,
+        perspective_player_name: str,
+    ) -> float:
+        if round_state.is_terminal:
+            utility = evaluate_terminal_round_utility(
+                round_state=round_state,
+                auction_state=self._context_auction_state,
+                match_scores=self._context_match_scores_for_round(round_state),
+                teams=self._context_teams_for_round(round_state),
+                target_score=self._context_target_score,
+                player_name=perspective_player_name,
+            )
+            return self._normalized_utility(utility)
+        if self._play_value_model is None:
+            return 0.0
+        return self._play_value_model.score(
+            encode_play_state(
+                round_state=round_state,
+                perspective_player_name=perspective_player_name,
+                match_scores=self._context_match_scores_for_round(round_state),
+                target_score=self._context_target_score,
+                auction_state=self._context_auction_state,
+            )
+        )
+
+    def _score_play_action_for_player(
+        self,
+        *,
+        round_state: RoundState,
+        perspective_player_name: str,
+        candidate_card: Card,
+    ) -> float:
+        features = encode_play_candidate(
+            round_state=round_state,
+            acting_player_name=perspective_player_name,
+            candidate_card=candidate_card,
+            match_scores=self._context_match_scores,
+            target_score=self._context_target_score,
+            auction_state=self._context_auction_state,
+        )
+        return (
+            self._play_policy_weight * self._play_model.score(features)
+            + self._play_value_weight
+            * self._estimate_play_successor_value(
+                round_state=round_state,
+                perspective_player_name=perspective_player_name,
+                candidate_card=candidate_card,
+            )
+        )
+
+    def _rollout_play_value(
+        self,
+        *,
+        round_state: RoundState,
+        perspective_player_name: str,
+        remaining_depth: int,
+    ) -> float:
+        if round_state.is_terminal or remaining_depth <= 0:
+            return self._estimate_leaf_play_value(
+                round_state=round_state,
+                perspective_player_name=perspective_player_name,
+            )
+
+        acting_player_name = round_state.current_player.name
+        legal_cards = ordered_legal_cards(round_state)
+        if not legal_cards:
+            return self._estimate_leaf_play_value(
+                round_state=round_state,
+                perspective_player_name=perspective_player_name,
+            )
+
+        chosen_card = max(
+            legal_cards,
+            key=lambda card: (
+                self._score_play_action_for_player(
+                    round_state=round_state,
+                    perspective_player_name=acting_player_name,
+                    candidate_card=card,
+                ),
+                card.code,
+            ),
+        )
+        successor_round = apply_trick_action_to_state(
+            round_state,
+            Play(round_state.current_player, chosen_card),
+        )
+        return self._rollout_play_value(
+            round_state=successor_round,
+            perspective_player_name=perspective_player_name,
+            remaining_depth=remaining_depth - 1,
+        )
 
     def _choose_card_with_model(self, round_state: RoundState) -> Card:
         legal_cards = ordered_legal_cards(round_state)
@@ -240,10 +346,21 @@ class NeuralThreePlayerBot(BotPlayer):
             key=lambda index: (
                 (self._play_policy_weight * self._play_model.score(feature_rows[index]))
                 + (
-                    self._play_value_weight
-                    * self._estimate_play_successor_value(
-                        round_state=round_state,
-                        candidate_card=legal_cards[index],
+                    self._play_value_weight * (
+                        self._rollout_play_value(
+                            round_state=apply_trick_action_to_state(
+                                round_state,
+                                Play(round_state.current_player, legal_cards[index]),
+                            ),
+                            perspective_player_name=self.name,
+                            remaining_depth=self._play_rollout_depth - 1,
+                        )
+                        if self._play_rollout_depth > 1
+                        else self._estimate_play_successor_value(
+                            round_state=round_state,
+                            perspective_player_name=self.name,
+                            candidate_card=legal_cards[index],
+                        )
                     )
                 ),
                 legal_cards[index].code,
@@ -269,6 +386,7 @@ class NeuralThreePlayerBot(BotPlayer):
         self,
         *,
         auction_state: AuctionState,
+        perspective_player_name: str,
         candidate_action: AuctionEvent,
     ) -> float:
         if self._auction_value_model is None:
@@ -278,12 +396,108 @@ class NeuralThreePlayerBot(BotPlayer):
         apply_auction_action_for_search(successor_auction, candidate_action)
         features = encode_auction_state(
             auction_state=successor_auction,
-            perspective_player_name=self.name,
+            perspective_player_name=perspective_player_name,
             hand=set(self.cards),
             match_scores=self._context_match_scores,
             target_score=self._context_target_score,
         )
         return self._auction_value_model.score(features)
+
+    def _estimate_leaf_auction_value(
+        self,
+        *,
+        auction_state: AuctionState,
+        perspective_player_name: str,
+    ) -> float:
+        if self._auction_value_model is None:
+            return 0.0
+        return self._auction_value_model.score(
+            encode_auction_state(
+                auction_state=auction_state,
+                perspective_player_name=perspective_player_name,
+                hand=set(self.cards),
+                match_scores=self._context_match_scores,
+                target_score=self._context_target_score,
+            )
+        )
+
+    def _successor_auction_state(
+        self,
+        *,
+        auction_state: AuctionState,
+        candidate_action: AuctionEvent,
+    ) -> AuctionState:
+        successor_auction = deepcopy(auction_state)
+        apply_auction_action_for_search(successor_auction, candidate_action)
+        return successor_auction
+
+    def _score_auction_action_for_player(
+        self,
+        *,
+        auction_state: AuctionState,
+        perspective_player_name: str,
+        candidate_action: AuctionEvent,
+    ) -> float:
+        features = encode_auction_candidate(
+            auction_state=auction_state,
+            acting_player_name=perspective_player_name,
+            hand=set(self.cards),
+            candidate_action=candidate_action,
+            match_scores=self._context_match_scores,
+            target_score=self._context_target_score,
+        )
+        successor_value = self._estimate_auction_successor_value(
+            auction_state=auction_state,
+            perspective_player_name=perspective_player_name,
+            candidate_action=candidate_action,
+        )
+        return (
+            self._auction_policy_weight * self._auction_model.score(features)
+            + self._auction_value_weight * successor_value
+        )
+
+    def _rollout_auction_value(
+        self,
+        *,
+        auction_state: AuctionState,
+        perspective_player_name: str,
+        remaining_depth: int,
+    ) -> float:
+        if auction_state.is_complete or remaining_depth <= 0:
+            return self._estimate_leaf_auction_value(
+                auction_state=auction_state,
+                perspective_player_name=perspective_player_name,
+            )
+
+        acting_player_name = auction_state.current_bidder_name
+        legal_actions = ordered_legal_auction_actions(auction_state)
+        if not legal_actions:
+            return self._estimate_leaf_auction_value(
+                auction_state=auction_state,
+                perspective_player_name=perspective_player_name,
+            )
+
+        chosen_action = max(
+            legal_actions,
+            key=lambda action: (
+                self._score_auction_action_for_player(
+                    auction_state=auction_state,
+                    perspective_player_name=acting_player_name,
+                    candidate_action=action,
+                ),
+                -(action.amount or 0),
+                action.action == "bid",
+            ),
+        )
+        successor_auction = self._successor_auction_state(
+            auction_state=auction_state,
+            candidate_action=chosen_action,
+        )
+        return self._rollout_auction_value(
+            auction_state=successor_auction,
+            perspective_player_name=perspective_player_name,
+            remaining_depth=remaining_depth - 1,
+        )
 
     def _choose_auction_action_with_model(
         self,
@@ -309,10 +523,21 @@ class NeuralThreePlayerBot(BotPlayer):
             key=lambda index: (
                 (self._auction_policy_weight * self._auction_model.score(feature_rows[index]))
                 + (
-                    self._auction_value_weight
-                    * self._estimate_auction_successor_value(
-                        auction_state=auction_state,
-                        candidate_action=legal_actions[index],
+                    self._auction_value_weight * (
+                        self._rollout_auction_value(
+                            auction_state=self._successor_auction_state(
+                                auction_state=auction_state,
+                                candidate_action=legal_actions[index],
+                            ),
+                            perspective_player_name=self.name,
+                            remaining_depth=self._auction_rollout_depth - 1,
+                        )
+                        if self._auction_rollout_depth > 1
+                        else self._estimate_auction_successor_value(
+                            auction_state=auction_state,
+                            perspective_player_name=self.name,
+                            candidate_action=legal_actions[index],
+                        )
                     )
                 ),
                 -(legal_actions[index].amount or 0),

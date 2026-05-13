@@ -5,19 +5,21 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 
 @dataclass(frozen=True)
 class ChoiceExample:
     candidate_features: list[list[float]]
     chosen_index: int
+    weight: float = 1.0
 
 
 @dataclass(frozen=True)
 class RegressionExample:
     features: list[float]
     target: float
+    weight: float = 1.0
 
 
 class ScalarMLP:
@@ -149,6 +151,19 @@ class ScalarMLP:
             bias2=self.bias2,
         )
 
+    def _assert_finite_parameters(self) -> None:
+        values = [self.bias2, *self.biases1, *self.weights2]
+        for row in self.weights1:
+            values.extend(row)
+        if not all(math.isfinite(value) for value in values):
+            raise FloatingPointError("model parameters became non-finite during training")
+
+    @staticmethod
+    def _clip_scalar(value: float, clip_value: float | None) -> float:
+        if clip_value is None or clip_value <= 0:
+            return value
+        return max(-clip_value, min(clip_value, value))
+
     def train_choice_examples(
         self,
         examples: list[ChoiceExample],
@@ -157,6 +172,8 @@ class ScalarMLP:
         learning_rate: float,
         l2: float = 0.0,
         seed: int = 0,
+        gradient_clip: float | None = 5.0,
+        progress_callback: Callable[[dict[str, float]], None] | None = None,
     ) -> list[dict[str, float]]:
         if epochs <= 0:
             raise ValueError("epochs must be positive")
@@ -175,12 +192,15 @@ class ScalarMLP:
             rng.shuffle(shuffled_examples)
             epoch_loss = 0.0
             epoch_correct = 0
+            total_weight = 0.0
 
             for example in shuffled_examples:
                 if not example.candidate_features:
                     raise ValueError("training examples must contain candidates")
                 if not 0 <= example.chosen_index < len(example.candidate_features):
                     raise ValueError("chosen_index is out of range for example candidates")
+                if example.weight <= 0:
+                    raise ValueError("training example weight must be positive")
 
                 hidden_by_candidate: list[list[float]] = []
                 scores: list[float] = []
@@ -198,7 +218,8 @@ class ScalarMLP:
                 denom = sum(exp_scores)
                 probabilities = [value / denom for value in exp_scores]
                 chosen_probability = max(probabilities[example.chosen_index], 1e-12)
-                epoch_loss += -math.log(chosen_probability)
+                epoch_loss += example.weight * -math.log(chosen_probability)
+                total_weight += example.weight
 
                 grad_w1 = [
                     [0.0 for _ in range(self.input_dim)]
@@ -209,9 +230,9 @@ class ScalarMLP:
                 grad_b2 = 0.0
 
                 for candidate_index, candidate_features in enumerate(example.candidate_features):
-                    grad_score = probabilities[candidate_index]
+                    grad_score = probabilities[candidate_index] * example.weight
                     if candidate_index == example.chosen_index:
-                        grad_score -= 1.0
+                        grad_score -= example.weight
 
                     hidden = hidden_by_candidate[candidate_index]
                     for hidden_index in range(self.hidden_dim):
@@ -235,23 +256,38 @@ class ScalarMLP:
                             grad_w1[hidden_index][input_index] += (
                                 l2 * self.weights1[hidden_index][input_index]
                             )
+                        grad_w1[hidden_index][input_index] = self._clip_scalar(
+                            grad_w1[hidden_index][input_index],
+                            gradient_clip,
+                        )
                         self.weights1[hidden_index][input_index] -= (
                             learning_rate * grad_w1[hidden_index][input_index]
                         )
                     if l2:
                         grad_w2[hidden_index] += l2 * self.weights2[hidden_index]
+                    grad_b1[hidden_index] = self._clip_scalar(
+                        grad_b1[hidden_index],
+                        gradient_clip,
+                    )
+                    grad_w2[hidden_index] = self._clip_scalar(
+                        grad_w2[hidden_index],
+                        gradient_clip,
+                    )
                     self.biases1[hidden_index] -= learning_rate * grad_b1[hidden_index]
                     self.weights2[hidden_index] -= learning_rate * grad_w2[hidden_index]
 
+                grad_b2 = self._clip_scalar(grad_b2, gradient_clip)
                 self.bias2 -= learning_rate * grad_b2
+                self._assert_finite_parameters()
 
-            history.append(
-                {
-                    "epoch": float(epoch_index + 1),
-                    "loss": epoch_loss / len(shuffled_examples),
-                    "accuracy": epoch_correct / len(shuffled_examples),
-                }
-            )
+            epoch_metrics = {
+                "epoch": float(epoch_index + 1),
+                "loss": epoch_loss / max(total_weight, 1e-12),
+                "accuracy": epoch_correct / len(shuffled_examples),
+            }
+            history.append(epoch_metrics)
+            if progress_callback is not None:
+                progress_callback(epoch_metrics)
 
         return history
 
@@ -263,6 +299,8 @@ class ScalarMLP:
         learning_rate: float,
         l2: float = 0.0,
         seed: int = 0,
+        gradient_clip: float | None = 5.0,
+        progress_callback: Callable[[dict[str, float]], None] | None = None,
     ) -> list[dict[str, float]]:
         if epochs <= 0:
             raise ValueError("epochs must be positive")
@@ -280,11 +318,15 @@ class ScalarMLP:
             shuffled_examples = list(examples)
             rng.shuffle(shuffled_examples)
             epoch_loss = 0.0
+            total_weight = 0.0
 
             for example in shuffled_examples:
+                if example.weight <= 0:
+                    raise ValueError("regression example weight must be positive")
                 hidden, prediction = self._forward(example.features)
                 error = prediction - example.target
-                epoch_loss += error * error
+                epoch_loss += example.weight * error * error
+                total_weight += example.weight
 
                 grad_w1 = [
                     [0.0 for _ in range(self.input_dim)]
@@ -292,7 +334,7 @@ class ScalarMLP:
                 ]
                 grad_b1 = [0.0 for _ in range(self.hidden_dim)]
                 grad_w2 = [0.0 for _ in range(self.hidden_dim)]
-                grad_b2 = 2.0 * error
+                grad_b2 = 2.0 * error * example.weight
 
                 for hidden_index in range(self.hidden_dim):
                     grad_w2[hidden_index] = grad_b2 * hidden[hidden_index]
@@ -312,21 +354,36 @@ class ScalarMLP:
                             grad_w1[hidden_index][input_index] += (
                                 l2 * self.weights1[hidden_index][input_index]
                             )
+                        grad_w1[hidden_index][input_index] = self._clip_scalar(
+                            grad_w1[hidden_index][input_index],
+                            gradient_clip,
+                        )
                         self.weights1[hidden_index][input_index] -= (
                             learning_rate * grad_w1[hidden_index][input_index]
                         )
                     if l2:
                         grad_w2[hidden_index] += l2 * self.weights2[hidden_index]
+                    grad_b1[hidden_index] = self._clip_scalar(
+                        grad_b1[hidden_index],
+                        gradient_clip,
+                    )
+                    grad_w2[hidden_index] = self._clip_scalar(
+                        grad_w2[hidden_index],
+                        gradient_clip,
+                    )
                     self.biases1[hidden_index] -= learning_rate * grad_b1[hidden_index]
                     self.weights2[hidden_index] -= learning_rate * grad_w2[hidden_index]
 
+                grad_b2 = self._clip_scalar(grad_b2, gradient_clip)
                 self.bias2 -= learning_rate * grad_b2
+                self._assert_finite_parameters()
 
-            history.append(
-                {
-                    "epoch": float(epoch_index + 1),
-                    "mse": epoch_loss / len(shuffled_examples),
-                }
-            )
+            epoch_metrics = {
+                "epoch": float(epoch_index + 1),
+                "mse": epoch_loss / max(total_weight, 1e-12),
+            }
+            history.append(epoch_metrics)
+            if progress_callback is not None:
+                progress_callback(epoch_metrics)
 
         return history

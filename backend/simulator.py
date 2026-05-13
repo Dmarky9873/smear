@@ -236,14 +236,19 @@ def _build_simulation_roster(
     return player_names, seat_model_specs, teams
 
 
-def _render_progress_bar(completed: int, total: int, width: int = 30) -> None:
+def _render_progress_bar(
+    completed: int,
+    total: int,
+    width: int = 30,
+    label: str = "Simulating games",
+) -> None:
     if total <= 0:
         return
     ratio = completed / total
     filled = int(width * ratio)
     bar = "#" * filled + "-" * (width - filled)
     sys.stderr.write(
-        f"\rSimulating games: [{bar}] {completed}/{total} ({ratio * 100:5.1f}%)"
+        f"\r{label}: [{bar}] {completed}/{total} ({ratio * 100:5.1f}%)"
     )
     if completed == total:
         sys.stderr.write("\n")
@@ -366,6 +371,7 @@ def benchmark_models(
     fair: bool = False,
     seed: int | None = None,
     three_player: bool = False,
+    progress_label: str = "Simulating games",
 ) -> dict:
     if n <= 0:
         raise ValueError("n must be positive")
@@ -446,7 +452,7 @@ def benchmark_models(
     )
 
     if show_progress:
-        _render_progress_bar(0, n)
+        _render_progress_bar(0, n, label=progress_label)
 
     started_at = time.perf_counter()
 
@@ -503,7 +509,7 @@ def benchmark_models(
                 model_results[model_key]["games_won"] += win_share
 
         if show_progress:
-            _render_progress_bar(simulation_index + 1, n)
+            _render_progress_bar(simulation_index + 1, n, label=progress_label)
 
     elapsed_seconds = time.perf_counter() - started_at
     games_per_second = n / elapsed_seconds if elapsed_seconds > 0 else None
@@ -566,6 +572,7 @@ def compare_models_objectively(
     depth: int | None = None,
     seed: int | None = 0,
     three_player: bool = False,
+    progress_label: str = "Simulating games",
 ) -> dict:
     return benchmark_models(
         n,
@@ -584,6 +591,7 @@ def compare_models_objectively(
         fair=True,
         seed=seed,
         three_player=three_player,
+        progress_label=progress_label,
     )
 
 

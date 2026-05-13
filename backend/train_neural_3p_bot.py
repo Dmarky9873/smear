@@ -4,9 +4,13 @@ import argparse
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
+import math
 import random
 from pathlib import Path
 import sys
+import time
+import threading
+from typing import Callable
 
 try:
     from .bots.neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
@@ -50,6 +54,12 @@ DEFAULT_AUCTION_VALUE_HIDDEN_DIM = 32
 DEFAULT_TEACHER_POOL = "optimal-bot:4,1-trick-minmax:2,greedy:1"
 DEFAULT_PLAY_VALUE_WEIGHT = 0.8
 DEFAULT_AUCTION_VALUE_WEIGHT = 0.55
+DEFAULT_PLAY_ROLLOUT_DEPTH = 3
+DEFAULT_AUCTION_ROLLOUT_DEPTH = 1
+DEFAULT_WARM_START_LR_SCALE = 0.35
+DEFAULT_WARM_START_EPOCH_SCALE = 0.6
+DEFAULT_GRADIENT_CLIP = 3.0
+DEFAULT_STUDENT_AGREEMENT_KEEP_PROB = 0.2
 THREE_PLAYER_NAMES = ["Player 1", "Player 2", "Player 3"]
 
 
@@ -63,6 +73,7 @@ class TeacherSpec:
 class PendingValueExample:
     player_name: str
     features: list[float]
+    weight: float = 1.0
 
 
 @dataclass
@@ -184,6 +195,223 @@ def _format_training_metrics(training_report: dict) -> str:
         f"play_value_mse={training_report['play_value_history'][-1]['mse']:.4f} "
         f"auction_value_mse={training_report['auction_value_history'][-1]['mse']:.4f}"
     )
+
+
+def _format_seconds(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _progress_bar(completed: int, total: int, width: int = 24) -> str:
+    if total <= 0:
+        return "[" + ("-" * width) + "]"
+    ratio = max(0.0, min(1.0, completed / total))
+    filled = min(width, int(round(width * ratio)))
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+
+class LiveProgressDisplay:
+    def __init__(
+        self,
+        *,
+        verbose: bool,
+        label: str,
+        total: int,
+        started_at: float,
+        refresh_interval: float = 1.0,
+    ):
+        self._verbose = verbose
+        self._label = label
+        self._total = max(total, 0)
+        self._started_at = started_at
+        self._refresh_interval = refresh_interval
+        self._completed = 0
+        self._detail = ""
+        self._estimated_total_seconds: float | None = None
+        self._last_line_length = 0
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, detail: str = "") -> None:
+        if not self._verbose:
+            return
+        with self._lock:
+            self._detail = detail
+        self._render()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def update(
+        self,
+        *,
+        completed: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        if not self._verbose:
+            return
+        with self._lock:
+            if completed is not None:
+                self._completed = max(0, min(completed, self._total))
+                elapsed = max(0.0, time.perf_counter() - self._started_at)
+                if self._completed > 0:
+                    self._estimated_total_seconds = (
+                        elapsed / self._completed
+                    ) * self._total
+            if detail is not None:
+                self._detail = detail
+        self._render()
+
+    def stop(
+        self,
+        *,
+        completed: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        if not self._verbose:
+            return
+        with self._lock:
+            if completed is not None:
+                self._completed = max(0, min(completed, self._total))
+                elapsed = max(0.0, time.perf_counter() - self._started_at)
+                if self._completed > 0:
+                    self._estimated_total_seconds = (
+                        elapsed / self._completed
+                    ) * self._total
+            if detail is not None:
+                self._detail = detail
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._refresh_interval + 0.1)
+        self._render(final=True)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._refresh_interval):
+            self._render()
+
+    def _render(self, *, final: bool = False) -> None:
+        if not self._verbose:
+            return
+        with self._lock:
+            completed = self._completed
+            detail = self._detail
+            estimated_total_seconds = self._estimated_total_seconds
+
+        elapsed = max(0.0, time.perf_counter() - self._started_at)
+        percent = (100.0 * completed / self._total) if self._total > 0 else 0.0
+        message = (
+            f"[{self._label}] {_progress_bar(completed, self._total)} "
+            f"{completed}/{self._total} ({percent:5.1f}%) "
+            f"elapsed={_format_seconds(elapsed)}"
+        )
+        if completed < self._total and estimated_total_seconds is not None:
+            eta = max(0.0, estimated_total_seconds - elapsed)
+            message += f" eta={_format_seconds(eta)}"
+        if detail:
+            message += f" {detail}"
+
+        padded_message = message.ljust(self._last_line_length)
+        sys.stderr.write("\r" + padded_message)
+        if final:
+            sys.stderr.write("\n")
+        sys.stderr.flush()
+        self._last_line_length = len(padded_message)
+
+
+def _log_progress(
+    *,
+    verbose: bool,
+    label: str,
+    completed: int,
+    total: int,
+    started_at: float,
+    detail: str = "",
+) -> None:
+    elapsed = max(0.0, time.perf_counter() - started_at)
+    rate = (completed / elapsed) if elapsed > 0 and completed > 0 else 0.0
+    remaining = max(total - completed, 0)
+    eta = (remaining / rate) if rate > 0 else 0.0
+    percent = (100.0 * completed / total) if total > 0 else 0.0
+    message = (
+        f"[{label}] {_progress_bar(completed, total)} "
+        f"{completed}/{total} ({percent:5.1f}%) "
+        f"elapsed={_format_seconds(elapsed)}"
+    )
+    if completed < total and rate > 0:
+        message += f" eta={_format_seconds(eta)}"
+    if detail:
+        message += f" {detail}"
+    _log(verbose, message)
+
+
+def _make_choice_epoch_logger(
+    *,
+    progress: LiveProgressDisplay,
+) -> Callable[[dict[str, float]], None]:
+    def _callback(metrics: dict[str, float]) -> None:
+        progress.update(
+            completed=int(metrics["epoch"]),
+            detail=f"loss={metrics['loss']:.4f} acc={metrics['accuracy']:.3f}",
+        )
+
+    return _callback
+
+
+def _make_regression_epoch_logger(
+    *,
+    progress: LiveProgressDisplay,
+) -> Callable[[dict[str, float]], None]:
+    def _callback(metrics: dict[str, float]) -> None:
+        progress.update(
+            completed=int(metrics["epoch"]),
+            detail=f"mse={metrics['mse']:.4f}",
+        )
+
+    return _callback
+
+
+def _assert_finite_training_report(training_report: dict) -> None:
+    final_metrics = [
+        training_report["play_history"][-1]["loss"],
+        training_report["play_history"][-1]["accuracy"],
+        training_report["auction_history"][-1]["loss"],
+        training_report["auction_history"][-1]["accuracy"],
+        training_report["play_value_history"][-1]["mse"],
+        training_report["auction_value_history"][-1]["mse"],
+    ]
+    if not all(math.isfinite(value) for value in final_metrics):
+        raise FloatingPointError("training produced non-finite metrics")
+
+
+def _scaled_epoch_count(base_epochs: int, scale: float) -> int:
+    if base_epochs <= 0:
+        raise ValueError("base_epochs must be positive")
+    if scale <= 0:
+        raise ValueError("scale must be positive")
+    return max(1, int(round(base_epochs * scale)))
+
+
+def _teacher_weight_by_bot_id(teacher_specs: list[TeacherSpec]) -> dict[str, float]:
+    return {
+        teacher_spec.bot_id: teacher_spec.weight
+        for teacher_spec in teacher_specs
+    }
+
+
+def _policy_example_weight(
+    *,
+    actor_mode: str,
+    teacher_weight: float,
+    teacher_matches_environment: bool,
+) -> float:
+    weight = max(teacher_weight, 1.0)
+    if actor_mode == "student" and not teacher_matches_environment:
+        weight *= 2.5
+    return weight
 
 
 def normalize_utility(utility: float, target_score: int) -> float:
@@ -314,6 +542,7 @@ def _collect_rollout_examples(
     alpha: int,
     seed: int,
     student_bundle: dict | None = None,
+    student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     if actor_mode not in {"teacher", "student"}:
@@ -326,9 +555,17 @@ def _collect_rollout_examples(
     dataset = TrainingDataset()
     teacher_oracle = TeacherOracle(teacher_specs, seed + 10_000)
     seat_rng = random.Random(seed)
+    example_rng = random.Random(seed + 20_000)
     teacher_label_counts: dict[str, int] = {}
     acting_bot_counts: dict[str, int] = {}
-    progress_interval = max(1, match_count // 10)
+    teacher_weight_map = _teacher_weight_by_bot_id(teacher_specs)
+    started_at = time.perf_counter()
+    progress = LiveProgressDisplay(
+        verbose=verbose,
+        label=f"collect:{actor_mode}",
+        total=match_count,
+        started_at=started_at,
+    )
 
     _log(
         verbose,
@@ -337,6 +574,7 @@ def _collect_rollout_examples(
             f"seed={seed} teacher_pool={_format_teacher_pool(teacher_specs)}"
         ),
     )
+    progress.start(detail=_format_dataset_counts(dataset))
 
     for match_index in range(match_count):
         random.seed(seed + match_index)
@@ -388,23 +626,37 @@ def _collect_rollout_examples(
                             raise ValueError(
                                 f"teacher oracle selected illegal auction action {teacher_action}"
                             )
-
-                    dataset.auction_policy_examples.append(
-                        ChoiceExample(
-                            candidate_features=[
-                                encode_auction_candidate(
-                                    auction_state=auction_state,
-                                    acting_player_name=player_name,
-                                    hand=acting_hand,
-                                    candidate_action=legal_action,
-                                    match_scores=controller.session.match_scores,
-                                    target_score=controller.session.target_score,
-                                )
-                                for legal_action in legal_actions
-                            ],
-                            chosen_index=legal_actions.index(teacher_action),
-                        )
+                    example_weight = _policy_example_weight(
+                        actor_mode=actor_mode,
+                        teacher_weight=teacher_weight_map.get(teacher_bot_id, 1.0),
+                        teacher_matches_environment=(teacher_action == environment_action),
                     )
+                    keep_policy_example = True
+                    if (
+                        actor_mode == "student"
+                        and teacher_action == environment_action
+                        and example_rng.random() > student_agreement_keep_prob
+                    ):
+                        keep_policy_example = False
+
+                    if keep_policy_example:
+                        dataset.auction_policy_examples.append(
+                            ChoiceExample(
+                                candidate_features=[
+                                    encode_auction_candidate(
+                                        auction_state=auction_state,
+                                        acting_player_name=player_name,
+                                        hand=acting_hand,
+                                        candidate_action=legal_action,
+                                        match_scores=controller.session.match_scores,
+                                        target_score=controller.session.target_score,
+                                    )
+                                    for legal_action in legal_actions
+                                ],
+                                chosen_index=legal_actions.index(teacher_action),
+                                weight=example_weight,
+                            )
+                        )
                     teacher_label_counts[teacher_bot_id] = (
                         teacher_label_counts.get(teacher_bot_id, 0) + 1
                     )
@@ -427,6 +679,7 @@ def _collect_rollout_examples(
                                 match_scores=round_start_match_scores,
                                 target_score=controller.session.target_score,
                             ),
+                            weight=example_weight,
                         )
                     )
 
@@ -459,23 +712,37 @@ def _collect_rollout_examples(
                         raise ValueError(
                             f"teacher oracle selected illegal card {teacher_card.code}"
                         )
-
-                dataset.play_policy_examples.append(
-                    ChoiceExample(
-                        candidate_features=[
-                            encode_play_candidate(
-                                round_state=round_state,
-                                acting_player_name=player_name,
-                                candidate_card=legal_card,
-                                match_scores=controller.session.match_scores,
-                                target_score=controller.session.target_score,
-                                auction_state=controller.session.auction.state,
-                            )
-                            for legal_card in legal_cards
-                        ],
-                        chosen_index=legal_cards.index(teacher_card),
-                    )
+                example_weight = _policy_example_weight(
+                    actor_mode=actor_mode,
+                    teacher_weight=teacher_weight_map.get(teacher_bot_id, 1.0),
+                    teacher_matches_environment=(teacher_card == environment_card),
                 )
+                keep_policy_example = True
+                if (
+                    actor_mode == "student"
+                    and teacher_card == environment_card
+                    and example_rng.random() > student_agreement_keep_prob
+                ):
+                    keep_policy_example = False
+
+                if keep_policy_example:
+                    dataset.play_policy_examples.append(
+                        ChoiceExample(
+                            candidate_features=[
+                                encode_play_candidate(
+                                    round_state=round_state,
+                                    acting_player_name=player_name,
+                                    candidate_card=legal_card,
+                                    match_scores=controller.session.match_scores,
+                                    target_score=controller.session.target_score,
+                                    auction_state=controller.session.auction.state,
+                                )
+                                for legal_card in legal_cards
+                            ],
+                            chosen_index=legal_cards.index(teacher_card),
+                            weight=example_weight,
+                        )
+                    )
                 teacher_label_counts[teacher_bot_id] = (
                     teacher_label_counts.get(teacher_bot_id, 0) + 1
                 )
@@ -501,6 +768,7 @@ def _collect_rollout_examples(
                                 target_score=controller.session.target_score,
                                 auction_state=controller.session.auction.state,
                             ),
+                            weight=example_weight,
                         )
                     )
 
@@ -515,11 +783,19 @@ def _collect_rollout_examples(
                     round_start_match_scores=round_start_match_scores,
                 )
                 dataset.play_value_examples.extend(
-                    RegressionExample(example.features, round_targets[example.player_name])
+                    RegressionExample(
+                        example.features,
+                        round_targets[example.player_name],
+                        weight=example.weight,
+                    )
                     for example in pending_play_values
                 )
                 dataset.auction_value_examples.extend(
-                    RegressionExample(example.features, round_targets[example.player_name])
+                    RegressionExample(
+                        example.features,
+                        round_targets[example.player_name],
+                        weight=example.weight,
+                    )
                     for example in pending_auction_values
                 )
                 pending_play_values = []
@@ -532,21 +808,10 @@ def _collect_rollout_examples(
                 controller.next_round(auto_run_bots=False)
                 round_start_match_scores = dict(controller.session.match_scores)
 
-        if (
-            verbose
-            and (
-                match_index == 0
-                or match_index + 1 == match_count
-                or (match_index + 1) % progress_interval == 0
-            )
-        ):
-            _log(
-                True,
-                (
-                    f"[collect:{actor_mode}] matches={match_index + 1}/{match_count} "
-                    f"{_format_dataset_counts(dataset)}"
-                ),
-            )
+        progress.update(
+            completed=match_index + 1,
+            detail=_format_dataset_counts(dataset),
+        )
 
     report = {
         "actor_mode": actor_mode,
@@ -558,12 +823,19 @@ def _collect_rollout_examples(
         "auction_policy_examples": len(dataset.auction_policy_examples),
         "play_value_examples": len(dataset.play_value_examples),
         "auction_value_examples": len(dataset.auction_value_examples),
+        "elapsed_seconds": time.perf_counter() - started_at,
     }
+    progress.stop(
+        completed=match_count,
+        detail=_format_dataset_counts(dataset),
+    )
     _log(
         verbose,
         (
             f"[collect:{actor_mode}] done "
-            f"{_format_dataset_counts(dataset)} labels={report['teacher_label_counts']}"
+            f"{_format_dataset_counts(dataset)} "
+            f"elapsed={_format_seconds(report['elapsed_seconds'])} "
+            f"labels={report['teacher_label_counts']}"
         ),
     )
     return dataset, report
@@ -592,6 +864,7 @@ def collect_teacher_training_dataset(
     match_count: int,
     alpha: int,
     seed: int,
+    student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     return _collect_rollout_examples(
@@ -600,6 +873,7 @@ def collect_teacher_training_dataset(
         match_count=match_count,
         alpha=alpha,
         seed=seed,
+        student_agreement_keep_prob=student_agreement_keep_prob,
         verbose=verbose,
     )
 
@@ -611,6 +885,7 @@ def collect_dagger_training_dataset(
     match_count: int,
     alpha: int,
     seed: int,
+    student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     return _collect_rollout_examples(
@@ -620,6 +895,7 @@ def collect_dagger_training_dataset(
         alpha=alpha,
         seed=seed,
         student_bundle=student_bundle,
+        student_agreement_keep_prob=student_agreement_keep_prob,
         verbose=verbose,
     )
 
@@ -670,6 +946,9 @@ def train_neural_3p_bundle(
     initial_bundle: dict | None = None,
     play_value_weight: float = DEFAULT_PLAY_VALUE_WEIGHT,
     auction_value_weight: float = DEFAULT_AUCTION_VALUE_WEIGHT,
+    play_rollout_depth: int = DEFAULT_PLAY_ROLLOUT_DEPTH,
+    auction_rollout_depth: int = DEFAULT_AUCTION_ROLLOUT_DEPTH,
+    gradient_clip: float = DEFAULT_GRADIENT_CLIP,
     bot_id: str = "neural-3p-v2",
     verbose: bool = False,
 ) -> tuple[dict, dict]:
@@ -687,6 +966,7 @@ def train_neural_3p_bundle(
     play_value_input_dim = len(play_value_examples[0].features)
     auction_value_input_dim = len(auction_value_examples[0].features)
 
+    started_at = time.perf_counter()
     _log(
         verbose,
         (
@@ -694,8 +974,19 @@ def train_neural_3p_bundle(
             f"play_examples={len(play_examples)} auction_examples={len(auction_examples)} "
             f"play_value_examples={len(play_value_examples)} "
             f"auction_value_examples={len(auction_value_examples)} "
-            f"seed={seed}"
+            f"seed={seed} "
+            f"hidden_dims=({play_hidden_dim},{auction_hidden_dim},{play_value_hidden_dim},{auction_value_hidden_dim}) "
+            f"epochs=({play_epochs},{auction_epochs},{play_value_epochs},{auction_value_epochs}) "
+            f"lrs=({play_learning_rate:.4f},{auction_learning_rate:.4f},{play_value_learning_rate:.4f},{auction_value_learning_rate:.4f})"
         ),
+    )
+    _log_progress(
+        verbose=verbose,
+        label="train:models",
+        completed=0,
+        total=4,
+        started_at=started_at,
+        detail="initializing models",
     )
 
     play_model = _initialize_model(
@@ -727,33 +1018,131 @@ def train_neural_3p_bundle(
         seed=seed + 3,
     )
 
+    play_progress = LiveProgressDisplay(
+        verbose=verbose,
+        label="train:play-policy",
+        total=play_epochs,
+        started_at=time.perf_counter(),
+    )
+    play_progress.start(detail=f"examples={len(play_examples)}")
     play_history = play_model.train_choice_examples(
         play_examples,
         epochs=play_epochs,
         learning_rate=play_learning_rate,
         l2=l2,
         seed=seed,
+        gradient_clip=gradient_clip,
+        progress_callback=_make_choice_epoch_logger(
+            progress=play_progress,
+        ),
     )
+    play_progress.stop(
+        completed=play_epochs,
+        detail=(
+            f"loss={play_history[-1]['loss']:.4f} "
+            f"acc={play_history[-1]['accuracy']:.3f}"
+        ),
+    )
+    _log_progress(
+        verbose=verbose,
+        label="train:models",
+        completed=1,
+        total=4,
+        started_at=started_at,
+        detail=f"play_policy acc={play_history[-1]['accuracy']:.3f}",
+    )
+    auction_progress = LiveProgressDisplay(
+        verbose=verbose,
+        label="train:auction-policy",
+        total=auction_epochs,
+        started_at=time.perf_counter(),
+    )
+    auction_progress.start(detail=f"examples={len(auction_examples)}")
     auction_history = auction_model.train_choice_examples(
         auction_examples,
         epochs=auction_epochs,
         learning_rate=auction_learning_rate,
         l2=l2,
         seed=seed + 1,
+        gradient_clip=gradient_clip,
+        progress_callback=_make_choice_epoch_logger(
+            progress=auction_progress,
+        ),
     )
+    auction_progress.stop(
+        completed=auction_epochs,
+        detail=(
+            f"loss={auction_history[-1]['loss']:.4f} "
+            f"acc={auction_history[-1]['accuracy']:.3f}"
+        ),
+    )
+    _log_progress(
+        verbose=verbose,
+        label="train:models",
+        completed=2,
+        total=4,
+        started_at=started_at,
+        detail=f"auction_policy acc={auction_history[-1]['accuracy']:.3f}",
+    )
+    play_value_progress = LiveProgressDisplay(
+        verbose=verbose,
+        label="train:play-value",
+        total=play_value_epochs,
+        started_at=time.perf_counter(),
+    )
+    play_value_progress.start(detail=f"examples={len(play_value_examples)}")
     play_value_history = play_value_model.train_regression_examples(
         play_value_examples,
         epochs=play_value_epochs,
         learning_rate=play_value_learning_rate,
         l2=l2,
         seed=seed + 2,
+        gradient_clip=gradient_clip,
+        progress_callback=_make_regression_epoch_logger(
+            progress=play_value_progress,
+        ),
     )
+    play_value_progress.stop(
+        completed=play_value_epochs,
+        detail=f"mse={play_value_history[-1]['mse']:.4f}",
+    )
+    _log_progress(
+        verbose=verbose,
+        label="train:models",
+        completed=3,
+        total=4,
+        started_at=started_at,
+        detail=f"play_value mse={play_value_history[-1]['mse']:.4f}",
+    )
+    auction_value_progress = LiveProgressDisplay(
+        verbose=verbose,
+        label="train:auction-value",
+        total=auction_value_epochs,
+        started_at=time.perf_counter(),
+    )
+    auction_value_progress.start(detail=f"examples={len(auction_value_examples)}")
     auction_value_history = auction_value_model.train_regression_examples(
         auction_value_examples,
         epochs=auction_value_epochs,
         learning_rate=auction_value_learning_rate,
         l2=l2,
         seed=seed + 3,
+        gradient_clip=gradient_clip,
+        progress_callback=_make_regression_epoch_logger(
+            progress=auction_value_progress,
+        ),
+    )
+    auction_value_progress.stop(
+        completed=auction_value_epochs,
+        detail=f"mse={auction_value_history[-1]['mse']:.4f}",
+    )
+    _log_progress(
+        verbose=verbose,
+        label="train:models",
+        completed=4,
+        total=4,
+        started_at=started_at,
+        detail=f"auction_value mse={auction_value_history[-1]['mse']:.4f}",
     )
 
     bundle = {
@@ -769,6 +1158,8 @@ def train_neural_3p_bundle(
             "play_value_weight": play_value_weight,
             "auction_policy_weight": 1.0,
             "auction_value_weight": auction_value_weight,
+            "play_rollout_depth": play_rollout_depth,
+            "auction_rollout_depth": auction_rollout_depth,
         },
     }
     training_report = {
@@ -780,8 +1171,14 @@ def train_neural_3p_bundle(
         "auction_examples": len(auction_examples),
         "play_value_examples": len(play_value_examples),
         "auction_value_examples": len(auction_value_examples),
+        "elapsed_seconds": time.perf_counter() - started_at,
     }
-    _log(verbose, f"[train] done {_format_training_metrics(training_report)}")
+    _assert_finite_training_report(training_report)
+    _log(
+        verbose,
+        f"[train] done {_format_training_metrics(training_report)} "
+        f"elapsed={_format_seconds(training_report['elapsed_seconds'])}",
+    )
     return bundle, training_report
 
 
@@ -809,6 +1206,12 @@ def train_with_dagger(
     initial_bundle: dict | None = None,
     play_value_weight: float = DEFAULT_PLAY_VALUE_WEIGHT,
     auction_value_weight: float = DEFAULT_AUCTION_VALUE_WEIGHT,
+    play_rollout_depth: int = DEFAULT_PLAY_ROLLOUT_DEPTH,
+    auction_rollout_depth: int = DEFAULT_AUCTION_ROLLOUT_DEPTH,
+    warm_start_lr_scale: float = DEFAULT_WARM_START_LR_SCALE,
+    warm_start_epoch_scale: float = DEFAULT_WARM_START_EPOCH_SCALE,
+    gradient_clip: float = DEFAULT_GRADIENT_CLIP,
+    student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     bot_id: str = "neural-3p-v2",
     verbose: bool = False,
 ) -> tuple[dict, dict]:
@@ -816,7 +1219,9 @@ def train_with_dagger(
         verbose,
         (
             f"[dagger] bootstrap_matches={bootstrap_matches} dagger_matches={dagger_matches} "
-            f"dagger_iterations={dagger_iterations} teacher_pool={_format_teacher_pool(teacher_specs)}"
+            f"dagger_iterations={dagger_iterations} teacher_pool={_format_teacher_pool(teacher_specs)} "
+            f"warm_start_lr_scale={warm_start_lr_scale:.2f} "
+            f"warm_start_epoch_scale={warm_start_epoch_scale:.2f}"
         ),
     )
     aggregate_dataset, bootstrap_report = collect_teacher_training_dataset(
@@ -824,6 +1229,7 @@ def train_with_dagger(
         match_count=bootstrap_matches,
         alpha=alpha,
         seed=seed,
+        student_agreement_keep_prob=student_agreement_keep_prob,
         verbose=verbose,
     )
     _log(verbose, f"[dagger] bootstrap dataset {_format_dataset_counts(aggregate_dataset)}")
@@ -851,6 +1257,9 @@ def train_with_dagger(
         initial_bundle=initial_bundle,
         play_value_weight=play_value_weight,
         auction_value_weight=auction_value_weight,
+        play_rollout_depth=play_rollout_depth,
+        auction_rollout_depth=auction_rollout_depth,
+        gradient_clip=gradient_clip,
         bot_id=bot_id,
         verbose=verbose,
     )
@@ -865,6 +1274,7 @@ def train_with_dagger(
             match_count=dagger_matches,
             alpha=alpha,
             seed=seed + 1_000 + dagger_iteration,
+            student_agreement_keep_prob=student_agreement_keep_prob,
             verbose=verbose,
         )
         aggregate_dataset.extend(dagger_dataset)
@@ -884,20 +1294,27 @@ def train_with_dagger(
             auction_hidden_dim=auction_hidden_dim,
             play_value_hidden_dim=play_value_hidden_dim,
             auction_value_hidden_dim=auction_value_hidden_dim,
-            play_epochs=play_epochs,
-            auction_epochs=auction_epochs,
-            play_value_epochs=play_value_epochs,
-            auction_value_epochs=auction_value_epochs,
-            play_learning_rate=play_learning_rate,
-            auction_learning_rate=auction_learning_rate,
-            play_value_learning_rate=play_value_learning_rate,
-            auction_value_learning_rate=auction_value_learning_rate,
+            play_epochs=_scaled_epoch_count(play_epochs, warm_start_epoch_scale),
+            auction_epochs=_scaled_epoch_count(auction_epochs, warm_start_epoch_scale),
+            play_value_epochs=_scaled_epoch_count(
+                play_value_epochs, warm_start_epoch_scale
+            ),
+            auction_value_epochs=_scaled_epoch_count(
+                auction_value_epochs, warm_start_epoch_scale
+            ),
+            play_learning_rate=play_learning_rate * warm_start_lr_scale,
+            auction_learning_rate=auction_learning_rate * warm_start_lr_scale,
+            play_value_learning_rate=play_value_learning_rate * warm_start_lr_scale,
+            auction_value_learning_rate=auction_value_learning_rate * warm_start_lr_scale,
             l2=l2,
             seed=seed + (dagger_iteration + 1) * 100,
             teacher_specs=teacher_specs,
             initial_bundle=bundle,
             play_value_weight=play_value_weight,
             auction_value_weight=auction_value_weight,
+            play_rollout_depth=play_rollout_depth,
+            auction_rollout_depth=auction_rollout_depth,
+            gradient_clip=gradient_clip,
             bot_id=bot_id,
             verbose=verbose,
         )
@@ -1004,6 +1421,30 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auction-value-learning-rate", type=float, default=0.028)
     parser.add_argument("--l2", type=float, default=1e-4)
     parser.add_argument(
+        "--warm-start-lr-scale",
+        type=float,
+        default=DEFAULT_WARM_START_LR_SCALE,
+        help="multiplier applied to learning rates for DAgger retraining after bootstrap",
+    )
+    parser.add_argument(
+        "--warm-start-epoch-scale",
+        type=float,
+        default=DEFAULT_WARM_START_EPOCH_SCALE,
+        help="multiplier applied to epochs for DAgger retraining after bootstrap",
+    )
+    parser.add_argument(
+        "--gradient-clip",
+        type=float,
+        default=DEFAULT_GRADIENT_CLIP,
+        help="absolute gradient clip applied inside the dependency-free optimizer",
+    )
+    parser.add_argument(
+        "--student-agreement-keep-prob",
+        type=float,
+        default=DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+        help="when student and teacher agree during DAgger, keep this fraction of policy examples",
+    )
+    parser.add_argument(
         "--play-value-weight",
         type=float,
         default=DEFAULT_PLAY_VALUE_WEIGHT,
@@ -1014,6 +1455,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_AUCTION_VALUE_WEIGHT,
         help="runtime weight for the auction value head during one-ply lookahead",
+    )
+    parser.add_argument(
+        "--play-rollout-depth",
+        type=int,
+        default=DEFAULT_PLAY_ROLLOUT_DEPTH,
+        help="number of learned play plies to roll forward when scoring a candidate move",
+    )
+    parser.add_argument(
+        "--auction-rollout-depth",
+        type=int,
+        default=DEFAULT_AUCTION_ROLLOUT_DEPTH,
+        help="number of learned auction plies to roll forward when scoring a candidate action",
     )
     parser.add_argument(
         "--bot-id",
@@ -1070,6 +1523,12 @@ def main() -> None:
         initial_bundle=initial_bundle,
         play_value_weight=args.play_value_weight,
         auction_value_weight=args.auction_value_weight,
+        play_rollout_depth=args.play_rollout_depth,
+        auction_rollout_depth=args.auction_rollout_depth,
+        warm_start_lr_scale=args.warm_start_lr_scale,
+        warm_start_epoch_scale=args.warm_start_epoch_scale,
+        gradient_clip=args.gradient_clip,
+        student_agreement_keep_prob=args.student_agreement_keep_prob,
         bot_id=args.bot_id,
         verbose=not args.quiet,
     )

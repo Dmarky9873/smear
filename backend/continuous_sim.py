@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -21,11 +23,23 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 try:
-    from .bots.registry import HIDDEN_BOTS, READY_BOTS, build_ready_bot, get_ready_bot_spec
+    from .bots.registry import (
+        HIDDEN_BOTS,
+        READY_BOTS,
+        build_ready_bot,
+        get_ready_bot_rating_fingerprint,
+        get_ready_bot_spec,
+    )
     from .gameplay import MatchController
     from .simulator import Simulator, TARGET_SCORE
 except ImportError:
-    from bots.registry import HIDDEN_BOTS, READY_BOTS, build_ready_bot, get_ready_bot_spec
+    from bots.registry import (
+        HIDDEN_BOTS,
+        READY_BOTS,
+        build_ready_bot,
+        get_ready_bot_rating_fingerprint,
+        get_ready_bot_spec,
+    )
     from gameplay import MatchController
     from simulator import Simulator, TARGET_SCORE
 
@@ -35,12 +49,15 @@ DEFAULT_INITIAL_ELO = 1500.0
 DEFAULT_K_FACTOR = 32.0
 DEFAULT_PLAYERS_PER_GAME = 3
 DEFAULT_ELO_FILE = Path("continuous-sim-elo.json")
+DEFAULT_SCHEDULE_MODE = "balanced"
 MAX_PLAYERS = 8
 MIN_PLAYERS = 3
 MIN_RATED_BOTS = 2
 FILLER_BOT_ID = "random"
 FILLER_SEAT_KEY = "random-filler"
 ELO_FILE_VERSION = 1
+PAIRWISE_ELO_Q = math.log(10.0) / 400.0
+PAIRWISE_CI_Z = 1.959963984540054
 
 
 @dataclass(frozen=True)
@@ -78,6 +95,8 @@ class EloEntry:
     wins: int = 0
     draws: int = 0
     losses: int = 0
+    pairwise_games: int = 0
+    information: float = 0.0
 
 
 @dataclass
@@ -87,6 +106,7 @@ class ContinuousSimResult:
     ended_at: float
     ratings: dict[str, EloEntry]
     executor_kind: str = "serial"
+    schedule_mode: str = DEFAULT_SCHEDULE_MODE
 
     @property
     def elapsed_seconds(self) -> float:
@@ -228,26 +248,84 @@ def build_random_match(
     )
 
 
+def _build_balanced_cycle_entries(
+    bot_ids: Sequence[str],
+) -> list[tuple[SeatAssignment, ...]]:
+    validate_bot_pool_for_matches(bot_ids)
+    normalized_bot_ids = tuple(sorted(bot_ids))
+    if len(normalized_bot_ids) == MIN_RATED_BOTS:
+        base_trios = [tuple(
+            list(
+                SeatAssignment(seat_key=bot_id, bot_id=bot_id)
+                for bot_id in normalized_bot_ids
+            )
+            + [
+                SeatAssignment(
+                    seat_key=FILLER_SEAT_KEY,
+                    bot_id=FILLER_BOT_ID,
+                    is_rated=False,
+                )
+            ]
+        )]
+    else:
+        base_trios = [
+            tuple(SeatAssignment(seat_key=bot_id, bot_id=bot_id) for bot_id in trio_bot_ids)
+            for trio_bot_ids in itertools.combinations(
+                normalized_bot_ids,
+                players_per_game(),
+            )
+        ]
+
+    cycle_entries: list[tuple[SeatAssignment, ...]] = []
+    for trio in base_trios:
+        cycle_entries.extend(
+            tuple(permutation)
+            for permutation in itertools.permutations(trio)
+        )
+    return cycle_entries
+
+
+def schedule_cycle_size(
+    bot_ids: Sequence[str],
+    *,
+    schedule_mode: str,
+) -> int | None:
+    if schedule_mode != "balanced":
+        return None
+    return len(_build_balanced_cycle_entries(bot_ids))
+
+
 def iter_match_tasks(
     bot_ids: Sequence[str],
     *,
     alpha: int,
     seed: int | None,
+    schedule_mode: str = DEFAULT_SCHEDULE_MODE,
 ) -> Iterable[MatchTask]:
     schedule_rng = random.Random(seed)
     match_index = 1
     while True:
-        participants = build_random_match(
-            bot_ids,
-            rng=schedule_rng,
-        )
-        yield MatchTask(
-            match_index=match_index,
-            participants=participants,
-            alpha=alpha,
-            seed=schedule_rng.randrange(2**63) if seed is not None else None,
-        )
-        match_index += 1
+        if schedule_mode == "random":
+            cycle_entries = [
+                build_random_match(
+                    bot_ids,
+                    rng=schedule_rng,
+                )
+            ]
+        elif schedule_mode == "balanced":
+            cycle_entries = _build_balanced_cycle_entries(bot_ids)
+            schedule_rng.shuffle(cycle_entries)
+        else:
+            raise ValueError(f"unsupported schedule mode: {schedule_mode}")
+
+        for participants in cycle_entries:
+            yield MatchTask(
+                match_index=match_index,
+                participants=participants,
+                alpha=alpha,
+                seed=schedule_rng.randrange(2**63) if seed is not None else None,
+            )
+            match_index += 1
 
 
 def _participant_label(participant: SeatAssignment) -> str:
@@ -441,25 +519,13 @@ def compute_multiplayer_elo_deltas(
     bot_ids = list(score_by_bot)
     comparison_scale = k_factor / (len(bot_ids) - 1)
 
-    for index, bot_id in enumerate(bot_ids):
-        for opponent_id in bot_ids[index + 1:]:
-            bot_score = score_by_bot[bot_id]
-            opponent_score = score_by_bot[opponent_id]
-            if bot_score > opponent_score:
-                actual_score = 1.0
-            elif bot_score < opponent_score:
-                actual_score = 0.0
-            else:
-                actual_score = 0.5
-
-            expected_score = 1.0 / (
-                1.0
-                + 10.0
-                ** ((ratings[opponent_id].rating - ratings[bot_id].rating) / 400.0)
-            )
-            adjustment = comparison_scale * (actual_score - expected_score)
-            deltas[bot_id] += adjustment
-            deltas[opponent_id] -= adjustment
+    for bot_id, opponent_id, actual_score, expected_score in _iter_pairwise_results(
+        ratings,
+        score_by_bot,
+    ):
+        adjustment = comparison_scale * (actual_score - expected_score)
+        deltas[bot_id] += adjustment
+        deltas[opponent_id] -= adjustment
 
     return deltas
 
@@ -482,21 +548,79 @@ def _top_scoring_bot_ids(scores_by_bot: Sequence[tuple[str, int]]) -> tuple[str,
     )
 
 
+def _expected_pairwise_score(
+    bot_rating: float,
+    opponent_rating: float,
+) -> float:
+    return 1.0 / (
+        1.0 + 10.0 ** ((opponent_rating - bot_rating) / 400.0)
+    )
+
+
+def _pairwise_information(expected_score: float) -> float:
+    return (PAIRWISE_ELO_Q**2) * expected_score * (1.0 - expected_score)
+
+
+def _iter_pairwise_results(
+    ratings: dict[str, EloEntry],
+    score_by_bot: dict[str, int],
+) -> Iterable[tuple[str, str, float, float]]:
+    bot_ids = list(score_by_bot)
+    for index, bot_id in enumerate(bot_ids):
+        for opponent_id in bot_ids[index + 1:]:
+            bot_score = score_by_bot[bot_id]
+            opponent_score = score_by_bot[opponent_id]
+            if bot_score > opponent_score:
+                actual_score = 1.0
+            elif bot_score < opponent_score:
+                actual_score = 0.0
+            else:
+                actual_score = 0.5
+
+            expected_score = _expected_pairwise_score(
+                ratings[bot_id].rating,
+                ratings[opponent_id].rating,
+            )
+            yield bot_id, opponent_id, actual_score, expected_score
+
+
+def _rating_confidence_half_width(entry: EloEntry) -> float | None:
+    if entry.information <= 0:
+        return None
+    return PAIRWISE_CI_Z / math.sqrt(entry.information)
+
+
+def _format_confidence_half_width(entry: EloEntry) -> str:
+    confidence_half_width = _rating_confidence_half_width(entry)
+    if confidence_half_width is None:
+        return "--"
+    return f"±{confidence_half_width:.1f}"
+
+
 def apply_match_outcome_to_elo(
     ratings: dict[str, EloEntry],
     outcome: MatchOutcome,
     *,
     k_factor: float,
 ) -> dict[str, float]:
+    score_by_bot = dict(outcome.scores_by_bot)
+    pairwise_results = tuple(_iter_pairwise_results(ratings, score_by_bot))
     deltas = compute_multiplayer_elo_deltas(
         ratings,
-        dict(outcome.scores_by_bot),
+        score_by_bot,
         k_factor=k_factor,
     )
 
     for bot_id, delta in deltas.items():
         ratings[bot_id].rating += delta
         ratings[bot_id].games_played += 1
+
+    for bot_id, opponent_id, _actual_score, expected_score in pairwise_results:
+        information = _pairwise_information(expected_score)
+        ratings[bot_id].pairwise_games += 1
+        ratings[opponent_id].pairwise_games += 1
+        ratings[bot_id].information += information
+        ratings[opponent_id].information += information
 
     top_bots = set(_top_scoring_bot_ids(outcome.scores_by_bot))
     for bot_id, _ in outcome.scores_by_bot:
@@ -644,6 +768,23 @@ def _compact_detail_text(snapshot: MatchProgressSnapshot | None) -> str:
     return _truncate(detail, 12)
 
 
+def _format_schedule_summary(
+    *,
+    schedule_mode: str,
+    completed_games: int,
+    cycle_size: int | None,
+) -> str:
+    if schedule_mode != "balanced" or cycle_size in {None, 0}:
+        return f"Schedule | {schedule_mode}"
+
+    cycle_number = (completed_games // cycle_size) + 1
+    cycle_progress = completed_games % cycle_size
+    return (
+        f"Schedule | balanced | cycle {cycle_number} | "
+        f"{cycle_progress}/{cycle_size} in current cycle"
+    )
+
+
 def _render_match_progress_line(
     *,
     slot_index: int,
@@ -688,14 +829,15 @@ def _render_live_leaderboard_lines(
     )
     lines = [
         "Elo",
-        "  rk bot   elo     g   w   d   l     dE",
+        "  rk bot   elo   c95    g   w   d   l     dE",
     ]
     for rank, (bot_id, entry) in enumerate(ranked_rows, start=1):
         delta = 0.0 if recent_deltas is None else recent_deltas.get(bot_id, 0.0)
         delta_text = "" if recent_deltas is None or abs(delta) < 0.05 else f"{delta:+.1f}"
+        confidence_text = _format_confidence_half_width(entry)
         lines.append(
             f"  {rank:>2} {_compact_bot_name(bot_id):<4} "
-            f"{entry.rating:>6.1f} {entry.games_played:>5} "
+            f"{entry.rating:>6.1f} {confidence_text:>5} {entry.games_played:>5} "
             f"{entry.wins:>3} {entry.draws:>3} {entry.losses:>3} {delta_text:>6}"
         )
     return lines
@@ -711,6 +853,8 @@ def _render_live_progress_lines(
     ratings: dict[str, EloEntry],
     recent_deltas: dict[str, float] | None,
     last_result_text: str | None,
+    schedule_mode: str,
+    cycle_size: int | None,
 ) -> list[str]:
     if max_games is None:
         overall_summary = f"{completed_games} games complete"
@@ -720,6 +864,11 @@ def _render_live_progress_lines(
     lines = [
         f"Continuous sim | {overall_summary} | {len(active_tasks_by_slot)}/{slot_count} running",
         f"Last result | {last_result_text or 'none yet'}",
+        _format_schedule_summary(
+            schedule_mode=schedule_mode,
+            completed_games=completed_games,
+            cycle_size=cycle_size,
+        ),
         "",
     ]
     lines.extend(_render_live_leaderboard_lines(ratings, recent_deltas=recent_deltas))
@@ -751,6 +900,8 @@ def _write_progress_snapshot(
     ratings: dict[str, EloEntry],
     recent_deltas: dict[str, float] | None,
     last_result_text: str | None,
+    schedule_mode: str,
+    cycle_size: int | None,
 ) -> None:
     display.render(
         _render_live_progress_lines(
@@ -762,6 +913,8 @@ def _write_progress_snapshot(
             ratings=ratings,
             recent_deltas=recent_deltas,
             last_result_text=last_result_text,
+            schedule_mode=schedule_mode,
+            cycle_size=cycle_size,
         )
     )
 
@@ -873,15 +1026,16 @@ def render_leaderboard(
     id_width = max(len("bot"), *(len(bot_id) for bot_id in ratings))
     lines = [
         (
-            f"{'#':>2}  {'bot':<{id_width}}  {'elo':>8}  {'games':>5}  "
+            f"{'#':>2}  {'bot':<{id_width}}  {'elo':>8}  {'ci95':>6}  {'games':>5}  "
             f"{'W':>3}  {'D':>3}  {'L':>3}  {'Δ':>6}"
         )
     ]
     for rank, (bot_id, entry) in enumerate(ranked_rows, start=1):
         delta = 0.0 if recent_deltas is None else recent_deltas.get(bot_id, 0.0)
         delta_text = "" if recent_deltas is None or abs(delta) < 0.05 else f"{delta:+.1f}"
+        confidence_text = _format_confidence_half_width(entry)
         lines.append(
-            f"{rank:>2}  {bot_id:<{id_width}}  {entry.rating:>8.1f}  "
+            f"{rank:>2}  {bot_id:<{id_width}}  {entry.rating:>8.1f}  {confidence_text:>6}  "
             f"{entry.games_played:>5}  {entry.wins:>3}  {entry.draws:>3}  "
             f"{entry.losses:>3}  {delta_text:>6}"
         )
@@ -898,14 +1052,25 @@ def _build_initial_ratings(
     *,
     initial_rating: float,
     persisted_ratings: dict[str, EloEntry] | None = None,
+    persisted_fingerprints: dict[str, str] | None = None,
 ) -> dict[str, EloEntry]:
     ratings: dict[str, EloEntry] = {}
     for bot_id in bot_ids:
+        current_fingerprint = get_ready_bot_rating_fingerprint(bot_id)
+        persisted_fingerprint = (
+            bot_id
+            if persisted_fingerprints is None
+            else persisted_fingerprints.get(bot_id, bot_id)
+        )
         entry = None if persisted_ratings is None else persisted_ratings.get(bot_id)
+        if entry is not None and persisted_fingerprint != current_fingerprint:
+            entry = None
         if entry is None:
             entry = EloEntry(rating=initial_rating)
             if persisted_ratings is not None:
                 persisted_ratings[bot_id] = entry
+        if persisted_fingerprints is not None:
+            persisted_fingerprints[bot_id] = current_fingerprint
         ratings[bot_id] = entry
     return ratings
 
@@ -917,6 +1082,8 @@ def _serialize_elo_entry(entry: EloEntry) -> dict[str, float | int]:
         "wins": entry.wins,
         "draws": entry.draws,
         "losses": entry.losses,
+        "pairwise_games": entry.pairwise_games,
+        "information": round(entry.information, 12),
     }
 
 
@@ -933,18 +1100,29 @@ def _deserialize_elo_entry(
         wins = int(payload.get("wins", 0))
         draws = int(payload.get("draws", 0))
         losses = int(payload.get("losses", 0))
+        pairwise_games = int(payload.get("pairwise_games", games_played * 2))
+        information = float(
+            payload.get(
+                "information",
+                pairwise_games * _pairwise_information(0.5),
+            )
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid Elo entry for {bot_id}") from exc
 
     if rating <= 0:
         raise ValueError(f"invalid Elo entry for {bot_id}: rating must be positive")
-    if min(games_played, wins, draws, losses) < 0:
+    if min(games_played, wins, draws, losses, pairwise_games) < 0:
         raise ValueError(
             f"invalid Elo entry for {bot_id}: counters must be non-negative"
         )
     if wins + draws + losses > games_played:
         raise ValueError(
             f"invalid Elo entry for {bot_id}: result counters exceed games played"
+        )
+    if information < 0:
+        raise ValueError(
+            f"invalid Elo entry for {bot_id}: information must be non-negative"
         )
 
     return EloEntry(
@@ -953,12 +1131,16 @@ def _deserialize_elo_entry(
         wins=wins,
         draws=draws,
         losses=losses,
+        pairwise_games=pairwise_games,
+        information=information,
     )
 
 
-def load_persisted_ratings(elo_file: Path) -> dict[str, EloEntry]:
+def load_persisted_rating_state(
+    elo_file: Path,
+) -> tuple[dict[str, EloEntry], dict[str, str]]:
     if not elo_file.exists():
-        return {}
+        return {}, {}
 
     try:
         payload = json.loads(elo_file.read_text(encoding="utf-8"))
@@ -976,18 +1158,37 @@ def load_persisted_ratings(elo_file: Path) -> dict[str, EloEntry]:
         )
     if not isinstance(ratings_payload, dict):
         raise ValueError(f"invalid Elo JSON in {elo_file}: expected ratings object")
+    fingerprints_payload = payload.get("fingerprints", {})
+    if not isinstance(fingerprints_payload, dict):
+        raise ValueError(
+            f"invalid Elo JSON in {elo_file}: expected fingerprints object"
+        )
 
     ratings: dict[str, EloEntry] = {}
+    fingerprints: dict[str, str] = {}
     for bot_id, entry_payload in ratings_payload.items():
         if not isinstance(bot_id, str) or not bot_id:
             raise ValueError(f"invalid Elo JSON in {elo_file}: bad bot id")
         ratings[bot_id] = _deserialize_elo_entry(bot_id, entry_payload)
+        fingerprint = fingerprints_payload.get(bot_id, bot_id)
+        if not isinstance(fingerprint, str) or not fingerprint:
+            raise ValueError(
+                f"invalid Elo JSON in {elo_file}: bad fingerprint for {bot_id}"
+            )
+        fingerprints[bot_id] = fingerprint
+    return ratings, fingerprints
+
+
+def load_persisted_ratings(elo_file: Path) -> dict[str, EloEntry]:
+    ratings, _ = load_persisted_rating_state(elo_file)
     return ratings
 
 
 def save_persisted_ratings(
     elo_file: Path,
     ratings: dict[str, EloEntry],
+    *,
+    bot_fingerprints: dict[str, str] | None = None,
 ) -> None:
     elo_file.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -997,6 +1198,11 @@ def save_persisted_ratings(
             for bot_id, entry in sorted(ratings.items())
         },
     }
+    if bot_fingerprints is not None:
+        payload["fingerprints"] = {
+            bot_id: fingerprint
+            for bot_id, fingerprint in sorted(bot_fingerprints.items())
+        }
     temp_file = elo_file.with_name(f".{elo_file.name}.tmp")
     temp_file.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -1034,6 +1240,7 @@ def run_continuous_sim(
     leaderboard_every: int,
     elo_file: Path | None = None,
     load_from_elo_file: bool = True,
+    schedule_mode: str = DEFAULT_SCHEDULE_MODE,
 ) -> ContinuousSimResult:
     if alpha <= 0:
         raise ValueError("alpha must be positive")
@@ -1054,17 +1261,26 @@ def run_continuous_sim(
     validate_bot_pool_for_matches(resolved_bot_ids)
     if elo_file is None:
         persisted_ratings = None
+        persisted_fingerprints = None
     elif load_from_elo_file:
-        persisted_ratings = load_persisted_ratings(elo_file)
+        persisted_ratings, persisted_fingerprints = load_persisted_rating_state(
+            elo_file
+        )
     else:
         persisted_ratings = {}
+        persisted_fingerprints = {}
     ratings = _build_initial_ratings(
         resolved_bot_ids,
         initial_rating=initial_rating,
         persisted_ratings=persisted_ratings,
+        persisted_fingerprints=persisted_fingerprints,
     )
     if elo_file is not None and persisted_ratings is not None:
-        save_persisted_ratings(elo_file, persisted_ratings)
+        save_persisted_ratings(
+            elo_file,
+            persisted_ratings,
+            bot_fingerprints=persisted_fingerprints,
+        )
     started_at = time.perf_counter()
     deadline = (
         time.monotonic() + duration_seconds
@@ -1075,11 +1291,16 @@ def run_continuous_sim(
         resolved_bot_ids,
         alpha=alpha,
         seed=seed,
+        schedule_mode=schedule_mode,
     )
     completed_games = 0
     scheduled_games = 0
     progress_display = ProgressDisplay()
     slot_count = workers if max_games is None else min(workers, max_games)
+    cycle_size = schedule_cycle_size(
+        resolved_bot_ids,
+        schedule_mode=schedule_mode,
+    )
     recent_deltas: dict[str, float] | None = None
     last_result_text: str | None = None
 
@@ -1100,7 +1321,11 @@ def run_continuous_sim(
         )
         last_result_text = _format_recent_result(outcome)
         if elo_file is not None and persisted_ratings is not None:
-            save_persisted_ratings(elo_file, persisted_ratings)
+            save_persisted_ratings(
+                elo_file,
+                persisted_ratings,
+                bot_fingerprints=persisted_fingerprints,
+            )
 
     def next_task() -> MatchTask:
         nonlocal scheduled_games
@@ -1123,6 +1348,8 @@ def run_continuous_sim(
             ratings=ratings,
             recent_deltas=recent_deltas,
             last_result_text=last_result_text,
+            schedule_mode=schedule_mode,
+            cycle_size=cycle_size,
         )
 
     executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
@@ -1219,7 +1446,11 @@ def run_continuous_sim(
         progress_display.clear()
 
     if elo_file is not None and persisted_ratings is not None:
-        save_persisted_ratings(elo_file, persisted_ratings)
+        save_persisted_ratings(
+            elo_file,
+            persisted_ratings,
+            bot_fingerprints=persisted_fingerprints,
+        )
 
     ended_at = time.perf_counter()
     return ContinuousSimResult(
@@ -1228,6 +1459,7 @@ def run_continuous_sim(
         ended_at=ended_at,
         ratings=ratings,
         executor_kind=executor_kind,
+        schedule_mode=schedule_mode,
     )
 
 
@@ -1314,6 +1546,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "--initial-rating instead"
         ),
     )
+    parser.add_argument(
+        "--schedule",
+        choices=("balanced", "random"),
+        default=DEFAULT_SCHEDULE_MODE,
+        help=(
+            "match scheduling strategy; balanced cycles every trio and seat order "
+            "before repeating"
+        ),
+    )
     return parser
 
 
@@ -1335,7 +1576,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "Starting continuous simulation "
         f"with {len(bot_ids)} bots, format=3-player free-for-all "
         f"({player_count} seats{' with random filler' if uses_filler else ''}), "
-        f"workers={args.workers}, alpha={args.alpha}, "
+        f"workers={args.workers}, alpha={args.alpha}, schedule={args.schedule}, "
         f"k_factor={args.k_factor}, seed={args.seed}",
         flush=True,
     )
@@ -1373,6 +1614,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             leaderboard_every=args.leaderboard_every,
             elo_file=args.elo_file,
             load_from_elo_file=not args.fresh_ratings,
+            schedule_mode=args.schedule,
         )
     except KeyboardInterrupt:
         print("\nInterrupted by user.", flush=True)

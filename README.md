@@ -209,6 +209,8 @@ python continuous-sim --duration-hours 8 --workers 4
 
 By default it uses every visible ready bot, samples three distinct bots per game, runs those free-for-all matches continuously, and keeps a live console panel updated with the current Elo table plus compact per-match progress rows. The visible ready bot set is intentionally capped at the functional presets up through 3-trick depth; deeper minimax presets remain hidden because they are too slow for normal interactive use.
 
+The default scheduler is `balanced`, not purely random. In balanced mode, `continuous-sim` cycles through every unique three-bot trio in the selected pool and rotates all seat orders before repeating, which makes the ladder much less sensitive to sampling noise and seat-position artifacts. The live panel shows the current balanced-cycle progress as `Schedule | balanced | cycle ...`.
+
 When only two bots are selected, `continuous-sim` fills the third seat with a `random` player so the game can still run as a three-player match. That filler seat is shown in the live match rows, but the Elo table continues to track only the selected bot pool.
 
 The Elo update is multiplayer-aware rather than winner-only:
@@ -219,6 +221,8 @@ The Elo update is multiplayer-aware rather than winner-only:
 
 By default `continuous-sim` persists ratings in `continuous-sim-elo.json` at the repo root and loads that file again on the next run, so later runs keep updating the same Elo history instead of starting over. Use `--fresh-ratings` if you want to ignore the saved ladder at startup and begin from `--initial-rating`, and use `--elo-file /path/to/file.json` to point at a different ladder file.
 
+The leaderboard now includes a `c95` column, which is the approximate 95% confidence half-width for each rating. Smaller values mean the bot's position is more settled; if two bots' ratings are close and their confidence bands overlap heavily, treat them as the same tier rather than a decisive ordering.
+
 Useful flags:
 
 - `--games 100` stops after a fixed number of matches.
@@ -228,6 +232,7 @@ Useful flags:
 - `--include-hidden` also adds the hidden legacy bot ids to the default pool.
 - `--elo-file /tmp/nightly-elo.json` saves and reloads Elo from a specific JSON file.
 - `--fresh-ratings` starts from the configured initial rating instead of loading the saved Elo JSON first.
+- `--schedule balanced` uses balanced trio and seat-order cycles; `--schedule random` restores simple random sampling.
 
 ### Frontend
 

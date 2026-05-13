@@ -33,8 +33,8 @@ DEPTH_3_FAST_CANDIDATE = OptimalBotCandidate(
     play_determinization_samples=8,
 )
 
-OPTIMAL_BOT_CANDIDATE = OptimalBotCandidate(
-    id="optimal-bot",
+LEGACY_OPTIMAL_BOT_CANDIDATE = OptimalBotCandidate(
+    id="optimal-bot-legacy",
     depth=3,
     play_determinization_samples=10,
 )
@@ -51,10 +51,22 @@ DEPTH_4_SEARCH_CANDIDATE = OptimalBotCandidate(
     play_determinization_samples=10,
 )
 
+OPTIMAL_BOT_THREE_PLAYER_CANDIDATE = OptimalBotCandidate(
+    id="optimal-bot-3p",
+    depth=2,
+    play_determinization_samples=12,
+)
+
+OPTIMAL_BOT_MULTIPLAYER_CANDIDATE = OptimalBotCandidate(
+    id="optimal-bot-4p",
+    depth=3,
+    play_determinization_samples=12,
+)
+
 OPTIMAL_BOT_TUNING_CANDIDATES: tuple[OptimalBotCandidate, ...] = (
     DEPTH_2_SPEED_CANDIDATE,
     DEPTH_3_FAST_CANDIDATE,
-    OPTIMAL_BOT_CANDIDATE,
+    LEGACY_OPTIMAL_BOT_CANDIDATE,
     DEPTH_3_BASELINE_CANDIDATE,
     DEPTH_4_SEARCH_CANDIDATE,
 )

@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 from backend.continuous_sim import (
     EloEntry,
+    _build_initial_ratings,
     _build_parallel_executor,
     compute_multiplayer_elo_deltas,
     iter_match_tasks,
+    load_persisted_rating_state,
     load_persisted_ratings,
     save_persisted_ratings,
 )
@@ -38,6 +40,31 @@ class ContinuousSimHelperTests(unittest.TestCase):
         )
         self.assertTrue(set(rated_bot_ids).issubset(set(bot_ids)))
 
+    def test_balanced_schedule_covers_every_trio_and_seat_order_before_repeating(self):
+        bot_ids = ["alpha", "beta", "gamma", "delta"]
+        task_iter = iter_match_tasks(
+            bot_ids,
+            alpha=50,
+            seed=0,
+            schedule_mode="balanced",
+        )
+
+        first_cycle = [next(task_iter) for _ in range(24)]
+        seen_seat_orders = {
+            tuple(participant.bot_id for participant in task.participants)
+            for task in first_cycle
+        }
+        trio_counts: dict[tuple[str, ...], int] = {}
+        for task in first_cycle:
+            trio_key = tuple(
+                sorted(participant.bot_id for participant in task.participants)
+            )
+            trio_counts[trio_key] = trio_counts.get(trio_key, 0) + 1
+
+        self.assertEqual(len(seen_seat_orders), 24)
+        self.assertEqual(len(trio_counts), 4)
+        self.assertTrue(all(count == 6 for count in trio_counts.values()))
+
     def test_iter_match_tasks_uses_random_filler_with_two_bots(self):
         task = next(
             iter_match_tasks(
@@ -57,6 +84,22 @@ class ContinuousSimHelperTests(unittest.TestCase):
         self.assertEqual(sorted(participant.bot_id for participant in rated_participants), ["greedy", "stupid"])
         self.assertEqual(len(filler_participants), 1)
         self.assertEqual(filler_participants[0].bot_id, "random")
+
+    def test_balanced_schedule_rotates_two_bot_filler_seating(self):
+        task_iter = iter_match_tasks(
+            ["greedy", "stupid"],
+            alpha=50,
+            seed=0,
+            schedule_mode="balanced",
+        )
+
+        first_cycle = [next(task_iter) for _ in range(6)]
+        seat_orders = {
+            tuple(participant.bot_id for participant in task.participants)
+            for task in first_cycle
+        }
+
+        self.assertEqual(len(seat_orders), 6)
 
     def test_multiplayer_elo_averages_pairwise_results(self):
         ratings = {
@@ -87,15 +130,53 @@ class ContinuousSimHelperTests(unittest.TestCase):
                 )
             }
 
-            save_persisted_ratings(elo_file, original_ratings)
+            save_persisted_ratings(
+                elo_file,
+                original_ratings,
+                bot_fingerprints={"alpha": "alpha:v1"},
+            )
             loaded_ratings = load_persisted_ratings(elo_file)
+            loaded_rating_state, loaded_fingerprints = load_persisted_rating_state(
+                elo_file
+            )
 
         self.assertEqual(set(loaded_ratings), {"alpha"})
+        self.assertEqual(set(loaded_rating_state), {"alpha"})
         self.assertAlmostEqual(loaded_ratings["alpha"].rating, 1512.5)
         self.assertEqual(loaded_ratings["alpha"].games_played, 4)
         self.assertEqual(loaded_ratings["alpha"].wins, 2)
         self.assertEqual(loaded_ratings["alpha"].draws, 1)
         self.assertEqual(loaded_ratings["alpha"].losses, 1)
+        self.assertEqual(loaded_ratings["alpha"].pairwise_games, 0)
+        self.assertEqual(loaded_ratings["alpha"].information, 0.0)
+        self.assertEqual(loaded_fingerprints, {"alpha": "alpha:v1"})
+
+    def test_build_initial_ratings_resets_changed_bot_fingerprint(self):
+        persisted_ratings = {
+            "optimal-bot": EloEntry(
+                rating=1725.0,
+                games_played=40,
+                wins=24,
+                losses=16,
+            )
+        }
+        persisted_fingerprints = {
+            "optimal-bot": "optimal-bot",
+        }
+
+        ratings = _build_initial_ratings(
+            ["optimal-bot"],
+            initial_rating=1500.0,
+            persisted_ratings=persisted_ratings,
+            persisted_fingerprints=persisted_fingerprints,
+        )
+
+        self.assertEqual(ratings["optimal-bot"].rating, 1500.0)
+        self.assertEqual(ratings["optimal-bot"].games_played, 0)
+        self.assertEqual(
+            persisted_fingerprints["optimal-bot"],
+            "optimal-bot:v2",
+        )
 
     @patch("backend.continuous_sim.ProcessPoolExecutor", side_effect=PermissionError)
     def test_parallel_executor_falls_back_to_threads_when_processes_unavailable(
@@ -149,6 +230,8 @@ class ContinuousSimEntryPointTests(unittest.TestCase):
         self.assertIn("Matches", completed.stdout)
         self.assertIn("Elo file:", completed.stdout)
         self.assertIn("Elo startup: load from JSON if present", completed.stdout)
+        self.assertIn("schedule=balanced", completed.stdout)
+        self.assertIn("Schedule | balanced", completed.stdout)
         self.assertIn("random filler", completed.stdout)
         self.assertIn("Final leaderboard after 1 game", completed.stdout)
 

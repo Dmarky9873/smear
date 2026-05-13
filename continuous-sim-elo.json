@@ -1,74 +1,106 @@
 {
+  "fingerprints": {
+    "1-trick-minmax": "1-trick-minmax",
+    "2-trick-minmax": "2-trick-minmax",
+    "3-trick-minmax": "3-trick-minmax",
+    "greedy": "greedy",
+    "o-2-trick-minmax": "o-2-trick-minmax",
+    "o-3-trick-minmax": "o-3-trick-minmax",
+    "o-one-trick-minmax": "o-one-trick-minmax",
+    "optimal-bot": "optimal-bot:v2",
+    "random": "random",
+    "stupid": "stupid"
+  },
   "ratings": {
     "1-trick-minmax": {
       "draws": 0,
-      "games_played": 48,
-      "losses": 30,
-      "rating": 1552.095726,
-      "wins": 18
+      "games_played": 1446,
+      "information": 0.022378194098,
+      "losses": 891,
+      "pairwise_games": 2892,
+      "rating": 1620.562407,
+      "wins": 555
     },
     "2-trick-minmax": {
       "draws": 0,
-      "games_played": 35,
-      "losses": 24,
-      "rating": 1516.19667,
-      "wins": 11
+      "games_played": 1413,
+      "information": 0.021794977772,
+      "losses": 830,
+      "pairwise_games": 2826,
+      "rating": 1506.686843,
+      "wins": 583
     },
     "3-trick-minmax": {
       "draws": 0,
-      "games_played": 37,
-      "losses": 25,
-      "rating": 1490.830998,
-      "wins": 12
+      "games_played": 1393,
+      "information": 0.021454687084,
+      "losses": 799,
+      "pairwise_games": 2786,
+      "rating": 1640.513404,
+      "wins": 594
     },
     "greedy": {
       "draws": 0,
-      "games_played": 31,
-      "losses": 22,
-      "rating": 1497.880687,
-      "wins": 9
+      "games_played": 1443,
+      "information": 0.021887852162,
+      "losses": 1185,
+      "pairwise_games": 2886,
+      "rating": 1502.691336,
+      "wins": 258
     },
     "o-2-trick-minmax": {
       "draws": 0,
-      "games_played": 40,
-      "losses": 19,
-      "rating": 1625.943221,
-      "wins": 21
+      "games_played": 1401,
+      "information": 0.021378402372,
+      "losses": 672,
+      "pairwise_games": 2802,
+      "rating": 1667.758113,
+      "wins": 729
     },
     "o-3-trick-minmax": {
       "draws": 0,
-      "games_played": 28,
-      "losses": 9,
-      "rating": 1622.010667,
-      "wins": 19
+      "games_played": 1385,
+      "information": 0.021015463022,
+      "losses": 656,
+      "pairwise_games": 2770,
+      "rating": 1727.178116,
+      "wins": 729
     },
     "o-one-trick-minmax": {
       "draws": 0,
-      "games_played": 35,
-      "losses": 20,
-      "rating": 1578.888403,
-      "wins": 15
+      "games_played": 1374,
+      "information": 0.02114220479,
+      "losses": 747,
+      "pairwise_games": 2748,
+      "rating": 1661.940065,
+      "wins": 627
     },
     "optimal-bot": {
       "draws": 0,
-      "games_played": 38,
-      "losses": 24,
-      "rating": 1561.979528,
-      "wins": 14
+      "games_played": 298,
+      "information": 0.003776347182,
+      "losses": 170,
+      "pairwise_games": 596,
+      "rating": 1618.564191,
+      "wins": 128
     },
     "random": {
       "draws": 0,
-      "games_played": 29,
-      "losses": 29,
-      "rating": 1264.651208,
-      "wins": 0
+      "games_played": 1432,
+      "information": 0.017667495614,
+      "losses": 1430,
+      "pairwise_games": 2864,
+      "rating": 806.16474,
+      "wins": 2
     },
     "stupid": {
       "draws": 0,
-      "games_played": 36,
-      "losses": 36,
-      "rating": 1289.522892,
-      "wins": 0
+      "games_played": 1380,
+      "information": 0.018257772989,
+      "losses": 1353,
+      "pairwise_games": 2760,
+      "rating": 1188.506132,
+      "wins": 27
     }
   },
   "version": 1

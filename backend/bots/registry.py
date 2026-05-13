@@ -25,6 +25,7 @@ try:
     from .legacy_omniscient_minimax_one_trick_bot import (
         LegacyOmniscientMinimaxOneTrickPlayer,
     )
+    from .neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from .omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from .optimal_bot import OptimalBotPlayer
@@ -52,6 +53,7 @@ except ImportError:
     from bots.legacy_omniscient_minimax_one_trick_bot import (
         LegacyOmniscientMinimaxOneTrickPlayer,
     )
+    from bots.neural_3p_bot import NeuralThreePlayerBot, NeuralThreePlayerV1Bot
     from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
     from bots.optimal_bot import OptimalBotPlayer
@@ -65,6 +67,7 @@ class ReadyBotSpec:
     label: str
     description: str
     factory: Callable[[str], BotPlayer]
+    rating_fingerprint: str | None = None
 
 
 MAX_VISIBLE_PRESET_DEPTH = 3
@@ -169,10 +172,35 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
         id="optimal-bot",
         label="Optimal Bot",
         description=(
-            "Depth-3 sampled hidden-information minimax tuned to keep most of "
-            "the search strength while cutting determinization cost."
+            "Adaptive sampled hidden-information minimax that uses the stronger "
+            "depth-2 profile in three-player games and the depth-3 baseline in "
+            "larger games."
         ),
         factory=lambda player_name: OptimalBotPlayer(player_name),
+        rating_fingerprint="optimal-bot:v2",
+    ),
+    ReadyBotSpec(
+        id="neural-3p-v1",
+        label="Neural 3P v1",
+        description=(
+            "A tiny dependency-free neural policy for three-player singleton "
+            "smear, with greedy fallback outside that format."
+        ),
+        factory=lambda player_name: NeuralThreePlayerV1Bot(
+            player_name,
+            model_path=NeuralThreePlayerBot.MODEL_FILE_V1,
+        ),
+        rating_fingerprint="neural-3p-v1:v1",
+    ),
+    ReadyBotSpec(
+        id="neural-3p-v2",
+        label="Neural 3P v2",
+        description=(
+            "A dependency-free 3-player singleton neural bot with mixed-teacher "
+            "distillation, DAgger relabeling, and a value-guided one-ply lookahead."
+        ),
+        factory=lambda player_name: NeuralThreePlayerBot(player_name),
+        rating_fingerprint="neural-3p-v2:v1",
     ),
     ReadyBotSpec(
         id="1-trick-minmax",
@@ -229,6 +257,11 @@ def get_ready_bot_spec(bot_id: str) -> ReadyBotSpec:
         return READY_BOT_MAP[bot_id]
     except KeyError as exc:
         raise ValueError(f"unknown bot id: {bot_id}") from exc
+
+
+def get_ready_bot_rating_fingerprint(bot_id: str) -> str:
+    spec = get_ready_bot_spec(bot_id)
+    return spec.rating_fingerprint or spec.id
 
 
 def build_ready_bot(bot_id: str, player_name: str) -> BotPlayer:

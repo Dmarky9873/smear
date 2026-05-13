@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 import math
 import random
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
@@ -22,12 +23,18 @@ try:
     from .gameplay import MatchController
     from .models import Play
     from .self_train_neural_3p import evaluate_candidate
+    from .self_train_neural_3p import _build_incumbent_baseline_cache_from_evaluation
+    from .self_train_neural_3p import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
+    from .self_train_neural_3p import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
+    from .self_train_neural_3p import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
     from .train_neural_3p_bot import (
         ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
         DEFAULT_AUCTION_ROLLOUT_DEPTH,
         DEFAULT_AUCTION_VALUE_HIDDEN_DIM,
         DEFAULT_AUCTION_VALUE_WEIGHT,
+        DEFAULT_TRAINER_BATCH_SIZE,
+        DEFAULT_TRAINING_BACKEND,
         DEFAULT_PLAY_HIDDEN_DIM,
         DEFAULT_PLAY_ROLLOUT_DEPTH,
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
@@ -37,6 +44,7 @@ try:
         PendingValueExample,
         TrainingDataset,
         TRAINING_ITERATION_METRICS,
+        TRAINING_BACKEND_CHOICES,
         _build_training_iteration_snapshot,
         _create_parallel_executor,
         _format_seconds,
@@ -62,12 +70,18 @@ except ImportError:
     from gameplay import MatchController
     from models import Play
     from self_train_neural_3p import evaluate_candidate
+    from self_train_neural_3p import _build_incumbent_baseline_cache_from_evaluation
+    from self_train_neural_3p import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
+    from self_train_neural_3p import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
+    from self_train_neural_3p import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
     from train_neural_3p_bot import (
         ComparisonMetric,
         DEFAULT_AUCTION_HIDDEN_DIM,
         DEFAULT_AUCTION_ROLLOUT_DEPTH,
         DEFAULT_AUCTION_VALUE_HIDDEN_DIM,
         DEFAULT_AUCTION_VALUE_WEIGHT,
+        DEFAULT_TRAINER_BATCH_SIZE,
+        DEFAULT_TRAINING_BACKEND,
         DEFAULT_PLAY_HIDDEN_DIM,
         DEFAULT_PLAY_ROLLOUT_DEPTH,
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
@@ -77,6 +91,7 @@ except ImportError:
         PendingValueExample,
         TrainingDataset,
         TRAINING_ITERATION_METRICS,
+        TRAINING_BACKEND_CHOICES,
         _build_training_iteration_snapshot,
         _create_parallel_executor,
         _format_seconds,
@@ -95,9 +110,11 @@ except ImportError:
 
 DEFAULT_OUTPUT = NeuralThreePlayerBot.MODEL_FILE_V3
 DEFAULT_RUN_ROOT = NeuralThreePlayerBot.MODEL_DIR / "self_play_runs"
+DEFAULT_REPLAY_STORE_DIR = NeuralThreePlayerBot.MODEL_DIR / "self_play_replay_v3"
 DEFAULT_SELF_PLAY_MATCHES = 24
 DEFAULT_SELF_PLAY_ITERATIONS = 4
 DEFAULT_REPLAY_WINDOW = 4
+DEFAULT_PERSISTED_REPLAY_LIMIT = 32
 DEFAULT_POLICY_ADVANTAGE_THRESHOLD = 0.02
 DEFAULT_POLICY_ADVANTAGE_SCALE = 6.0
 DEFAULT_VALUE_WEIGHT_SCALE = 2.0
@@ -108,6 +125,7 @@ DEFAULT_EPSILON = 0.08
 DEFAULT_TEMPERATURE_DECAY = 0.96
 DEFAULT_EPSILON_DECAY = 0.94
 THREE_PLAYER_NAMES = ["Player 1", "Player 2", "Player 3"]
+REPLAY_SHARD_FILENAME_RE = re.compile(r"^.+-iteration-\d{3,}\.json$")
 SELF_PLAY_TRAINING_METRICS: tuple[ComparisonMetric, ...] = (
     ComparisonMetric(
         key="play_temperature",
@@ -227,14 +245,299 @@ class PendingPolicyExample:
 class SelfPlayDatasetHistory:
     iterations: list[TrainingDataset] = field(default_factory=list)
 
-    def append(self, dataset: TrainingDataset, *, replay_window: int) -> TrainingDataset:
-        self.iterations.append(dataset)
+    def trim(self, *, replay_window: int) -> None:
         if replay_window > 0:
             self.iterations = self.iterations[-replay_window:]
+
+    def aggregate(self) -> TrainingDataset:
         aggregate = TrainingDataset()
         for iteration_dataset in self.iterations:
             aggregate.extend(iteration_dataset)
         return aggregate
+
+    def append(self, dataset: TrainingDataset, *, replay_window: int) -> TrainingDataset:
+        self.iterations.append(dataset)
+        self.trim(replay_window=replay_window)
+        return self.aggregate()
+
+
+def _choice_example_to_dict(example: ChoiceExample) -> dict:
+    return {
+        "candidate_features": example.candidate_features,
+        "chosen_index": example.chosen_index,
+        "weight": example.weight,
+        "target_distribution": example.target_distribution,
+    }
+
+
+def _choice_example_from_dict(payload: dict) -> ChoiceExample:
+    return ChoiceExample(
+        candidate_features=payload["candidate_features"],
+        chosen_index=int(payload["chosen_index"]),
+        weight=float(payload.get("weight", 1.0)),
+        target_distribution=payload.get("target_distribution"),
+    )
+
+
+def _regression_example_to_dict(example: RegressionExample) -> dict:
+    return {
+        "features": example.features,
+        "target": example.target,
+        "weight": example.weight,
+    }
+
+
+def _regression_example_from_dict(payload: dict) -> RegressionExample:
+    return RegressionExample(
+        features=payload["features"],
+        target=float(payload["target"]),
+        weight=float(payload.get("weight", 1.0)),
+    )
+
+
+def _training_dataset_to_dict(dataset: TrainingDataset) -> dict:
+    return {
+        "play_policy_examples": [
+            _choice_example_to_dict(example)
+            for example in dataset.play_policy_examples
+        ],
+        "auction_policy_examples": [
+            _choice_example_to_dict(example)
+            for example in dataset.auction_policy_examples
+        ],
+        "play_value_examples": [
+            _regression_example_to_dict(example)
+            for example in dataset.play_value_examples
+        ],
+        "auction_value_examples": [
+            _regression_example_to_dict(example)
+            for example in dataset.auction_value_examples
+        ],
+    }
+
+
+def _training_dataset_from_dict(payload: dict) -> TrainingDataset:
+    return TrainingDataset(
+        play_policy_examples=[
+            _choice_example_from_dict(example_payload)
+            for example_payload in payload.get("play_policy_examples", [])
+        ],
+        auction_policy_examples=[
+            _choice_example_from_dict(example_payload)
+            for example_payload in payload.get("auction_policy_examples", [])
+        ],
+        play_value_examples=[
+            _regression_example_from_dict(example_payload)
+            for example_payload in payload.get("play_value_examples", [])
+        ],
+        auction_value_examples=[
+            _regression_example_from_dict(example_payload)
+            for example_payload in payload.get("auction_value_examples", [])
+        ],
+    )
+
+
+def _persisted_replay_keep_count(
+    *,
+    replay_window: int,
+    persisted_replay_limit: int,
+) -> int:
+    bounded_window = replay_window if replay_window > 0 else 0
+    return max(bounded_window, persisted_replay_limit)
+
+
+def resolve_self_play_exploration(
+    *,
+    play_temperature: float,
+    auction_temperature: float,
+    epsilon: float,
+    temperature_decay: float,
+    epsilon_decay: float,
+    iteration_index: int,
+) -> tuple[float, float, float]:
+    if iteration_index < 0:
+        raise ValueError("iteration_index must be non-negative")
+    return (
+        max(0.2, play_temperature * (temperature_decay ** iteration_index)),
+        max(0.15, auction_temperature * (temperature_decay ** iteration_index)),
+        max(0.01, epsilon * (epsilon_decay ** iteration_index)),
+    )
+
+
+def _replay_shard_paths(replay_store_dir: Path) -> list[Path]:
+    if not replay_store_dir.exists():
+        return []
+    return sorted(
+        path
+        for path in replay_store_dir.iterdir()
+        if path.is_file() and REPLAY_SHARD_FILENAME_RE.fullmatch(path.name)
+    )
+
+
+def save_replay_shard(
+    *,
+    replay_store_dir: Path,
+    dataset: TrainingDataset,
+    run_id: str,
+    iteration: int,
+    source_bot_id: str,
+) -> Path:
+    replay_store_dir.mkdir(parents=True, exist_ok=True)
+    shard_path = replay_store_dir / f"{run_id}-iteration-{iteration:03d}.json"
+    temp_path = replay_store_dir / f".{shard_path.name}.tmp"
+    payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "iteration": iteration,
+        "source_bot_id": source_bot_id,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "counts": {
+            "play_policy_examples": len(dataset.play_policy_examples),
+            "auction_policy_examples": len(dataset.auction_policy_examples),
+            "play_value_examples": len(dataset.play_value_examples),
+            "auction_value_examples": len(dataset.auction_value_examples),
+        },
+        "dataset": _training_dataset_to_dict(dataset),
+    }
+    try:
+        temp_path.write_text(json.dumps(payload), encoding="utf-8")
+        temp_path.replace(shard_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return shard_path
+
+
+def _load_replay_shard_dataset(
+    *,
+    shard_path: Path,
+    verbose: bool = False,
+) -> TrainingDataset | None:
+    try:
+        payload = json.loads(shard_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a JSON object")
+        schema_version = int(payload.get("schema_version", 0))
+        if schema_version != 1:
+            raise ValueError(f"unsupported schema version {schema_version}")
+        dataset_payload = payload.get("dataset")
+        if not isinstance(dataset_payload, dict):
+            raise ValueError("dataset payload must be an object")
+        return _training_dataset_from_dict(dataset_payload)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        _log(
+            verbose,
+            f"[self-play] skipping invalid replay shard path={shard_path} error={exc}",
+        )
+        return None
+
+
+def load_persisted_replay_history(
+    *,
+    replay_store_dir: Path,
+    replay_window: int,
+    persisted_replay_limit: int,
+    verbose: bool = False,
+) -> SelfPlayDatasetHistory:
+    history = SelfPlayDatasetHistory()
+    shard_paths = _replay_shard_paths(replay_store_dir)
+    skipped_shards = 0
+    keep_count = _persisted_replay_keep_count(
+        replay_window=replay_window,
+        persisted_replay_limit=persisted_replay_limit,
+    )
+    if keep_count > 0:
+        shard_paths = shard_paths[-keep_count:]
+
+    for shard_path in shard_paths:
+        dataset = _load_replay_shard_dataset(shard_path=shard_path, verbose=verbose)
+        if dataset is None:
+            skipped_shards += 1
+            continue
+        history.iterations.append(dataset)
+
+    history.trim(replay_window=replay_window)
+    aggregate_dataset = history.aggregate()
+    if skipped_shards:
+        _log(
+            verbose,
+            (
+                f"[self-play] skipped invalid replay shards={skipped_shards} "
+                f"from={replay_store_dir}"
+            ),
+        )
+    if history.iterations:
+        _log(
+            verbose,
+            (
+                f"[self-play] loaded persisted replay shards={len(history.iterations)} "
+                f"from={replay_store_dir} {_format_dataset_counts(aggregate_dataset)}"
+            ),
+        )
+    else:
+        _log(
+            verbose,
+            f"[self-play] no persisted replay shards loaded from {replay_store_dir}",
+        )
+    return history
+
+
+def prune_replay_shards(
+    *,
+    replay_store_dir: Path,
+    replay_window: int,
+    persisted_replay_limit: int,
+    verbose: bool = False,
+) -> None:
+    keep_count = _persisted_replay_keep_count(
+        replay_window=replay_window,
+        persisted_replay_limit=persisted_replay_limit,
+    )
+    if keep_count <= 0:
+        return
+
+    shard_paths = _replay_shard_paths(replay_store_dir)
+    stale_paths = shard_paths[:-keep_count]
+    for stale_path in stale_paths:
+        stale_path.unlink(missing_ok=True)
+    if stale_paths:
+        _log(
+            verbose,
+            (
+                f"[self-play] pruned replay shards removed={len(stale_paths)} "
+                f"kept={keep_count} dir={replay_store_dir}"
+            ),
+        )
+
+
+def clear_replay_shards(
+    *,
+    replay_store_dir: Path,
+    verbose: bool = False,
+) -> int:
+    shard_paths = _replay_shard_paths(replay_store_dir)
+    for shard_path in shard_paths:
+        shard_path.unlink(missing_ok=True)
+    if shard_paths:
+        _log(
+            verbose,
+            (
+                f"[self-play] cleared replay shards removed={len(shard_paths)} "
+                f"dir={replay_store_dir}"
+            ),
+        )
+    return len(shard_paths)
+
+
+def reset_replay_state_after_promotion(
+    *,
+    replay_store_dir: Path,
+    verbose: bool = False,
+) -> SelfPlayDatasetHistory:
+    clear_replay_shards(
+        replay_store_dir=replay_store_dir,
+        verbose=verbose,
+    )
+    return SelfPlayDatasetHistory()
 
 
 def _log(verbose: bool, message: str) -> None:
@@ -829,26 +1132,31 @@ def train_with_self_play(
     value_weight_scale: float = DEFAULT_VALUE_WEIGHT_SCALE,
     winner_policy_weight: float = DEFAULT_WINNER_POLICY_WEIGHT,
     gradient_clip: float = 3.0,
+    trainer_backend: str = DEFAULT_TRAINING_BACKEND,
+    trainer_batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
+    replay_history: SelfPlayDatasetHistory | None = None,
+    iteration_offset: int = 0,
     workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     current_bundle = initial_bundle
-    replay_history = SelfPlayDatasetHistory()
+    if replay_history is None:
+        replay_history = SelfPlayDatasetHistory()
     iteration_reports: list[dict] = []
     previous_iteration_snapshot: dict[str, object] | None = None
 
     for iteration_index in range(self_play_iterations):
-        iteration_temperature = max(
-            0.2,
-            play_temperature * (temperature_decay ** iteration_index),
-        )
-        iteration_auction_temperature = max(
-            0.15,
-            auction_temperature * (temperature_decay ** iteration_index),
-        )
-        iteration_epsilon = max(
-            0.01,
-            epsilon * (epsilon_decay ** iteration_index),
+        (
+            iteration_temperature,
+            iteration_auction_temperature,
+            iteration_epsilon,
+        ) = resolve_self_play_exploration(
+            play_temperature=play_temperature,
+            auction_temperature=auction_temperature,
+            epsilon=epsilon,
+            temperature_decay=temperature_decay,
+            epsilon_decay=epsilon_decay,
+            iteration_index=iteration_offset + iteration_index,
         )
         _log(
             verbose,
@@ -912,6 +1220,8 @@ def train_with_self_play(
             play_rollout_depth=play_rollout_depth,
             auction_rollout_depth=auction_rollout_depth,
             gradient_clip=gradient_clip,
+            trainer_backend=trainer_backend,
+            trainer_batch_size=trainer_batch_size,
             bot_id="neural-3p-v3",
             bundle_version=3,
             extra_metadata={
@@ -953,6 +1263,7 @@ def train_with_self_play(
                 "temperature": iteration_temperature,
                 "auction_temperature": iteration_auction_temperature,
                 "epsilon": iteration_epsilon,
+                "replay_history_iterations": len(replay_history.iterations),
                 "collection": collection_report,
                 "training": training_report,
             }
@@ -972,11 +1283,33 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--initial-model", type=Path, default=None)
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
+    parser.add_argument("--replay-store-dir", type=Path, default=DEFAULT_REPLAY_STORE_DIR)
     parser.add_argument("--promote-to", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--replay-window", type=int, default=DEFAULT_REPLAY_WINDOW)
+    parser.add_argument(
+        "--persisted-replay-limit",
+        type=int,
+        default=DEFAULT_PERSISTED_REPLAY_LIMIT,
+        help="maximum number of self-play replay shards to keep on disk",
+    )
     parser.add_argument("--eval-games", type=int, default=36)
     parser.add_argument("--eval-games-vs-optimal", type=int, default=18)
     parser.add_argument("--precheck-games", type=int, default=12)
+    parser.add_argument(
+        "--promotion-head-to-head-margin",
+        type=float,
+        default=DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN,
+    )
+    parser.add_argument(
+        "--promotion-greedy-regression-tolerance",
+        type=float,
+        default=DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE,
+    )
+    parser.add_argument(
+        "--promotion-optimal-regression-tolerance",
+        type=float,
+        default=DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
+    )
     parser.add_argument("--play-hidden-dim", type=int, default=DEFAULT_PLAY_HIDDEN_DIM)
     parser.add_argument("--auction-hidden-dim", type=int, default=DEFAULT_AUCTION_HIDDEN_DIM)
     parser.add_argument("--play-value-hidden-dim", type=int, default=DEFAULT_PLAY_VALUE_HIDDEN_DIM)
@@ -1000,6 +1333,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon", type=float, default=DEFAULT_EPSILON)
     parser.add_argument("--temperature-decay", type=float, default=DEFAULT_TEMPERATURE_DECAY)
     parser.add_argument("--epsilon-decay", type=float, default=DEFAULT_EPSILON_DECAY)
+    parser.add_argument(
+        "--trainer-backend",
+        default=DEFAULT_TRAINING_BACKEND,
+        choices=TRAINING_BACKEND_CHOICES,
+        help="training backend to use for model fitting",
+    )
+    parser.add_argument(
+        "--trainer-batch-size",
+        type=int,
+        default=DEFAULT_TRAINER_BATCH_SIZE,
+        help="mini-batch size for the PyTorch training backend",
+    )
     parser.add_argument(
         "--policy-advantage-threshold",
         type=float,
@@ -1047,19 +1392,33 @@ def main() -> None:
     best_path = run_dir / "best.json"
     report_path = run_dir / "report.jsonl"
     manifest_path = run_dir / "manifest.json"
+    replay_history = load_persisted_replay_history(
+        replay_store_dir=args.replay_store_dir,
+        replay_window=args.replay_window,
+        persisted_replay_limit=args.persisted_replay_limit,
+        verbose=verbose,
+    )
     save_model_bundle(current_best_bundle, best_path)
     manifest_path.write_text(
         json.dumps(
             {
                 "started_at": timestamp,
                 "initial_model_path": str(initial_model_path),
+                "replay_store_dir": str(args.replay_store_dir),
                 "self_play_matches": args.self_play_matches,
                 "alpha": args.alpha,
                 "replay_window": args.replay_window,
+                "persisted_replay_limit": args.persisted_replay_limit,
+                "loaded_persisted_replay_shards": len(replay_history.iterations),
                 "duration_hours": args.duration_hours,
                 "eval_games": args.eval_games,
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
                 "precheck_games": args.precheck_games,
+                "promotion_head_to_head_margin": args.promotion_head_to_head_margin,
+                "promotion_greedy_regression_tolerance": args.promotion_greedy_regression_tolerance,
+                "promotion_optimal_regression_tolerance": args.promotion_optimal_regression_tolerance,
+                "trainer_backend": args.trainer_backend,
+                "trainer_batch_size": args.trainer_batch_size,
                 "winner_policy_weight": args.winner_policy_weight,
                 "workers": args.workers,
                 "seed": args.seed,
@@ -1071,7 +1430,8 @@ def main() -> None:
         verbose,
         (
             f"[self-play] run_dir={run_dir} initial_model={initial_model_path} "
-            f"self_play_matches={args.self_play_matches} workers={args.workers}"
+            f"self_play_matches={args.self_play_matches} workers={args.workers} "
+            f"replay_store_dir={args.replay_store_dir}"
         ),
     )
 
@@ -1124,22 +1484,40 @@ def main() -> None:
             epsilon=args.epsilon,
             temperature_decay=args.temperature_decay,
             epsilon_decay=args.epsilon_decay,
+            trainer_backend=args.trainer_backend,
+            trainer_batch_size=args.trainer_batch_size,
+            iteration_offset=iteration_index - 1,
             policy_advantage_threshold=args.policy_advantage_threshold,
             policy_advantage_scale=args.policy_advantage_scale,
             value_weight_scale=args.value_weight_scale,
             winner_policy_weight=args.winner_policy_weight,
             gradient_clip=args.gradient_clip,
+            replay_history=replay_history,
             workers=args.workers,
             verbose=verbose,
         )
 
         candidate_path = checkpoints_dir / f"iteration-{iteration_index:03d}.json"
         save_model_bundle(candidate_bundle, candidate_path)
+        replay_shard_path = save_replay_shard(
+            replay_store_dir=args.replay_store_dir,
+            dataset=replay_history.iterations[-1],
+            run_id=timestamp,
+            iteration=iteration_index,
+            source_bot_id=current_best_bundle.get("bot_id", "neural-3p-v3"),
+        )
+        prune_replay_shards(
+            replay_store_dir=args.replay_store_dir,
+            replay_window=args.replay_window,
+            persisted_replay_limit=args.persisted_replay_limit,
+            verbose=verbose,
+        )
         training_report = report["self_play_iterations"][-1]["training"]
         _log(
             verbose,
             (
                 f"[self-play] iteration {iteration_index} trained checkpoint={candidate_path} "
+                f"replay_shard={replay_shard_path} "
                 f"{_format_training_metrics(training_report)} "
                 f"train_elapsed={_format_seconds(training_report.get('elapsed_seconds', 0.0))}"
             ),
@@ -1154,6 +1532,9 @@ def main() -> None:
             precheck_games=min(args.precheck_games, args.eval_games),
             seed=args.seed + (iteration_index * 10_000),
             incumbent_baselines=incumbent_baseline_cache,
+            promotion_head_to_head_margin=args.promotion_head_to_head_margin,
+            promotion_greedy_regression_tolerance=args.promotion_greedy_regression_tolerance,
+            promotion_optimal_regression_tolerance=args.promotion_optimal_regression_tolerance,
             workers=args.workers,
             verbose=verbose,
         )
@@ -1162,16 +1543,20 @@ def main() -> None:
             and evaluation_report["incumbent_vs_greedy"] is not None
             and evaluation_report["incumbent_vs_optimal"] is not None
         ):
-            incumbent_baseline_cache = {
-                "vs_greedy": evaluation_report["incumbent_vs_greedy"],
-                "vs_optimal": evaluation_report["incumbent_vs_optimal"],
-            }
+            incumbent_baseline_cache = _build_incumbent_baseline_cache_from_evaluation(
+                evaluation_report,
+                promoted_candidate=False,
+            )
         if evaluation_report["accepted"]:
             current_best_bundle = candidate_bundle
-            incumbent_baseline_cache = {
-                "vs_greedy": evaluation_report["vs_greedy"],
-                "vs_optimal": evaluation_report["vs_optimal_bot"],
-            }
+            incumbent_baseline_cache = _build_incumbent_baseline_cache_from_evaluation(
+                evaluation_report,
+                promoted_candidate=True,
+            )
+            replay_history = reset_replay_state_after_promotion(
+                replay_store_dir=args.replay_store_dir,
+                verbose=verbose,
+            )
             save_model_bundle(current_best_bundle, best_path)
             _log(verbose, f"[self-play] iteration {iteration_index} promoted candidate to {best_path}")
         else:

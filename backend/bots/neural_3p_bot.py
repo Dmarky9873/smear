@@ -613,5 +613,9 @@ class NeuralThreePlayerBot(BotPlayer):
         raise ValueError(f"{self._bundle_bot_id} only supports 3-player singleton games")
 
 
-NeuralThreePlayerV1Bot = NeuralThreePlayerBot
-NeuralThreePlayerV3Bot = NeuralThreePlayerBot
+class NeuralThreePlayerV1Bot(NeuralThreePlayerBot):
+    MODEL_FILE = NeuralThreePlayerBot.MODEL_FILE_V1
+
+
+class NeuralThreePlayerV3Bot(NeuralThreePlayerBot):
+    MODEL_FILE = NeuralThreePlayerBot.MODEL_FILE_V3

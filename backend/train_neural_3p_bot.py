@@ -26,7 +26,15 @@ try:
         ordered_legal_auction_actions,
         ordered_legal_cards,
     )
-    from .bots.neural_model import ChoiceExample, RegressionExample, ScalarMLP
+    from .bots.neural_model import (
+        ChoiceExample,
+        DEFAULT_TRAINER_BATCH_SIZE,
+        DEFAULT_TRAINING_BACKEND,
+        RegressionExample,
+        ScalarMLP,
+        TRAINING_BACKEND_CHOICES,
+        resolve_training_backend,
+    )
     from .bots.optimal_bot import OptimalBotPlayer
     from .bots.optimal_bot_tuning import OptimalBotCandidate
     from .bots.registry import build_ready_bot, get_ready_bot_spec
@@ -46,7 +54,15 @@ except ImportError:
         ordered_legal_auction_actions,
         ordered_legal_cards,
     )
-    from bots.neural_model import ChoiceExample, RegressionExample, ScalarMLP
+    from bots.neural_model import (
+        ChoiceExample,
+        DEFAULT_TRAINER_BATCH_SIZE,
+        DEFAULT_TRAINING_BACKEND,
+        RegressionExample,
+        ScalarMLP,
+        TRAINING_BACKEND_CHOICES,
+        resolve_training_backend,
+    )
     from bots.optimal_bot import OptimalBotPlayer
     from bots.optimal_bot_tuning import OptimalBotCandidate
     from bots.registry import build_ready_bot, get_ready_bot_spec
@@ -487,6 +503,21 @@ def _format_training_metrics(training_report: dict) -> str:
     )
 
 
+def _render_compact_block(
+    *,
+    prefix: str,
+    title: str,
+    rows: list[tuple[str, str]],
+) -> str:
+    lines = [f"{prefix} {title}"]
+    if not rows:
+        return "\n".join(lines)
+    label_width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        lines.append(f"  {label:<{label_width}}  {value}")
+    return "\n".join(lines)
+
+
 def _format_seconds(seconds: float) -> str:
     total_seconds = max(0, int(round(seconds)))
     minutes, secs = divmod(total_seconds, 60)
@@ -650,7 +681,7 @@ def _render_iteration_comparison_table(
     metrics: tuple[ComparisonMetric, ...] | list[ComparisonMetric],
     footer_note: str | None = None,
 ) -> str:
-    headers = ("Metric", "Previous", "Current", "Delta", "Status")
+    headers = ("metric", "prev", "now", "delta", "flag")
     rendered_rows: list[tuple[str, str, str, str, str]] = []
     changed_labels: list[str] = []
     same_labels: list[str] = []
@@ -681,33 +712,26 @@ def _render_iteration_comparison_table(
         for index, cell in enumerate(row):
             column_widths[index] = max(column_widths[index], len(cell))
 
-    def _border(fill: str = "-") -> str:
-        return "+" + "+".join(fill * (width + 2) for width in column_widths) + "+"
-
     def _row(cells: tuple[str, str, str, str, str] | tuple[str, ...]) -> str:
-        return "| " + " | ".join(
+        return "  " + "  ".join(
             cell.ljust(column_widths[index])
             for index, cell in enumerate(cells)
-        ) + " |"
+        )
 
-    lines = [f"{prefix} {title}", _border(), _row(headers), _border()]
+    lines = [f"{prefix} {title}", _row(headers)]
     for row in rendered_rows:
         lines.append(_row(row))
-    lines.append(_border())
     lines.append(
-        (
-            f"{prefix} changed={len(changed_labels)} same={len(same_labels)} "
-            f"new={len(new_labels)}"
-        )
+        f"  summary  changed {len(changed_labels)} | same {len(same_labels)} | new {len(new_labels)}"
     )
     if changed_labels:
-        lines.append(f"{prefix} changed: {_summarize_metric_labels(changed_labels)}")
+        lines.append(f"  changed  {_summarize_metric_labels(changed_labels)}")
     if same_labels:
-        lines.append(f"{prefix} same: {_summarize_metric_labels(same_labels)}")
+        lines.append(f"  same     {_summarize_metric_labels(same_labels)}")
     if new_labels:
-        lines.append(f"{prefix} new: {_summarize_metric_labels(new_labels)}")
+        lines.append(f"  new      {_summarize_metric_labels(new_labels)}")
     if footer_note:
-        lines.append(f"{prefix} note: {footer_note}")
+        lines.append(f"  note     {footer_note}")
     return "\n".join(lines)
 
 
@@ -1785,6 +1809,9 @@ def _train_model_component_worker(task: dict) -> dict:
             seed=task["seed"],
             gradient_clip=task["gradient_clip"],
             progress_callback=None,
+            backend=task["trainer_backend"],
+            batch_size=task["trainer_batch_size"],
+            torch_num_threads=task["torch_num_threads"],
         )
     else:
         history = model.train_regression_examples(
@@ -1795,6 +1822,9 @@ def _train_model_component_worker(task: dict) -> dict:
             seed=task["seed"],
             gradient_clip=task["gradient_clip"],
             progress_callback=None,
+            backend=task["trainer_backend"],
+            batch_size=task["trainer_batch_size"],
+            torch_num_threads=task["torch_num_threads"],
         )
     model._assert_finite_parameters()
     return {
@@ -1858,6 +1888,8 @@ def train_neural_3p_bundle(
     bundle_version: int = 2,
     extra_metadata: dict | None = None,
     workers: int = DEFAULT_WORKERS,
+    trainer_backend: str = DEFAULT_TRAINING_BACKEND,
+    trainer_batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     if not play_examples:
@@ -1873,20 +1905,45 @@ def train_neural_3p_bundle(
     auction_input_dim = len(auction_examples[0].candidate_features[0])
     play_value_input_dim = len(play_value_examples[0].features)
     auction_value_input_dim = len(auction_value_examples[0].features)
+    resolved_trainer_backend = resolve_training_backend(trainer_backend)
 
     started_at = time.perf_counter()
     _log(
         verbose,
-        (
-            "[train] start "
-            f"play_examples={len(play_examples)} auction_examples={len(auction_examples)} "
-            f"play_value_examples={len(play_value_examples)} "
-            f"auction_value_examples={len(auction_value_examples)} "
-            f"seed={seed} "
-            f"hidden_dims=({play_hidden_dim},{auction_hidden_dim},{play_value_hidden_dim},{auction_value_hidden_dim}) "
-            f"epochs=({play_epochs},{auction_epochs},{play_value_epochs},{auction_value_epochs}) "
-            f"lrs=({play_learning_rate:.4f},{auction_learning_rate:.4f},{play_value_learning_rate:.4f},{auction_value_learning_rate:.4f}) "
-            f"workers={workers}"
+        _render_compact_block(
+            prefix="[train]",
+            title="config",
+            rows=[
+                (
+                    "examples",
+                    (
+                        f"play {len(play_examples):,} | auction {len(auction_examples):,} | "
+                        f"play_v {len(play_value_examples):,} | auction_v {len(auction_value_examples):,}"
+                    ),
+                ),
+                (
+                    "model",
+                    (
+                        f"hidden {play_hidden_dim}/{auction_hidden_dim}/{play_value_hidden_dim}/{auction_value_hidden_dim} | "
+                        f"epochs {play_epochs}/{auction_epochs}/{play_value_epochs}/{auction_value_epochs}"
+                    ),
+                ),
+                (
+                    "optim",
+                    (
+                        f"lr {play_learning_rate:.4f}/{auction_learning_rate:.4f}/"
+                        f"{play_value_learning_rate:.4f}/{auction_value_learning_rate:.4f} | "
+                        f"l2 {l2:g} | clip {gradient_clip:g}"
+                    ),
+                ),
+                (
+                    "runtime",
+                    (
+                        f"seed {seed} | workers {workers} | trainer {resolved_trainer_backend} "
+                        f"| batch {trainer_batch_size}"
+                    ),
+                ),
+            ],
         ),
     )
     _log_progress(
@@ -1945,6 +2002,8 @@ def train_neural_3p_bundle(
             progress_callback=_make_choice_epoch_logger(
                 progress=play_progress,
             ),
+            backend=resolved_trainer_backend,
+            batch_size=trainer_batch_size,
         )
         play_progress.stop(
             completed=play_epochs,
@@ -1978,6 +2037,8 @@ def train_neural_3p_bundle(
             progress_callback=_make_choice_epoch_logger(
                 progress=auction_progress,
             ),
+            backend=resolved_trainer_backend,
+            batch_size=trainer_batch_size,
         )
         auction_progress.stop(
             completed=auction_epochs,
@@ -2011,6 +2072,8 @@ def train_neural_3p_bundle(
             progress_callback=_make_regression_epoch_logger(
                 progress=play_value_progress,
             ),
+            backend=resolved_trainer_backend,
+            batch_size=trainer_batch_size,
         )
         play_value_progress.stop(
             completed=play_value_epochs,
@@ -2041,6 +2104,8 @@ def train_neural_3p_bundle(
             progress_callback=_make_regression_epoch_logger(
                 progress=auction_value_progress,
             ),
+            backend=resolved_trainer_backend,
+            batch_size=trainer_batch_size,
         )
         auction_value_progress.stop(
             completed=auction_value_epochs,
@@ -2070,6 +2135,9 @@ def train_neural_3p_bundle(
                 "l2": l2,
                 "seed": seed,
                 "gradient_clip": gradient_clip,
+                "trainer_backend": resolved_trainer_backend,
+                "trainer_batch_size": trainer_batch_size,
+                "torch_num_threads": 1 if resolved_trainer_backend == "torch" and resolved_workers > 1 else None,
             },
             {
                 "name": "auction_model",
@@ -2081,6 +2149,9 @@ def train_neural_3p_bundle(
                 "l2": l2,
                 "seed": seed + 1,
                 "gradient_clip": gradient_clip,
+                "trainer_backend": resolved_trainer_backend,
+                "trainer_batch_size": trainer_batch_size,
+                "torch_num_threads": 1 if resolved_trainer_backend == "torch" and resolved_workers > 1 else None,
             },
             {
                 "name": "play_value_model",
@@ -2092,6 +2163,9 @@ def train_neural_3p_bundle(
                 "l2": l2,
                 "seed": seed + 2,
                 "gradient_clip": gradient_clip,
+                "trainer_backend": resolved_trainer_backend,
+                "trainer_batch_size": trainer_batch_size,
+                "torch_num_threads": 1 if resolved_trainer_backend == "torch" and resolved_workers > 1 else None,
             },
             {
                 "name": "auction_value_model",
@@ -2103,6 +2177,9 @@ def train_neural_3p_bundle(
                 "l2": l2,
                 "seed": seed + 3,
                 "gradient_clip": gradient_clip,
+                "trainer_backend": resolved_trainer_backend,
+                "trainer_batch_size": trainer_batch_size,
+                "torch_num_threads": 1 if resolved_trainer_backend == "torch" and resolved_workers > 1 else None,
             },
         ]
         results_by_name: dict[str, dict] = {}
@@ -2150,6 +2227,8 @@ def train_neural_3p_bundle(
         "auction_model": auction_model.to_dict(),
         "play_value_model": play_value_model.to_dict(),
         "auction_value_model": auction_value_model.to_dict(),
+        "trainer_backend": resolved_trainer_backend,
+        "trainer_batch_size": trainer_batch_size,
         "inference": {
             "play_policy_weight": 1.0,
             "play_value_weight": play_value_weight,
@@ -2170,13 +2249,22 @@ def train_neural_3p_bundle(
         "auction_examples": len(auction_examples),
         "play_value_examples": len(play_value_examples),
         "auction_value_examples": len(auction_value_examples),
+        "trainer_backend": resolved_trainer_backend,
+        "requested_trainer_backend": trainer_backend,
+        "trainer_batch_size": trainer_batch_size,
         "elapsed_seconds": time.perf_counter() - started_at,
     }
     _assert_finite_training_report(training_report)
     _log(
         verbose,
-        f"[train] done {_format_training_metrics(training_report)} "
-        f"elapsed={_format_seconds(training_report['elapsed_seconds'])}",
+        _render_compact_block(
+            prefix="[train]",
+            title="result",
+            rows=[
+                ("metrics", _format_training_metrics(training_report)),
+                ("elapsed", _format_seconds(training_report["elapsed_seconds"])),
+            ],
+        ),
     )
     return bundle, training_report
 
@@ -2213,20 +2301,37 @@ def train_with_dagger(
     student_agreement_keep_prob: float = DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
     teacher_sample_scale: float = DEFAULT_TEACHER_SAMPLE_SCALE,
     teacher_target_temperature: float = DEFAULT_TEACHER_TARGET_TEMPERATURE,
+    trainer_backend: str = DEFAULT_TRAINING_BACKEND,
+    trainer_batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
     workers: int = DEFAULT_WORKERS,
     bot_id: str = "neural-3p-v2",
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     _log(
         verbose,
-        (
-            f"[dagger] bootstrap_matches={bootstrap_matches} dagger_matches={dagger_matches} "
-            f"dagger_iterations={dagger_iterations} teacher_pool={_format_teacher_pool(teacher_specs)} "
-            f"warm_start_lr_scale={warm_start_lr_scale:.2f} "
-            f"warm_start_epoch_scale={warm_start_epoch_scale:.2f} "
-            f"teacher_sample_scale={teacher_sample_scale:.2f} "
-            f"teacher_target_temperature={teacher_target_temperature:.2f} "
-            f"workers={workers}"
+        _render_compact_block(
+            prefix="[dagger]",
+            title="config",
+            rows=[
+                ("teachers", _format_teacher_pool(teacher_specs)),
+                (
+                    "passes",
+                    (
+                        f"bootstrap {bootstrap_matches} | dagger {dagger_matches} x{dagger_iterations} | "
+                        f"warm lr {warm_start_lr_scale:.2f} | warm epochs {warm_start_epoch_scale:.2f}"
+                    ),
+                ),
+                (
+                    "search",
+                    (
+                        f"sample scale {teacher_sample_scale:.2f} | target temp {teacher_target_temperature:.2f}"
+                    ),
+                ),
+                (
+                    "runtime",
+                    f"workers {workers} | trainer {trainer_backend} | batch {trainer_batch_size}",
+                ),
+            ],
         ),
     )
     aggregate_dataset, bootstrap_report = collect_teacher_training_dataset(
@@ -2240,7 +2345,16 @@ def train_with_dagger(
         workers=workers,
         verbose=verbose,
     )
-    _log(verbose, f"[dagger] bootstrap dataset {_format_dataset_counts(aggregate_dataset)}")
+    _log(
+        verbose,
+        _render_compact_block(
+            prefix="[dagger]",
+            title="bootstrap",
+            rows=[
+                ("dataset", _format_dataset_counts(aggregate_dataset)),
+            ],
+        ),
+    )
 
     bundle, training_report = train_neural_3p_bundle(
         play_examples=aggregate_dataset.play_policy_examples,
@@ -2274,6 +2388,8 @@ def train_with_dagger(
             "teacher_target_temperature": teacher_target_temperature,
         },
         workers=workers,
+        trainer_backend=trainer_backend,
+        trainer_batch_size=trainer_batch_size,
         verbose=verbose,
     )
     previous_iteration_snapshot: dict[str, object] | None = None
@@ -2297,7 +2413,10 @@ def train_with_dagger(
 
     dagger_reports: list[dict] = []
     for dagger_iteration in range(dagger_iterations):
-        _log(verbose, f"[dagger] iteration {dagger_iteration + 1}/{dagger_iterations} collecting student rollouts")
+        _log(
+            verbose,
+            f"[dagger] iteration {dagger_iteration + 1}/{dagger_iterations} collect student rollouts",
+        )
         dagger_dataset, dagger_report = collect_dagger_training_dataset(
             student_bundle=bundle,
             teacher_specs=teacher_specs,
@@ -2313,9 +2432,12 @@ def train_with_dagger(
         aggregate_dataset.extend(dagger_dataset)
         _log(
             verbose,
-            (
-                f"[dagger] iteration {dagger_iteration + 1}/{dagger_iterations} "
-                f"aggregate {_format_dataset_counts(aggregate_dataset)}"
+            _render_compact_block(
+                prefix="[dagger]",
+                title=f"iteration {dagger_iteration + 1}/{dagger_iterations} dataset",
+                rows=[
+                    ("aggregate", _format_dataset_counts(aggregate_dataset)),
+                ],
             ),
         )
         bundle, training_report = train_neural_3p_bundle(
@@ -2354,6 +2476,8 @@ def train_with_dagger(
                 "teacher_target_temperature": teacher_target_temperature,
             },
             workers=workers,
+            trainer_backend=trainer_backend,
+            trainer_batch_size=trainer_batch_size,
             verbose=verbose,
         )
         _log(
@@ -2393,6 +2517,8 @@ def train_with_dagger(
         "training": training_report,
         "teacher_pool": _serialize_teacher_specs(teacher_specs),
         "teacher_target_temperature": teacher_target_temperature,
+        "requested_trainer_backend": trainer_backend,
+        "trainer_batch_size": trainer_batch_size,
     }
     return bundle, report
 
@@ -2403,7 +2529,7 @@ def save_model_bundle(bundle: dict, output_path: str | Path) -> None:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train the dependency-free 3-player singleton neural smear bot."
+        description="Train the 3-player singleton neural smear bot."
     )
     parser.add_argument(
         "--teacher",
@@ -2491,7 +2617,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--gradient-clip",
         type=float,
         default=DEFAULT_GRADIENT_CLIP,
-        help="absolute gradient clip applied inside the dependency-free optimizer",
+        help="gradient clip applied inside the model trainer backend",
     )
     parser.add_argument(
         "--student-agreement-keep-prob",
@@ -2510,6 +2636,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_TEACHER_TARGET_TEMPERATURE,
         help="softmax temperature used when distilling teacher search scores into policy targets",
+    )
+    parser.add_argument(
+        "--trainer-backend",
+        default=DEFAULT_TRAINING_BACKEND,
+        choices=TRAINING_BACKEND_CHOICES,
+        help="training backend to use for model fitting",
+    )
+    parser.add_argument(
+        "--trainer-batch-size",
+        type=int,
+        default=DEFAULT_TRAINER_BATCH_SIZE,
+        help="mini-batch size for the PyTorch training backend",
     )
     parser.add_argument(
         "--play-value-weight",
@@ -2604,6 +2742,8 @@ def main() -> None:
         student_agreement_keep_prob=args.student_agreement_keep_prob,
         teacher_sample_scale=args.teacher_sample_scale,
         teacher_target_temperature=args.teacher_target_temperature,
+        trainer_backend=args.trainer_backend,
+        trainer_batch_size=args.trainer_batch_size,
         workers=args.workers,
         bot_id=args.bot_id,
         verbose=not args.quiet,
@@ -2622,6 +2762,9 @@ def main() -> None:
             {
                 "output": str(args.output),
                 "teacher_pool": _serialize_teacher_specs(teacher_specs),
+                "trainer_backend": report["training"]["trainer_backend"],
+                "requested_trainer_backend": report["training"]["requested_trainer_backend"],
+                "trainer_batch_size": report["training"]["trainer_batch_size"],
                 "final_play_accuracy": report["training"]["play_history"][-1]["accuracy"],
                 "final_auction_accuracy": report["training"]["auction_history"][-1]["accuracy"],
                 "final_play_value_mse": report["training"]["play_value_history"][-1]["mse"],

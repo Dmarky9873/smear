@@ -7,6 +7,55 @@ import random
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+try:
+    import torch
+    from torch import nn
+except ImportError:  # pragma: no cover - exercised when torch is unavailable
+    torch = None
+    nn = None
+
+
+_TorchModuleBase = nn.Module if nn is not None else object
+
+
+DEFAULT_TRAINING_BACKEND = "auto"
+DEFAULT_TRAINER_BATCH_SIZE = 64
+TRAINING_BACKEND_CHOICES = ("auto", "python", "torch")
+
+
+def is_torch_available() -> bool:
+    return torch is not None
+
+
+def resolve_training_backend(backend: str = DEFAULT_TRAINING_BACKEND) -> str:
+    normalized_backend = backend.strip().lower()
+    if normalized_backend not in TRAINING_BACKEND_CHOICES:
+        raise ValueError(
+            f"unsupported training backend {backend!r}; expected one of {TRAINING_BACKEND_CHOICES}"
+        )
+    if normalized_backend == "auto":
+        return "torch" if is_torch_available() else "python"
+    if normalized_backend == "torch" and not is_torch_available():
+        raise ImportError(
+            "PyTorch backend requested but torch is not installed. "
+            "Install torch or use trainer backend 'python'."
+        )
+    return normalized_backend
+
+
+def _configure_torch_runtime(*, torch_num_threads: int | None) -> None:
+    if torch is None or torch_num_threads is None:
+        return
+    bounded_threads = max(1, int(torch_num_threads))
+    try:
+        torch.set_num_threads(bounded_threads)
+    except RuntimeError:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
 
 @dataclass(frozen=True)
 class ChoiceExample:
@@ -21,6 +70,29 @@ class RegressionExample:
     features: list[float]
     target: float
     weight: float = 1.0
+
+
+class _TorchScalarMLP(_TorchModuleBase):
+    def __init__(self, *, input_dim: int, hidden_dim: int):
+        super().__init__()
+        self.hidden = nn.Linear(input_dim, hidden_dim)
+        self.output = nn.Linear(hidden_dim, 1)
+
+    @classmethod
+    def from_scalar_mlp(cls, model: "ScalarMLP") -> "_TorchScalarMLP":
+        if torch is None:
+            raise ImportError("torch is required to build the PyTorch trainer")
+        module = cls(input_dim=model.input_dim, hidden_dim=model.hidden_dim)
+        with torch.no_grad():
+            module.hidden.weight.copy_(torch.tensor(model.weights1, dtype=torch.float32))
+            module.hidden.bias.copy_(torch.tensor(model.biases1, dtype=torch.float32))
+            module.output.weight.copy_(torch.tensor([model.weights2], dtype=torch.float32))
+            module.output.bias.copy_(torch.tensor([model.bias2], dtype=torch.float32))
+        return module
+
+    def forward(self, features):
+        hidden = torch.tanh(self.hidden(features))
+        return self.output(hidden).squeeze(-1)
 
 
 class ScalarMLP:
@@ -152,6 +224,12 @@ class ScalarMLP:
             bias2=self.bias2,
         )
 
+    def _overwrite_from(self, other: "ScalarMLP") -> None:
+        self.weights1 = [list(row) for row in other.weights1]
+        self.biases1 = list(other.biases1)
+        self.weights2 = list(other.weights2)
+        self.bias2 = other.bias2
+
     def _assert_finite_parameters(self) -> None:
         values = [self.bias2, *self.biases1, *self.weights2]
         for row in self.weights1:
@@ -190,7 +268,58 @@ class ScalarMLP:
             raise ValueError("target_distribution must sum to a positive value")
         return [value / total for value in example.target_distribution]
 
+    @classmethod
+    def _from_torch_module(cls, module: _TorchScalarMLP) -> "ScalarMLP":
+        if torch is None:
+            raise ImportError("torch is required to export the PyTorch trainer")
+        with torch.no_grad():
+            return cls(
+                input_dim=module.hidden.in_features,
+                hidden_dim=module.hidden.out_features,
+                weights1=module.hidden.weight.detach().cpu().tolist(),
+                biases1=module.hidden.bias.detach().cpu().tolist(),
+                weights2=module.output.weight.detach().cpu().reshape(-1).tolist(),
+                bias2=float(module.output.bias.detach().cpu().item()),
+            )
+
     def train_choice_examples(
+        self,
+        examples: list[ChoiceExample],
+        *,
+        epochs: int,
+        learning_rate: float,
+        l2: float = 0.0,
+        seed: int = 0,
+        gradient_clip: float | None = 5.0,
+        progress_callback: Callable[[dict[str, float]], None] | None = None,
+        backend: str = DEFAULT_TRAINING_BACKEND,
+        batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
+        torch_num_threads: int | None = None,
+    ) -> list[dict[str, float]]:
+        resolved_backend = resolve_training_backend(backend)
+        if resolved_backend == "torch":
+            return self._train_choice_examples_torch(
+                examples,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                l2=l2,
+                seed=seed,
+                gradient_clip=gradient_clip,
+                progress_callback=progress_callback,
+                batch_size=batch_size,
+                torch_num_threads=torch_num_threads,
+            )
+        return self._train_choice_examples_python(
+            examples,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            l2=l2,
+            seed=seed,
+            gradient_clip=gradient_clip,
+            progress_callback=progress_callback,
+        )
+
+    def _train_choice_examples_python(
         self,
         examples: list[ChoiceExample],
         *,
@@ -330,7 +459,170 @@ class ScalarMLP:
 
         return history
 
+    def _train_choice_examples_torch(
+        self,
+        examples: list[ChoiceExample],
+        *,
+        epochs: int,
+        learning_rate: float,
+        l2: float = 0.0,
+        seed: int = 0,
+        gradient_clip: float | None = 5.0,
+        progress_callback: Callable[[dict[str, float]], None] | None = None,
+        batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
+        torch_num_threads: int | None = None,
+    ) -> list[dict[str, float]]:
+        if torch is None:
+            raise ImportError("torch is required for the PyTorch trainer")
+        if epochs <= 0:
+            raise ValueError("epochs must be positive")
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if l2 < 0:
+            raise ValueError("l2 must be non-negative")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if not examples:
+            raise ValueError("at least one training example is required")
+
+        _configure_torch_runtime(torch_num_threads=torch_num_threads)
+        network = _TorchScalarMLP.from_scalar_mlp(self)
+        optimizer = torch.optim.Adam(network.parameters(), lr=learning_rate)
+
+        example_count = len(examples)
+        max_candidates = max(len(example.candidate_features) for example in examples)
+        features = torch.zeros(
+            (example_count, max_candidates, self.input_dim),
+            dtype=torch.float32,
+        )
+        mask = torch.zeros((example_count, max_candidates), dtype=torch.bool)
+        targets = torch.zeros((example_count, max_candidates), dtype=torch.float32)
+        target_indices = torch.zeros(example_count, dtype=torch.long)
+        example_weights = torch.zeros(example_count, dtype=torch.float32)
+
+        for example_index, example in enumerate(examples):
+            if not example.candidate_features:
+                raise ValueError("training examples must contain candidates")
+            if not 0 <= example.chosen_index < len(example.candidate_features):
+                raise ValueError("chosen_index is out of range for example candidates")
+            if example.weight <= 0:
+                raise ValueError("training example weight must be positive")
+            target_distribution = self._normalized_target_distribution(example)
+            candidate_count = len(example.candidate_features)
+            for candidate_index, candidate_features in enumerate(example.candidate_features):
+                self._validate_features(candidate_features)
+                features[example_index, candidate_index] = torch.tensor(
+                    candidate_features,
+                    dtype=torch.float32,
+                )
+            mask[example_index, :candidate_count] = True
+            targets[example_index, :candidate_count] = torch.tensor(
+                target_distribution,
+                dtype=torch.float32,
+            )
+            target_indices[example_index] = int(
+                max(
+                    range(candidate_count),
+                    key=lambda index: target_distribution[index],
+                )
+            )
+            example_weights[example_index] = float(example.weight)
+
+        rng = random.Random(seed)
+        history: list[dict[str, float]] = []
+        negative_inf = torch.finfo(torch.float32).min
+
+        for epoch_index in range(epochs):
+            shuffled_indices = list(range(example_count))
+            rng.shuffle(shuffled_indices)
+            epoch_loss = 0.0
+            epoch_correct = 0
+            total_weight = 0.0
+
+            for batch_start in range(0, example_count, batch_size):
+                batch_indices = shuffled_indices[batch_start : batch_start + batch_size]
+                batch_features = features[batch_indices]
+                batch_mask = mask[batch_indices]
+                batch_targets = targets[batch_indices]
+                batch_target_indices = target_indices[batch_indices]
+                batch_weights = example_weights[batch_indices]
+
+                optimizer.zero_grad()
+                scores = network(batch_features.reshape(-1, self.input_dim)).reshape(
+                    len(batch_indices),
+                    max_candidates,
+                )
+                scores = scores.masked_fill(~batch_mask, negative_inf)
+                log_probabilities = torch.log_softmax(scores, dim=1)
+                losses = -(batch_targets * log_probabilities).sum(dim=1)
+                weighted_loss = (losses * batch_weights).sum() / batch_weights.sum()
+                if l2:
+                    weighted_loss = weighted_loss + (0.5 * l2 * (
+                        network.hidden.weight.square().sum()
+                        + network.output.weight.square().sum()
+                    ))
+                weighted_loss.backward()
+                if gradient_clip is not None and gradient_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(network.parameters(), gradient_clip)
+                optimizer.step()
+
+                with torch.no_grad():
+                    predictions = scores.argmax(dim=1)
+                    epoch_correct += int((predictions == batch_target_indices).sum().item())
+                    epoch_loss += float((losses * batch_weights).sum().item())
+                    total_weight += float(batch_weights.sum().item())
+
+            epoch_metrics = {
+                "epoch": float(epoch_index + 1),
+                "loss": epoch_loss / max(total_weight, 1e-12),
+                "accuracy": epoch_correct / example_count,
+            }
+            history.append(epoch_metrics)
+            if progress_callback is not None:
+                progress_callback(epoch_metrics)
+
+        self._overwrite_from(self._from_torch_module(network))
+        self._assert_finite_parameters()
+        return history
+
     def train_regression_examples(
+        self,
+        examples: list[RegressionExample],
+        *,
+        epochs: int,
+        learning_rate: float,
+        l2: float = 0.0,
+        seed: int = 0,
+        gradient_clip: float | None = 5.0,
+        progress_callback: Callable[[dict[str, float]], None] | None = None,
+        backend: str = DEFAULT_TRAINING_BACKEND,
+        batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
+        torch_num_threads: int | None = None,
+    ) -> list[dict[str, float]]:
+        resolved_backend = resolve_training_backend(backend)
+        if resolved_backend == "torch":
+            return self._train_regression_examples_torch(
+                examples,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                l2=l2,
+                seed=seed,
+                gradient_clip=gradient_clip,
+                progress_callback=progress_callback,
+                batch_size=batch_size,
+                torch_num_threads=torch_num_threads,
+            )
+        return self._train_regression_examples_python(
+            examples,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            l2=l2,
+            seed=seed,
+            gradient_clip=gradient_clip,
+            progress_callback=progress_callback,
+        )
+
+    def _train_regression_examples_python(
         self,
         examples: list[RegressionExample],
         *,
@@ -425,4 +717,92 @@ class ScalarMLP:
             if progress_callback is not None:
                 progress_callback(epoch_metrics)
 
+        return history
+
+    def _train_regression_examples_torch(
+        self,
+        examples: list[RegressionExample],
+        *,
+        epochs: int,
+        learning_rate: float,
+        l2: float = 0.0,
+        seed: int = 0,
+        gradient_clip: float | None = 5.0,
+        progress_callback: Callable[[dict[str, float]], None] | None = None,
+        batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
+        torch_num_threads: int | None = None,
+    ) -> list[dict[str, float]]:
+        if torch is None:
+            raise ImportError("torch is required for the PyTorch trainer")
+        if epochs <= 0:
+            raise ValueError("epochs must be positive")
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if l2 < 0:
+            raise ValueError("l2 must be non-negative")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if not examples:
+            raise ValueError("at least one regression example is required")
+
+        _configure_torch_runtime(torch_num_threads=torch_num_threads)
+        network = _TorchScalarMLP.from_scalar_mlp(self)
+        optimizer = torch.optim.Adam(network.parameters(), lr=learning_rate)
+
+        example_count = len(examples)
+        features = torch.zeros((example_count, self.input_dim), dtype=torch.float32)
+        targets = torch.zeros(example_count, dtype=torch.float32)
+        example_weights = torch.zeros(example_count, dtype=torch.float32)
+
+        for example_index, example in enumerate(examples):
+            if example.weight <= 0:
+                raise ValueError("regression example weight must be positive")
+            self._validate_features(example.features)
+            features[example_index] = torch.tensor(example.features, dtype=torch.float32)
+            targets[example_index] = float(example.target)
+            example_weights[example_index] = float(example.weight)
+
+        rng = random.Random(seed)
+        history: list[dict[str, float]] = []
+
+        for epoch_index in range(epochs):
+            shuffled_indices = list(range(example_count))
+            rng.shuffle(shuffled_indices)
+            epoch_loss = 0.0
+            total_weight = 0.0
+
+            for batch_start in range(0, example_count, batch_size):
+                batch_indices = shuffled_indices[batch_start : batch_start + batch_size]
+                batch_features = features[batch_indices]
+                batch_targets = targets[batch_indices]
+                batch_weights = example_weights[batch_indices]
+
+                optimizer.zero_grad()
+                predictions = network(batch_features)
+                losses = (predictions - batch_targets).square()
+                weighted_loss = (losses * batch_weights).sum() / batch_weights.sum()
+                if l2:
+                    weighted_loss = weighted_loss + (0.5 * l2 * (
+                        network.hidden.weight.square().sum()
+                        + network.output.weight.square().sum()
+                    ))
+                weighted_loss.backward()
+                if gradient_clip is not None and gradient_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(network.parameters(), gradient_clip)
+                optimizer.step()
+
+                with torch.no_grad():
+                    epoch_loss += float((losses * batch_weights).sum().item())
+                    total_weight += float(batch_weights.sum().item())
+
+            epoch_metrics = {
+                "epoch": float(epoch_index + 1),
+                "mse": epoch_loss / max(total_weight, 1e-12),
+            }
+            history.append(epoch_metrics)
+            if progress_callback is not None:
+                progress_callback(epoch_metrics)
+
+        self._overwrite_from(self._from_torch_module(network))
+        self._assert_finite_parameters()
         return history

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import as_completed
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -22,6 +23,8 @@ try:
         DEFAULT_PLAY_ROLLOUT_DEPTH,
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
         DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+        DEFAULT_TRAINER_BATCH_SIZE,
+        DEFAULT_TRAINING_BACKEND,
         DEFAULT_TEACHER_POOL,
         DEFAULT_TEACHER_SAMPLE_SCALE,
         DEFAULT_TEACHER_TARGET_TEMPERATURE,
@@ -29,8 +32,10 @@ try:
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WARM_START_EPOCH_SCALE,
         LiveProgressDisplay,
+        TRAINING_BACKEND_CHOICES,
         _create_parallel_executor,
         _resolve_worker_count,
+        _render_compact_block,
         _render_iteration_comparison_table,
         load_model_bundle,
         parse_teacher_specs,
@@ -50,6 +55,8 @@ except ImportError:
         DEFAULT_PLAY_ROLLOUT_DEPTH,
         DEFAULT_PLAY_VALUE_HIDDEN_DIM,
         DEFAULT_STUDENT_AGREEMENT_KEEP_PROB,
+        DEFAULT_TRAINER_BATCH_SIZE,
+        DEFAULT_TRAINING_BACKEND,
         DEFAULT_TEACHER_POOL,
         DEFAULT_TEACHER_SAMPLE_SCALE,
         DEFAULT_TEACHER_TARGET_TEMPERATURE,
@@ -57,8 +64,10 @@ except ImportError:
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WARM_START_EPOCH_SCALE,
         LiveProgressDisplay,
+        TRAINING_BACKEND_CHOICES,
         _create_parallel_executor,
         _resolve_worker_count,
+        _render_compact_block,
         _render_iteration_comparison_table,
         load_model_bundle,
         parse_teacher_specs,
@@ -68,6 +77,9 @@ except ImportError:
 
 
 DEFAULT_RUN_ROOT = NeuralThreePlayerBot.MODEL_DIR / "self_train_runs"
+DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN = 5.0
+DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE = 0.0
+DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE = 0.0
 TRAINING_CYCLE_METRICS: tuple[ComparisonMetric, ...] = (
     ComparisonMetric(
         key="play_accuracy",
@@ -361,6 +373,27 @@ def _candidate_score(evaluation_report: dict) -> float:
     )
 
 
+def candidate_meets_promotion_criteria(
+    evaluation_report: dict,
+    *,
+    head_to_head_margin: float = DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN,
+    greedy_regression_tolerance: float = DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE,
+    optimal_regression_tolerance: float = DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
+) -> bool:
+    candidate_vs_incumbent = evaluation_report["vs_incumbent"]["models"]["candidate"]["win_percentage"]
+    incumbent_vs_candidate = evaluation_report["vs_incumbent"]["models"]["incumbent"]["win_percentage"]
+    candidate_vs_greedy = evaluation_report["vs_greedy"]["models"]["candidate"]["win_percentage"]
+    candidate_vs_optimal = evaluation_report["vs_optimal_bot"]["models"]["candidate"]["win_percentage"]
+    incumbent_vs_greedy = evaluation_report["incumbent_vs_greedy"]["models"]["incumbent"]["win_percentage"]
+    incumbent_vs_optimal = evaluation_report["incumbent_vs_optimal"]["models"]["incumbent"]["win_percentage"]
+    return (
+        _candidate_score(evaluation_report) > 0.0
+        and candidate_vs_incumbent >= (incumbent_vs_candidate + head_to_head_margin)
+        and candidate_vs_greedy >= (incumbent_vs_greedy - greedy_regression_tolerance)
+        and candidate_vs_optimal >= (incumbent_vs_optimal - optimal_regression_tolerance)
+    )
+
+
 def _reject_report_from_precheck(precheck_report: dict) -> dict:
     return {
         "accepted": False,
@@ -390,6 +423,59 @@ def _reject_report_from_head_to_head(
         "vs_optimal_bot": None,
         "incumbent_vs_greedy": None,
         "incumbent_vs_optimal": None,
+    }
+
+
+def _rename_report_model_key(
+    report: dict,
+    *,
+    source_key: str,
+    target_key: str,
+    target_label: str | None = None,
+) -> dict:
+    renamed_report = deepcopy(report)
+    models = renamed_report.get("models", {})
+    if source_key not in models:
+        raise KeyError(source_key)
+    replacement_label = target_label or target_key
+
+    renamed_models = {}
+    for model_key, stats in models.items():
+        if model_key == source_key:
+            renamed_models[target_key] = {
+                **stats,
+                "label": replacement_label,
+            }
+        else:
+            renamed_models[model_key] = stats
+    renamed_report["models"] = renamed_models
+    return renamed_report
+
+
+def _build_incumbent_baseline_cache_from_evaluation(
+    evaluation_report: dict,
+    *,
+    promoted_candidate: bool,
+) -> dict[str, dict]:
+    if promoted_candidate:
+        return {
+            "vs_greedy": _rename_report_model_key(
+                evaluation_report["vs_greedy"],
+                source_key="candidate",
+                target_key="incumbent",
+                target_label="incumbent",
+            ),
+            "vs_optimal": _rename_report_model_key(
+                evaluation_report["vs_optimal_bot"],
+                source_key="candidate",
+                target_key="incumbent",
+                target_label="incumbent",
+            ),
+        }
+
+    return {
+        "vs_greedy": evaluation_report["incumbent_vs_greedy"],
+        "vs_optimal": evaluation_report["incumbent_vs_optimal"],
     }
 
 
@@ -478,6 +564,9 @@ def evaluate_candidate(
     precheck_games: int,
     seed: int,
     incumbent_baselines: dict | None = None,
+    promotion_head_to_head_margin: float = DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN,
+    promotion_greedy_regression_tolerance: float = DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE,
+    promotion_optimal_regression_tolerance: float = DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
     workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> dict:
@@ -568,24 +657,18 @@ def evaluate_candidate(
     incumbent_vs_greedy = incumbent_baselines["vs_greedy"]
     incumbent_vs_optimal = incumbent_baselines["vs_optimal"]
 
-    candidate_greedy_wp = vs_greedy["models"]["candidate"]["win_percentage"]
-    candidate_optimal_wp = vs_optimal["models"]["candidate"]["win_percentage"]
-    incumbent_greedy_wp = incumbent_vs_greedy["models"]["incumbent"]["win_percentage"]
-    incumbent_optimal_wp = incumbent_vs_optimal["models"]["incumbent"]["win_percentage"]
-    accepted = (
-        _candidate_score(
-            {
-                "vs_incumbent": vs_incumbent,
-                "vs_greedy": vs_greedy,
-                "vs_optimal_bot": vs_optimal,
-                "incumbent_vs_greedy": incumbent_vs_greedy,
-                "incumbent_vs_optimal": incumbent_vs_optimal,
-            }
-        )
-        > 0.0
-        and candidate_incumbent_wp > incumbent_wp
-        and candidate_greedy_wp >= (incumbent_greedy_wp - 5.0)
-        and candidate_optimal_wp >= (incumbent_optimal_wp - 5.0)
+    promotion_report = {
+        "vs_incumbent": vs_incumbent,
+        "vs_greedy": vs_greedy,
+        "vs_optimal_bot": vs_optimal,
+        "incumbent_vs_greedy": incumbent_vs_greedy,
+        "incumbent_vs_optimal": incumbent_vs_optimal,
+    }
+    accepted = candidate_meets_promotion_criteria(
+        promotion_report,
+        head_to_head_margin=promotion_head_to_head_margin,
+        greedy_regression_tolerance=promotion_greedy_regression_tolerance,
+        optimal_regression_tolerance=promotion_optimal_regression_tolerance,
     )
 
     return {
@@ -647,6 +730,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=12,
         help="cheap candidate-vs-incumbent gate before running the full evaluation suite",
     )
+    parser.add_argument(
+        "--promotion-head-to-head-margin",
+        type=float,
+        default=DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN,
+        help="minimum candidate lead in head-to-head win percentage points required for promotion",
+    )
+    parser.add_argument(
+        "--promotion-greedy-regression-tolerance",
+        type=float,
+        default=DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE,
+        help="maximum allowed regression in candidate-vs-greedy win percentage points",
+    )
+    parser.add_argument(
+        "--promotion-optimal-regression-tolerance",
+        type=float,
+        default=DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
+        help="maximum allowed regression in candidate-vs-optimal win percentage points",
+    )
     parser.add_argument("--max-cycles", type=int, default=None)
     parser.add_argument("--play-hidden-dim", type=int, default=DEFAULT_PLAY_HIDDEN_DIM)
     parser.add_argument("--auction-hidden-dim", type=int, default=DEFAULT_AUCTION_HIDDEN_DIM)
@@ -684,6 +785,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_TEACHER_TARGET_TEMPERATURE,
         help="softmax temperature used when distilling teacher search scores into policy targets",
+    )
+    parser.add_argument(
+        "--trainer-backend",
+        default=DEFAULT_TRAINING_BACKEND,
+        choices=TRAINING_BACKEND_CHOICES,
+        help="training backend to use for model fitting",
+    )
+    parser.add_argument(
+        "--trainer-batch-size",
+        type=int,
+        default=DEFAULT_TRAINER_BATCH_SIZE,
+        help="mini-batch size for the PyTorch training backend",
     )
     parser.add_argument("--play-value-weight", type=float, default=0.8)
     parser.add_argument("--auction-value-weight", type=float, default=0.55)
@@ -736,8 +849,13 @@ def main() -> None:
                 "eval_games": args.eval_games,
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
                 "precheck_games": args.precheck_games,
+                "promotion_head_to_head_margin": args.promotion_head_to_head_margin,
+                "promotion_greedy_regression_tolerance": args.promotion_greedy_regression_tolerance,
+                "promotion_optimal_regression_tolerance": args.promotion_optimal_regression_tolerance,
                 "teacher_sample_scale": args.teacher_sample_scale,
                 "teacher_target_temperature": args.teacher_target_temperature,
+                "trainer_backend": args.trainer_backend,
+                "trainer_batch_size": args.trainer_batch_size,
                 "workers": args.workers,
                 "seed": args.seed,
             }
@@ -755,12 +873,16 @@ def main() -> None:
         verbose,
         (
             f"[self-train] config duration={args.duration_hours:.2f}h alpha={args.alpha} "
-            f"bootstrap_matches={args.bootstrap_matches} dagger_matches={args.dagger_matches} "
-            f"dagger_iterations={args.dagger_iterations} eval_games={args.eval_games} "
-            f"eval_games_vs_optimal={args.eval_games_vs_optimal} precheck_games={args.precheck_games} "
-            f"teacher_sample_scale={args.teacher_sample_scale:.2f} "
-            f"teacher_target_temperature={args.teacher_target_temperature:.2f} "
-            f"workers={args.workers}"
+                f"bootstrap_matches={args.bootstrap_matches} dagger_matches={args.dagger_matches} "
+                f"dagger_iterations={args.dagger_iterations} eval_games={args.eval_games} "
+                f"eval_games_vs_optimal={args.eval_games_vs_optimal} precheck_games={args.precheck_games} "
+                f"promotion_margin={args.promotion_head_to_head_margin:.1f} "
+                f"greedy_tol={args.promotion_greedy_regression_tolerance:.1f} "
+                f"optimal_tol={args.promotion_optimal_regression_tolerance:.1f} "
+                f"teacher_sample_scale={args.teacher_sample_scale:.2f} "
+                f"teacher_target_temperature={args.teacher_target_temperature:.2f} "
+                f"workers={args.workers} trainer={args.trainer_backend} "
+                f"batch_size={args.trainer_batch_size}"
         ),
     )
 
@@ -819,6 +941,8 @@ def main() -> None:
                 student_agreement_keep_prob=args.student_agreement_keep_prob,
                 teacher_sample_scale=args.teacher_sample_scale,
                 teacher_target_temperature=args.teacher_target_temperature,
+                trainer_backend=args.trainer_backend,
+                trainer_batch_size=args.trainer_batch_size,
                 workers=args.workers,
                 bot_id="neural-3p-v2",
                 verbose=verbose,
@@ -860,6 +984,9 @@ def main() -> None:
             precheck_games=min(args.precheck_games, args.eval_games),
             seed=cycle_seed,
             incumbent_baselines=incumbent_baseline_cache,
+            promotion_head_to_head_margin=args.promotion_head_to_head_margin,
+            promotion_greedy_regression_tolerance=args.promotion_greedy_regression_tolerance,
+            promotion_optimal_regression_tolerance=args.promotion_optimal_regression_tolerance,
             workers=args.workers,
             verbose=verbose,
         )
@@ -869,10 +996,10 @@ def main() -> None:
             and evaluation_report["incumbent_vs_greedy"] is not None
             and evaluation_report["incumbent_vs_optimal"] is not None
         ):
-            incumbent_baseline_cache = {
-                "vs_greedy": evaluation_report["incumbent_vs_greedy"],
-                "vs_optimal": evaluation_report["incumbent_vs_optimal"],
-            }
+            incumbent_baseline_cache = _build_incumbent_baseline_cache_from_evaluation(
+                evaluation_report,
+                promoted_candidate=False,
+            )
             _log(
                 verbose,
                 (
@@ -891,10 +1018,10 @@ def main() -> None:
 
         if evaluation_report["accepted"]:
             current_best_bundle = candidate_bundle
-            incumbent_baseline_cache = {
-                "vs_greedy": evaluation_report["vs_greedy"],
-                "vs_optimal": evaluation_report["vs_optimal_bot"],
-            }
+            incumbent_baseline_cache = _build_incumbent_baseline_cache_from_evaluation(
+                evaluation_report,
+                promoted_candidate=True,
+            )
             save_model_bundle(current_best_bundle, best_path)
             _log(
                 verbose,

@@ -24,6 +24,7 @@ try:
     from .models import Play
     from .self_train_neural_3p_v2 import evaluate_candidate
     from .self_train_neural_3p_v2 import _build_incumbent_baseline_cache_from_evaluation
+    from .self_train_neural_3p_v2 import _render_promotion_outcome_block
     from .self_train_neural_3p_v2 import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
     from .self_train_neural_3p_v2 import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
     from .self_train_neural_3p_v2 import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
@@ -72,6 +73,7 @@ except ImportError:
     from models import Play
     from self_train_neural_3p_v2 import evaluate_candidate
     from self_train_neural_3p_v2 import _build_incumbent_baseline_cache_from_evaluation
+    from self_train_neural_3p_v2 import _render_promotion_outcome_block
     from self_train_neural_3p_v2 import DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE
     from self_train_neural_3p_v2 import DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN
     from self_train_neural_3p_v2 import DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE
@@ -514,32 +516,56 @@ def prune_replay_shards(
 def clear_replay_shards(
     *,
     replay_store_dir: Path,
+    keep_paths: set[Path] | None = None,
     verbose: bool = False,
 ) -> int:
+    normalized_keep_paths = {
+        path.resolve() for path in (keep_paths or set())
+    }
     shard_paths = _replay_shard_paths(replay_store_dir)
+    removed_count = 0
+    kept_count = 0
     for shard_path in shard_paths:
+        if shard_path.resolve() in normalized_keep_paths:
+            kept_count += 1
+            continue
         shard_path.unlink(missing_ok=True)
-    if shard_paths:
+        removed_count += 1
+    if removed_count:
         _log(
             verbose,
             (
-                f"[self-play] cleared replay shards removed={len(shard_paths)} "
-                f"dir={replay_store_dir}"
+                f"[self-play] cleared replay shards removed={removed_count} "
+                f"kept={kept_count} dir={replay_store_dir}"
             ),
         )
-    return len(shard_paths)
+    return removed_count
 
 
 def reset_replay_state_after_promotion(
     *,
     replay_store_dir: Path,
+    replay_history: SelfPlayDatasetHistory | None = None,
+    retain_recent_iterations: int = 0,
     verbose: bool = False,
 ) -> SelfPlayDatasetHistory:
+    retained_history = SelfPlayDatasetHistory()
+    keep_paths: set[Path] | None = None
+    if retain_recent_iterations > 0:
+        retain_count = max(0, retain_recent_iterations)
+        if replay_history is not None and replay_history.iterations:
+            retained_history.iterations = list(
+                replay_history.iterations[-retain_count:]
+            )
+        shard_paths = _replay_shard_paths(replay_store_dir)
+        if shard_paths:
+            keep_paths = set(shard_paths[-retain_count:])
     clear_replay_shards(
         replay_store_dir=replay_store_dir,
+        keep_paths=keep_paths,
         verbose=verbose,
     )
-    return SelfPlayDatasetHistory()
+    return retained_history
 
 
 def _log(verbose: bool, message: str) -> None:
@@ -1620,6 +1646,17 @@ def main() -> None:
             _log(verbose, f"[self-play] iteration {iteration_index} promoted candidate to {best_path}")
         else:
             _log(verbose, f"[self-play] iteration {iteration_index} kept incumbent")
+            _log(
+                verbose,
+                _render_promotion_outcome_block(
+                    prefix="[self-play]",
+                    title=f"iteration {iteration_index} promotion",
+                    evaluation_report=evaluation_report,
+                    head_to_head_margin=args.promotion_head_to_head_margin,
+                    greedy_regression_tolerance=args.promotion_greedy_regression_tolerance,
+                    optimal_regression_tolerance=args.promotion_optimal_regression_tolerance,
+                ),
+            )
 
         iteration_elapsed_seconds = time.perf_counter() - iteration_started_at
         outer_snapshot = _build_self_play_outer_snapshot(

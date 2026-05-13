@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass, field
+import importlib.util
 import json
 import math
 import random
@@ -13,6 +14,14 @@ import sys
 import time
 import threading
 from typing import Callable
+import warnings
+
+if importlib.util.find_spec("numpy") is None:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Failed to initialize NumPy: No module named 'numpy'.*",
+        category=UserWarning,
+    )
 
 try:
     from .bots.human_information_minimax_n_trick_bot import HumanInformationMinimaxNTrickPlayer
@@ -2309,6 +2318,13 @@ def train_with_dagger(
     extra_metadata: dict | None = None,
     verbose: bool = False,
 ) -> tuple[dict, dict]:
+    if bootstrap_matches < 0:
+        raise ValueError("bootstrap_matches must be non-negative")
+    if dagger_iterations < 0:
+        raise ValueError("dagger_iterations must be non-negative")
+    if bootstrap_matches == 0 and dagger_iterations == 0:
+        raise ValueError("bootstrap_matches and dagger_iterations cannot both be zero")
+
     _log(
         verbose,
         _render_compact_block(
@@ -2336,27 +2352,23 @@ def train_with_dagger(
             ],
         ),
     )
-    aggregate_dataset, bootstrap_report = collect_teacher_training_dataset(
-        teacher_specs=teacher_specs,
-        match_count=bootstrap_matches,
-        alpha=alpha,
-        seed=seed,
-        student_agreement_keep_prob=student_agreement_keep_prob,
-        teacher_sample_scale=teacher_sample_scale,
-        teacher_target_temperature=teacher_target_temperature,
-        workers=workers,
-        verbose=verbose,
-    )
-    _log(
-        verbose,
-        _render_compact_block(
-            prefix="[dagger]",
-            title="bootstrap",
-            rows=[
-                ("dataset", _format_dataset_counts(aggregate_dataset)),
-            ],
-        ),
-    )
+    aggregate_dataset = TrainingDataset()
+    bootstrap_report = {
+        "actor_mode": "teacher",
+        "matches": bootstrap_matches,
+        "alpha": alpha,
+        "teacher_label_counts": {},
+        "acting_bot_counts": {},
+        "play_policy_examples": 0,
+        "auction_policy_examples": 0,
+        "play_value_examples": 0,
+        "auction_value_examples": 0,
+        "forced_auction_actions": 0,
+        "forced_play_actions": 0,
+        "teacher_queries": 0,
+        "elapsed_seconds": 0.0,
+        "workers": workers,
+    }
 
     dagger_bundle_metadata = {
         "training_mode": "search_distillation",
@@ -2365,58 +2377,96 @@ def train_with_dagger(
     if extra_metadata:
         dagger_bundle_metadata.update(extra_metadata)
 
-    bundle, training_report = train_neural_3p_bundle(
-        play_examples=aggregate_dataset.play_policy_examples,
-        auction_examples=aggregate_dataset.auction_policy_examples,
-        play_value_examples=aggregate_dataset.play_value_examples,
-        auction_value_examples=aggregate_dataset.auction_value_examples,
-        play_hidden_dim=play_hidden_dim,
-        auction_hidden_dim=auction_hidden_dim,
-        play_value_hidden_dim=play_value_hidden_dim,
-        auction_value_hidden_dim=auction_value_hidden_dim,
-        play_epochs=play_epochs,
-        auction_epochs=auction_epochs,
-        play_value_epochs=play_value_epochs,
-        auction_value_epochs=auction_value_epochs,
-        play_learning_rate=play_learning_rate,
-        auction_learning_rate=auction_learning_rate,
-        play_value_learning_rate=play_value_learning_rate,
-        auction_value_learning_rate=auction_value_learning_rate,
-        l2=l2,
-        seed=seed,
-        teacher_specs=teacher_specs,
-        initial_bundle=initial_bundle,
-        play_value_weight=play_value_weight,
-        auction_value_weight=auction_value_weight,
-        play_rollout_depth=play_rollout_depth,
-        auction_rollout_depth=auction_rollout_depth,
-        gradient_clip=gradient_clip,
-        bot_id=bot_id,
-        bundle_version=bundle_version,
-        extra_metadata=dagger_bundle_metadata,
-        workers=workers,
-        trainer_backend=trainer_backend,
-        trainer_batch_size=trainer_batch_size,
-        verbose=verbose,
-    )
+    bundle = initial_bundle
+    training_report: dict | None = None
     previous_iteration_snapshot: dict[str, object] | None = None
-    bootstrap_snapshot = _build_training_iteration_snapshot(
-        dataset=aggregate_dataset,
-        training_report=training_report,
-    )
-    _log(verbose, f"[dagger] post-bootstrap {_format_training_metrics(training_report)}")
-    _log(
-        verbose,
-        _render_iteration_comparison_table(
-            prefix="[dagger]",
-            title="post-bootstrap comparison",
-            current_snapshot=bootstrap_snapshot,
-            previous_snapshot=previous_iteration_snapshot,
-            metrics=TRAINING_ITERATION_METRICS,
-            footer_note="baseline teacher-distillation pass",
-        ),
-    )
-    previous_iteration_snapshot = bootstrap_snapshot
+    if bootstrap_matches > 0:
+        aggregate_dataset, bootstrap_report = collect_teacher_training_dataset(
+            teacher_specs=teacher_specs,
+            match_count=bootstrap_matches,
+            alpha=alpha,
+            seed=seed,
+            student_agreement_keep_prob=student_agreement_keep_prob,
+            teacher_sample_scale=teacher_sample_scale,
+            teacher_target_temperature=teacher_target_temperature,
+            workers=workers,
+            verbose=verbose,
+        )
+        _log(
+            verbose,
+            _render_compact_block(
+                prefix="[dagger]",
+                title="bootstrap",
+                rows=[
+                    ("dataset", _format_dataset_counts(aggregate_dataset)),
+                ],
+            ),
+        )
+        bundle, training_report = train_neural_3p_bundle(
+            play_examples=aggregate_dataset.play_policy_examples,
+            auction_examples=aggregate_dataset.auction_policy_examples,
+            play_value_examples=aggregate_dataset.play_value_examples,
+            auction_value_examples=aggregate_dataset.auction_value_examples,
+            play_hidden_dim=play_hidden_dim,
+            auction_hidden_dim=auction_hidden_dim,
+            play_value_hidden_dim=play_value_hidden_dim,
+            auction_value_hidden_dim=auction_value_hidden_dim,
+            play_epochs=play_epochs,
+            auction_epochs=auction_epochs,
+            play_value_epochs=play_value_epochs,
+            auction_value_epochs=auction_value_epochs,
+            play_learning_rate=play_learning_rate,
+            auction_learning_rate=auction_learning_rate,
+            play_value_learning_rate=play_value_learning_rate,
+            auction_value_learning_rate=auction_value_learning_rate,
+            l2=l2,
+            seed=seed,
+            teacher_specs=teacher_specs,
+            initial_bundle=initial_bundle,
+            play_value_weight=play_value_weight,
+            auction_value_weight=auction_value_weight,
+            play_rollout_depth=play_rollout_depth,
+            auction_rollout_depth=auction_rollout_depth,
+            gradient_clip=gradient_clip,
+            bot_id=bot_id,
+            bundle_version=bundle_version,
+            extra_metadata=dagger_bundle_metadata,
+            workers=workers,
+            trainer_backend=trainer_backend,
+            trainer_batch_size=trainer_batch_size,
+            verbose=verbose,
+        )
+        bootstrap_snapshot = _build_training_iteration_snapshot(
+            dataset=aggregate_dataset,
+            training_report=training_report,
+        )
+        _log(verbose, f"[dagger] post-bootstrap {_format_training_metrics(training_report)}")
+        _log(
+            verbose,
+            _render_iteration_comparison_table(
+                prefix="[dagger]",
+                title="post-bootstrap comparison",
+                current_snapshot=bootstrap_snapshot,
+                previous_snapshot=previous_iteration_snapshot,
+                metrics=TRAINING_ITERATION_METRICS,
+                footer_note="baseline teacher-distillation pass",
+            ),
+        )
+        previous_iteration_snapshot = bootstrap_snapshot
+    else:
+        if initial_bundle is None:
+            raise ValueError("initial_bundle is required when bootstrap_matches is zero")
+        _log(
+            verbose,
+            _render_compact_block(
+                prefix="[dagger]",
+                title="bootstrap",
+                rows=[
+                    ("dataset", "skipped"),
+                    ("seed model", initial_bundle.get("bot_id", "unknown")),
+                ],
+            ),
+        )
 
     dagger_reports: list[dict] = []
     for dagger_iteration in range(dagger_iterations):
@@ -2515,6 +2565,9 @@ def train_with_dagger(
                 "aggregate_auction_value_examples": len(aggregate_dataset.auction_value_examples),
             }
         )
+
+    if training_report is None or bundle is None:
+        raise ValueError("train_with_dagger produced no trained bundle")
 
     report = {
         "bootstrap": bootstrap_report,

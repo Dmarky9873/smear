@@ -3,6 +3,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.bots.neural_3p_bot import (
     NeuralThreePlayerBot,
@@ -37,9 +38,13 @@ from backend.self_play_neural_3p_v3 import (
 )
 from backend.self_train_neural_3p_v2 import (
     _build_incumbent_baseline_cache_from_evaluation,
+    _build_promotion_diagnostics,
     candidate_meets_promotion_criteria,
 )
-from backend.self_train_neural_3p_v4 import train_with_alternating_phases
+from backend.self_train_neural_3p_v4 import (
+    resolve_initial_model_path,
+    train_with_alternating_phases,
+)
 from backend.train_neural_3p_bot import (
     ComparisonMetric,
     _render_iteration_comparison_table,
@@ -567,6 +572,37 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         self.assertGreater(report["bootstrap"]["play_policy_examples"], 0)
         self.assertEqual(report["bootstrap"]["workers"], 2)
 
+    def test_train_with_dagger_allows_zero_bootstrap_with_initial_bundle(self):
+        bundle, report = train_with_dagger(
+            teacher_specs=parse_teacher_specs("greedy"),
+            bootstrap_matches=0,
+            dagger_matches=1,
+            alpha=1,
+            dagger_iterations=1,
+            seed=0,
+            play_hidden_dim=8,
+            auction_hidden_dim=8,
+            play_value_hidden_dim=8,
+            auction_value_hidden_dim=8,
+            play_epochs=1,
+            auction_epochs=1,
+            play_value_epochs=1,
+            auction_value_epochs=1,
+            play_learning_rate=0.03,
+            auction_learning_rate=0.03,
+            play_value_learning_rate=0.03,
+            auction_value_learning_rate=0.03,
+            l2=0.0,
+            initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+            workers=1,
+            bot_id="neural-3p-v2",
+        )
+
+        self.assertEqual(bundle["version"], 2)
+        self.assertEqual(report["bootstrap"]["matches"], 0)
+        self.assertEqual(report["bootstrap"]["play_policy_examples"], 0)
+        self.assertEqual(len(report["dagger_iterations"]), 1)
+
     def test_train_with_self_play_runs_small_end_to_end_cycle(self):
         bundle, report = train_with_self_play(
             initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
@@ -675,6 +711,463 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         self.assertEqual(report["iterations"][1]["candidate_bot_id"], "neural-3p-v4")
         self.assertEqual(report["iterations"][0]["candidate_version"], 3)
         self.assertEqual(report["iterations"][1]["candidate_version"], 3)
+
+    def test_resolve_initial_model_path_falls_back_from_missing_canonical_v4(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            v4_path = tmpdir_path / "neural_3p_v4.json"
+            v3_path = tmpdir_path / "neural_3p_v3.json"
+            v3_path.write_text(json.dumps({"bot_id": "neural-3p-v3"}), encoding="utf-8")
+
+            with patch.object(NeuralThreePlayerBot, "MODEL_FILE_V4", v4_path), patch.object(
+                NeuralThreePlayerBot, "MODEL_FILE_V3", v3_path
+            ):
+                resolved_path, note = resolve_initial_model_path(v4_path)
+
+        self.assertEqual(resolved_path, v3_path)
+        self.assertIsNotNone(note)
+        self.assertIn("using", note)
+
+    def test_resolve_initial_model_path_raises_for_missing_noncanonical_explicit_path(self):
+        with self.assertRaises(FileNotFoundError):
+            resolve_initial_model_path(Path("backend/bots/models/does-not-exist.json"))
+
+    def test_train_with_alternating_phases_carries_forward_rejected_candidates(self):
+        def _bundle(bot_id: str) -> dict:
+            return {"bot_id": bot_id, "version": 3}
+
+        def _training_metrics(accuracy: float, mse: float) -> dict:
+            return {
+                "play_history": [{"accuracy": accuracy}],
+                "auction_history": [{"accuracy": accuracy}],
+                "play_value_history": [{"mse": mse}],
+                "auction_value_history": [{"mse": mse}],
+                "elapsed_seconds": 1.0,
+            }
+
+        rejected_eval = {
+            "accepted": False,
+            "rejected_after_precheck": True,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_greedy": None,
+            "vs_optimal_bot": None,
+            "incumbent_vs_greedy": None,
+            "incumbent_vs_optimal": None,
+        }
+
+        with (
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_dagger",
+                side_effect=[
+                    (_bundle("cand-imitation-1"), {"training": _training_metrics(0.61, 0.012)}),
+                    (_bundle("cand-imitation-2"), {"training": _training_metrics(0.63, 0.011)}),
+                ],
+            ) as mock_train_with_dagger,
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_self_play",
+                return_value=(
+                    _bundle("cand-self-play-1"),
+                    {
+                        "self_play_iterations": [
+                            {"training": _training_metrics(0.92, 0.019)}
+                        ]
+                    },
+                ),
+            ) as mock_train_with_self_play,
+            patch(
+                "backend.self_train_neural_3p_v4.evaluate_candidate",
+                side_effect=[rejected_eval, rejected_eval, rejected_eval],
+            ),
+        ):
+            _, report = train_with_alternating_phases(
+                initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+                teacher_specs=parse_teacher_specs("greedy"),
+                alpha=1,
+                bootstrap_matches=1,
+                repeat_imitation_bootstrap_matches=0,
+                dagger_matches=1,
+                dagger_iterations=1,
+                self_play_matches=1,
+                replay_window=2,
+                persisted_replay_limit=2,
+                seed=0,
+                play_hidden_dim=8,
+                auction_hidden_dim=8,
+                play_value_hidden_dim=8,
+                auction_value_hidden_dim=8,
+                play_epochs=1,
+                auction_epochs=1,
+                play_value_epochs=1,
+                auction_value_epochs=1,
+                play_learning_rate=0.02,
+                auction_learning_rate=0.02,
+                play_value_learning_rate=0.02,
+                auction_value_learning_rate=0.02,
+                l2=0.0,
+                play_value_weight=0.5,
+                auction_value_weight=0.3,
+                play_rollout_depth=1,
+                auction_rollout_depth=1,
+                warm_start_lr_scale=0.8,
+                warm_start_epoch_scale=0.8,
+                gradient_clip=1.0,
+                play_temperature=0.8,
+                auction_temperature=0.7,
+                epsilon=0.05,
+                temperature_decay=1.0,
+                epsilon_decay=1.0,
+                policy_advantage_threshold=-0.25,
+                policy_advantage_scale=2.0,
+                value_weight_scale=1.0,
+                winner_policy_weight=0.5,
+                eval_games=2,
+                eval_games_vs_optimal=1,
+                precheck_games=1,
+                max_iterations=3,
+                workers=1,
+                start_phase="imitation",
+                self_play_phases_per_cycle=1,
+            )
+
+        self.assertEqual(report["iterations_completed"], 3)
+        self.assertEqual(
+            mock_train_with_dagger.call_args_list[0].kwargs["bootstrap_matches"],
+            1,
+        )
+        self.assertEqual(
+            mock_train_with_dagger.call_args_list[1].kwargs["bootstrap_matches"],
+            0,
+        )
+        self.assertEqual(
+            mock_train_with_self_play.call_args.kwargs["initial_bundle"]["bot_id"],
+            "cand-imitation-1",
+        )
+        self.assertEqual(
+            mock_train_with_dagger.call_args_list[1].kwargs["initial_bundle"]["bot_id"],
+            "cand-self-play-1",
+        )
+        self.assertEqual(report["iterations"][2]["working_bot_id"], "cand-imitation-2")
+        self.assertEqual(report["iterations"][2]["incumbent_bot_id"], "neural-3p-v2")
+
+    def test_train_with_alternating_phases_supports_self_play_bursts(self):
+        _, report = train_with_alternating_phases(
+            initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+            teacher_specs=parse_teacher_specs("greedy"),
+            alpha=1,
+            bootstrap_matches=1,
+            repeat_imitation_bootstrap_matches=0,
+            dagger_matches=1,
+            repeat_imitation_dagger_matches=1,
+            dagger_iterations=1,
+            self_play_matches=1,
+            self_play_phases_per_cycle=2,
+            replay_window=2,
+            persisted_replay_limit=2,
+            seed=0,
+            play_hidden_dim=8,
+            auction_hidden_dim=8,
+            play_value_hidden_dim=8,
+            auction_value_hidden_dim=8,
+            play_epochs=1,
+            auction_epochs=1,
+            play_value_epochs=1,
+            auction_value_epochs=1,
+            play_learning_rate=0.02,
+            auction_learning_rate=0.02,
+            play_value_learning_rate=0.02,
+            auction_value_learning_rate=0.02,
+            l2=0.0,
+            play_value_weight=0.5,
+            auction_value_weight=0.3,
+            play_rollout_depth=1,
+            auction_rollout_depth=1,
+            warm_start_lr_scale=0.8,
+            warm_start_epoch_scale=0.8,
+            gradient_clip=1.0,
+            play_temperature=0.8,
+            auction_temperature=0.7,
+            epsilon=0.05,
+            temperature_decay=1.0,
+            epsilon_decay=1.0,
+            policy_advantage_threshold=-0.25,
+            policy_advantage_scale=2.0,
+            value_weight_scale=1.0,
+            winner_policy_weight=0.5,
+            eval_games=2,
+            eval_games_vs_optimal=1,
+            precheck_games=1,
+            max_iterations=3,
+            workers=1,
+            start_phase="imitation",
+        )
+
+        self.assertEqual(report["iterations_completed"], 3)
+        self.assertEqual(
+            [iteration["phase"] for iteration in report["iterations"]],
+            ["imitation", "self-play", "self-play"],
+        )
+
+    def test_train_with_alternating_phases_can_wait_for_failed_self_play_streak(self):
+        def _bundle(bot_id: str) -> dict:
+            return {"bot_id": bot_id, "version": 3}
+
+        def _training_metrics(accuracy: float, mse: float) -> dict:
+            return {
+                "play_history": [{"accuracy": accuracy}],
+                "auction_history": [{"accuracy": accuracy}],
+                "play_value_history": [{"mse": mse}],
+                "auction_value_history": [{"mse": mse}],
+                "elapsed_seconds": 1.0,
+            }
+
+        rejected_eval = {
+            "accepted": False,
+            "rejected_after_precheck": True,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_greedy": None,
+            "vs_optimal_bot": None,
+            "incumbent_vs_greedy": None,
+            "incumbent_vs_optimal": None,
+        }
+
+        with (
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_dagger",
+                side_effect=[
+                    (_bundle("cand-imitation-1"), {"training": _training_metrics(0.61, 0.012)}),
+                    (_bundle("cand-imitation-2"), {"training": _training_metrics(0.63, 0.011)}),
+                ],
+            ),
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_self_play",
+                side_effect=[
+                    (
+                        _bundle("cand-self-play-1"),
+                        {"self_play_iterations": [{"training": _training_metrics(0.92, 0.019)}]},
+                    ),
+                    (
+                        _bundle("cand-self-play-2"),
+                        {"self_play_iterations": [{"training": _training_metrics(0.91, 0.018)}]},
+                    ),
+                ],
+            ),
+            patch(
+                "backend.self_train_neural_3p_v4.evaluate_candidate",
+                side_effect=[rejected_eval, rejected_eval, rejected_eval, rejected_eval],
+            ),
+        ):
+            _, report = train_with_alternating_phases(
+                initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+                teacher_specs=parse_teacher_specs("greedy"),
+                alpha=1,
+                bootstrap_matches=1,
+                repeat_imitation_bootstrap_matches=0,
+                dagger_matches=1,
+                repeat_imitation_dagger_matches=1,
+                dagger_iterations=1,
+                self_play_matches=1,
+                self_play_phases_per_cycle=2,
+                self_play_failures_before_imitation=2,
+                replay_window=2,
+                persisted_replay_limit=2,
+                seed=0,
+                play_hidden_dim=8,
+                auction_hidden_dim=8,
+                play_value_hidden_dim=8,
+                auction_value_hidden_dim=8,
+                play_epochs=1,
+                auction_epochs=1,
+                play_value_epochs=1,
+                auction_value_epochs=1,
+                play_learning_rate=0.02,
+                auction_learning_rate=0.02,
+                play_value_learning_rate=0.02,
+                auction_value_learning_rate=0.02,
+                l2=0.0,
+                play_value_weight=0.5,
+                auction_value_weight=0.3,
+                play_rollout_depth=1,
+                auction_rollout_depth=1,
+                warm_start_lr_scale=0.8,
+                warm_start_epoch_scale=0.8,
+                gradient_clip=1.0,
+                play_temperature=0.8,
+                auction_temperature=0.7,
+                epsilon=0.05,
+                temperature_decay=1.0,
+                epsilon_decay=1.0,
+                policy_advantage_threshold=-0.25,
+                policy_advantage_scale=2.0,
+                value_weight_scale=1.0,
+                winner_policy_weight=0.5,
+                eval_games=2,
+                eval_games_vs_optimal=1,
+                precheck_games=1,
+                max_iterations=4,
+                workers=1,
+                start_phase="imitation",
+            )
+
+        self.assertEqual(
+            [iteration["phase"] for iteration in report["iterations"]],
+            ["imitation", "self-play", "self-play", "imitation"],
+        )
+
+    def test_train_with_alternating_phases_refreshes_after_guard_failure(self):
+        def _bundle(bot_id: str) -> dict:
+            return {"bot_id": bot_id, "version": 3}
+
+        def _training_metrics(accuracy: float, mse: float) -> dict:
+            return {
+                "play_history": [{"accuracy": accuracy}],
+                "auction_history": [{"accuracy": accuracy}],
+                "play_value_history": [{"mse": mse}],
+                "auction_value_history": [{"mse": mse}],
+                "elapsed_seconds": 1.0,
+            }
+
+        rejected_eval = {
+            "accepted": False,
+            "rejected_after_precheck": False,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 58.3},
+                    "incumbent": {"win_percentage": 41.7},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 55.6},
+                    "incumbent": {"win_percentage": 44.4},
+                }
+            },
+            "vs_greedy": {
+                "models": {
+                    "candidate": {"win_percentage": 22.2},
+                    "incumbent": {"win_percentage": 50.0},
+                }
+            },
+            "vs_optimal_bot": {
+                "models": {
+                    "candidate": {"win_percentage": 8.3},
+                    "incumbent": {"win_percentage": 38.9},
+                }
+            },
+            "incumbent_vs_greedy": {
+                "models": {
+                    "candidate": {"win_percentage": 50.0},
+                    "incumbent": {"win_percentage": 50.0},
+                }
+            },
+            "incumbent_vs_optimal": {
+                "models": {
+                    "candidate": {"win_percentage": 38.9},
+                    "incumbent": {"win_percentage": 38.9},
+                }
+            },
+        }
+
+        with (
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_dagger",
+                side_effect=[
+                    (_bundle("cand-imitation-1"), {"training": _training_metrics(0.61, 0.012)}),
+                    (_bundle("cand-imitation-2"), {"training": _training_metrics(0.63, 0.011)}),
+                ],
+            ),
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_self_play",
+                return_value=(
+                    _bundle("cand-self-play-1"),
+                    {"self_play_iterations": [{"training": _training_metrics(0.92, 0.019)}]},
+                ),
+            ),
+            patch(
+                "backend.self_train_neural_3p_v4.evaluate_candidate",
+                side_effect=[rejected_eval, rejected_eval, rejected_eval],
+            ),
+        ):
+            _, report = train_with_alternating_phases(
+                initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+                teacher_specs=parse_teacher_specs("greedy"),
+                alpha=1,
+                bootstrap_matches=1,
+                repeat_imitation_bootstrap_matches=0,
+                dagger_matches=1,
+                repeat_imitation_dagger_matches=1,
+                dagger_iterations=1,
+                self_play_matches=1,
+                self_play_phases_per_cycle=3,
+                self_play_failures_before_imitation=5,
+                replay_window=2,
+                persisted_replay_limit=2,
+                seed=0,
+                play_hidden_dim=8,
+                auction_hidden_dim=8,
+                play_value_hidden_dim=8,
+                auction_value_hidden_dim=8,
+                play_epochs=1,
+                auction_epochs=1,
+                play_value_epochs=1,
+                auction_value_epochs=1,
+                play_learning_rate=0.02,
+                auction_learning_rate=0.02,
+                play_value_learning_rate=0.02,
+                auction_value_learning_rate=0.02,
+                l2=0.0,
+                play_value_weight=0.5,
+                auction_value_weight=0.3,
+                play_rollout_depth=1,
+                auction_rollout_depth=1,
+                warm_start_lr_scale=0.8,
+                warm_start_epoch_scale=0.8,
+                gradient_clip=1.0,
+                play_temperature=0.8,
+                auction_temperature=0.7,
+                epsilon=0.05,
+                temperature_decay=1.0,
+                epsilon_decay=1.0,
+                policy_advantage_threshold=-0.25,
+                policy_advantage_scale=2.0,
+                value_weight_scale=1.0,
+                winner_policy_weight=0.5,
+                eval_games=2,
+                eval_games_vs_optimal=1,
+                precheck_games=1,
+                max_iterations=3,
+                workers=1,
+                start_phase="imitation",
+            )
+
+        self.assertEqual(
+            [iteration["phase"] for iteration in report["iterations"]],
+            ["imitation", "self-play", "imitation"],
+        )
 
     def test_train_with_self_play_persists_replay_history_across_calls(self):
         replay_history = SelfPlayDatasetHistory()
@@ -895,6 +1388,60 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
                 ["notes.json"],
             )
 
+    def test_reset_replay_state_after_promotion_can_retain_latest_replay(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            replay_store_dir = Path(tmpdir) / "replay-store"
+            replay_store_dir.mkdir(parents=True, exist_ok=True)
+
+            replay_history = SelfPlayDatasetHistory()
+            first_dataset = SelfPlayDatasetHistory().aggregate()
+            first_dataset.play_policy_examples.append(
+                ChoiceExample(
+                    candidate_features=[[0.1], [0.2]],
+                    chosen_index=0,
+                    weight=1.0,
+                )
+            )
+            second_dataset = SelfPlayDatasetHistory().aggregate()
+            second_dataset.play_policy_examples.append(
+                ChoiceExample(
+                    candidate_features=[[0.3], [0.4]],
+                    chosen_index=1,
+                    weight=1.0,
+                )
+            )
+            replay_history.iterations = [first_dataset, second_dataset]
+
+            for iteration, dataset in enumerate(replay_history.iterations, start=1):
+                save_replay_shard(
+                    replay_store_dir=replay_store_dir,
+                    dataset=dataset,
+                    run_id="run-a",
+                    iteration=iteration,
+                    source_bot_id="neural-3p-v3",
+                )
+
+            retained_history = reset_replay_state_after_promotion(
+                replay_store_dir=replay_store_dir,
+                replay_history=replay_history,
+                retain_recent_iterations=1,
+                verbose=False,
+            )
+
+            self.assertEqual(len(retained_history.iterations), 1)
+            self.assertEqual(
+                len(retained_history.iterations[0].play_policy_examples),
+                1,
+            )
+            self.assertEqual(
+                retained_history.iterations[0].play_policy_examples[0].chosen_index,
+                1,
+            )
+            self.assertEqual(
+                sorted(path.name for path in replay_store_dir.glob("*.json")),
+                ["run-a-iteration-002.json"],
+            )
+
     def test_load_persisted_replay_history_skips_invalid_shards(self):
         dataset = SelfPlayDatasetHistory().aggregate()
         dataset.play_policy_examples.append(
@@ -1071,6 +1618,86 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         }
 
         self.assertTrue(candidate_meets_promotion_criteria(evaluation_report))
+
+    def test_promotion_diagnostics_explain_precheck_rejection(self):
+        evaluation_report = {
+            "accepted": False,
+            "rejected_after_precheck": True,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_greedy": None,
+            "vs_optimal_bot": None,
+            "incumbent_vs_greedy": None,
+            "incumbent_vs_optimal": None,
+        }
+
+        diagnostics = _build_promotion_diagnostics(evaluation_report)
+
+        self.assertEqual(diagnostics["summary"], "not promoted: precheck failed")
+        self.assertEqual(len(diagnostics["reasons"]), 1)
+        self.assertIn("candidate 41.7% <= incumbent 58.3%", diagnostics["reasons"][0])
+
+    def test_promotion_diagnostics_explain_optimal_guard_failure(self):
+        evaluation_report = {
+            "accepted": False,
+            "rejected_after_precheck": False,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 58.3},
+                    "incumbent": {"win_percentage": 41.7},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 63.9},
+                    "incumbent": {"win_percentage": 36.1},
+                }
+            },
+            "vs_greedy": {
+                "models": {
+                    "candidate": {"win_percentage": 33.3},
+                }
+            },
+            "vs_optimal_bot": {
+                "models": {
+                    "candidate": {"win_percentage": 33.3},
+                }
+            },
+            "incumbent_vs_greedy": {
+                "models": {
+                    "incumbent": {"win_percentage": 30.6},
+                }
+            },
+            "incumbent_vs_optimal": {
+                "models": {
+                    "incumbent": {"win_percentage": 44.4},
+                }
+            },
+        }
+
+        diagnostics = _build_promotion_diagnostics(
+            evaluation_report,
+            head_to_head_margin=8.0,
+            greedy_regression_tolerance=0.0,
+            optimal_regression_tolerance=0.0,
+        )
+
+        self.assertEqual(diagnostics["summary"], "not promoted: promotion guard failed")
+        self.assertEqual(len(diagnostics["reasons"]), 1)
+        self.assertIn("optimal guard failed", diagnostics["reasons"][0])
+        self.assertIn("33.3% < required 44.4%", diagnostics["reasons"][0])
 
 
 if __name__ == "__main__":

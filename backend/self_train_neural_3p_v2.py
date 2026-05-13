@@ -394,6 +394,118 @@ def candidate_meets_promotion_criteria(
     )
 
 
+def _build_promotion_diagnostics(
+    evaluation_report: dict,
+    *,
+    head_to_head_margin: float = DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN,
+    greedy_regression_tolerance: float = DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE,
+    optimal_regression_tolerance: float = DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
+) -> dict[str, object]:
+    if evaluation_report["accepted"]:
+        return {
+            "summary": "promoted",
+            "reasons": [],
+        }
+
+    if evaluation_report.get("rejected_after_precheck"):
+        candidate_wp = evaluation_report["precheck_vs_incumbent"]["models"]["candidate"]["win_percentage"]
+        incumbent_wp = evaluation_report["precheck_vs_incumbent"]["models"]["incumbent"]["win_percentage"]
+        return {
+            "summary": "not promoted: precheck failed",
+            "reasons": [
+                (
+                    f"candidate {candidate_wp:.1f}% <= incumbent {incumbent_wp:.1f}% "
+                    "in precheck"
+                ),
+            ],
+        }
+
+    if evaluation_report.get("rejected_after_head_to_head"):
+        candidate_wp = evaluation_report["vs_incumbent"]["models"]["candidate"]["win_percentage"]
+        incumbent_wp = evaluation_report["vs_incumbent"]["models"]["incumbent"]["win_percentage"]
+        return {
+            "summary": "not promoted: head-to-head failed",
+            "reasons": [
+                (
+                    f"candidate {candidate_wp:.1f}% <= incumbent {incumbent_wp:.1f}% "
+                    "after full head-to-head"
+                ),
+            ],
+        }
+
+    candidate_vs_incumbent = evaluation_report["vs_incumbent"]["models"]["candidate"]["win_percentage"]
+    incumbent_vs_candidate = evaluation_report["vs_incumbent"]["models"]["incumbent"]["win_percentage"]
+    candidate_vs_greedy = evaluation_report["vs_greedy"]["models"]["candidate"]["win_percentage"]
+    incumbent_vs_greedy = evaluation_report["incumbent_vs_greedy"]["models"]["incumbent"]["win_percentage"]
+    candidate_vs_optimal = evaluation_report["vs_optimal_bot"]["models"]["candidate"]["win_percentage"]
+    incumbent_vs_optimal = evaluation_report["incumbent_vs_optimal"]["models"]["incumbent"]["win_percentage"]
+    promotion_score = _candidate_score(evaluation_report)
+
+    reasons: list[str] = []
+    if promotion_score <= 0.0:
+        reasons.append(f"promotion score {promotion_score:.1f} <= 0.0")
+
+    required_head_to_head = incumbent_vs_candidate + head_to_head_margin
+    if candidate_vs_incumbent < required_head_to_head:
+        reasons.append(
+            (
+                f"head-to-head margin failed: {candidate_vs_incumbent:.1f}% "
+                f"< required {required_head_to_head:.1f}% "
+                f"({incumbent_vs_candidate:.1f}% + margin {head_to_head_margin:.1f})"
+            )
+        )
+
+    required_vs_greedy = incumbent_vs_greedy - greedy_regression_tolerance
+    if candidate_vs_greedy < required_vs_greedy:
+        reasons.append(
+            (
+                f"greedy guard failed: {candidate_vs_greedy:.1f}% "
+                f"< required {required_vs_greedy:.1f}% "
+                f"(incumbent {incumbent_vs_greedy:.1f}% - tol {greedy_regression_tolerance:.1f})"
+            )
+        )
+
+    required_vs_optimal = incumbent_vs_optimal - optimal_regression_tolerance
+    if candidate_vs_optimal < required_vs_optimal:
+        reasons.append(
+            (
+                f"optimal guard failed: {candidate_vs_optimal:.1f}% "
+                f"< required {required_vs_optimal:.1f}% "
+                f"(incumbent {incumbent_vs_optimal:.1f}% - tol {optimal_regression_tolerance:.1f})"
+            )
+        )
+
+    return {
+        "summary": "not promoted: promotion guard failed",
+        "reasons": reasons or ["promotion criteria not met"],
+    }
+
+
+def _render_promotion_outcome_block(
+    *,
+    prefix: str,
+    title: str,
+    evaluation_report: dict,
+    head_to_head_margin: float = DEFAULT_PROMOTION_HEAD_TO_HEAD_MARGIN,
+    greedy_regression_tolerance: float = DEFAULT_PROMOTION_GREEDY_REGRESSION_TOLERANCE,
+    optimal_regression_tolerance: float = DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
+) -> str:
+    diagnostics = _build_promotion_diagnostics(
+        evaluation_report,
+        head_to_head_margin=head_to_head_margin,
+        greedy_regression_tolerance=greedy_regression_tolerance,
+        optimal_regression_tolerance=optimal_regression_tolerance,
+    )
+    rows = [("summary", str(diagnostics["summary"]))]
+    for index, reason in enumerate(diagnostics["reasons"], start=1):
+        rows.append((f"why {index}", reason))
+    return _render_compact_block(
+        prefix=prefix,
+        title=title,
+        rows=rows,
+    )
+
+
 def _reject_report_from_precheck(precheck_report: dict) -> dict:
     return {
         "accepted": False,
@@ -593,7 +705,14 @@ def evaluate_candidate(
     precheck_candidate_wp = precheck_vs_incumbent["models"]["candidate"]["win_percentage"]
     precheck_incumbent_wp = precheck_vs_incumbent["models"]["incumbent"]["win_percentage"]
     if precheck_candidate_wp <= precheck_incumbent_wp:
-        return _reject_report_from_precheck(precheck_vs_incumbent)
+        rejection_report = _reject_report_from_precheck(precheck_vs_incumbent)
+        rejection_report["promotion_diagnostics"] = _build_promotion_diagnostics(
+            rejection_report,
+            head_to_head_margin=promotion_head_to_head_margin,
+            greedy_regression_tolerance=promotion_greedy_regression_tolerance,
+            optimal_regression_tolerance=promotion_optimal_regression_tolerance,
+        )
+        return rejection_report
 
     _log(verbose, "[eval] full head-to-head candidate_vs_incumbent")
     if eval_games <= precheck_games:
@@ -617,10 +736,17 @@ def evaluate_candidate(
     candidate_incumbent_wp = vs_incumbent["models"]["candidate"]["win_percentage"]
     incumbent_wp = vs_incumbent["models"]["incumbent"]["win_percentage"]
     if candidate_incumbent_wp <= incumbent_wp:
-        return _reject_report_from_head_to_head(
+        rejection_report = _reject_report_from_head_to_head(
             precheck_report=precheck_vs_incumbent,
             vs_incumbent=vs_incumbent,
         )
+        rejection_report["promotion_diagnostics"] = _build_promotion_diagnostics(
+            rejection_report,
+            head_to_head_margin=promotion_head_to_head_margin,
+            greedy_regression_tolerance=promotion_greedy_regression_tolerance,
+            optimal_regression_tolerance=promotion_optimal_regression_tolerance,
+        )
+        return rejection_report
 
     _log(verbose, "[eval] candidate baselines vs greedy and optimal-bot")
     vs_greedy = _compare_models_maybe_parallel(
@@ -671,7 +797,7 @@ def evaluate_candidate(
         optimal_regression_tolerance=promotion_optimal_regression_tolerance,
     )
 
-    return {
+    promotion_report_with_status = {
         "accepted": accepted,
         "rejected_after_precheck": False,
         "rejected_after_head_to_head": False,
@@ -682,6 +808,13 @@ def evaluate_candidate(
         "incumbent_vs_greedy": incumbent_vs_greedy,
         "incumbent_vs_optimal": incumbent_vs_optimal,
     }
+    promotion_report_with_status["promotion_diagnostics"] = _build_promotion_diagnostics(
+        promotion_report_with_status,
+        head_to_head_margin=promotion_head_to_head_margin,
+        greedy_regression_tolerance=promotion_greedy_regression_tolerance,
+        optimal_regression_tolerance=promotion_optimal_regression_tolerance,
+    )
+    return promotion_report_with_status
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -1068,6 +1201,17 @@ def main() -> None:
             )
         else:
             _log(verbose, f"[self-train] cycle {cycle_index} kept incumbent")
+            _log(
+                verbose,
+                _render_promotion_outcome_block(
+                    prefix="[self-train]",
+                    title=f"cycle {cycle_index} promotion",
+                    evaluation_report=evaluation_report,
+                    head_to_head_margin=args.promotion_head_to_head_margin,
+                    greedy_regression_tolerance=args.promotion_greedy_regression_tolerance,
+                    optimal_regression_tolerance=args.promotion_optimal_regression_tolerance,
+                ),
+            )
 
         cycle_elapsed_seconds = time.perf_counter() - cycle_started_at
         cycle_snapshot = _build_cycle_snapshot(

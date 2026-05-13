@@ -37,6 +37,7 @@ try:
         DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
         _build_incumbent_baseline_cache_from_evaluation,
         _format_seconds,
+        _render_promotion_outcome_block,
         evaluate_candidate,
     )
     from .train_neural_3p_bot import (
@@ -97,6 +98,7 @@ except ImportError:
         DEFAULT_PROMOTION_OPTIMAL_REGRESSION_TOLERANCE,
         _build_incumbent_baseline_cache_from_evaluation,
         _format_seconds,
+        _render_promotion_outcome_block,
         evaluate_candidate,
     )
     from train_neural_3p_bot import (
@@ -162,14 +164,55 @@ def _display_phase_name(phase: str) -> str:
 def _phase_for_iteration(*, start_phase: str, iteration_index: int) -> str:
     if iteration_index < 0:
         raise ValueError("iteration_index must be non-negative")
-    if iteration_index % 2 == 0:
-        return start_phase
-    return "self_play" if start_phase == "imitation" else "imitation"
+    return _phase_for_iteration_with_burst(
+        start_phase=start_phase,
+        iteration_index=iteration_index,
+        self_play_phases_per_cycle=1,
+    )
 
 
-def resolve_initial_model_path(explicit_path: Path | None) -> Path:
-    if explicit_path is not None:
-        return explicit_path
+def _phase_for_iteration_with_burst(
+    *,
+    start_phase: str,
+    iteration_index: int,
+    self_play_phases_per_cycle: int,
+) -> str:
+    if iteration_index < 0:
+        raise ValueError("iteration_index must be non-negative")
+    if self_play_phases_per_cycle <= 0:
+        raise ValueError("self_play_phases_per_cycle must be positive")
+    if start_phase == "imitation":
+        cycle = ["imitation", *(["self_play"] * self_play_phases_per_cycle)]
+    else:
+        cycle = [*(["self_play"] * self_play_phases_per_cycle), "imitation"]
+    return cycle[iteration_index % len(cycle)]
+
+
+def _should_run_imitation_after_self_play(
+    *,
+    evaluation_report: dict,
+    self_play_phases_since_imitation: int,
+    failed_self_play_phases_since_imitation: int,
+    self_play_phases_per_cycle: int,
+    self_play_failures_before_imitation: int,
+) -> bool:
+    if evaluation_report["accepted"]:
+        return False
+
+    # A candidate that survives head-to-head but fails a baseline guard has drifted.
+    if not evaluation_report["rejected_after_precheck"] and not evaluation_report["rejected_after_head_to_head"]:
+        return True
+
+    if self_play_phases_since_imitation < self_play_phases_per_cycle:
+        return False
+
+    if self_play_failures_before_imitation <= 0:
+        return True
+
+    return failed_self_play_phases_since_imitation >= self_play_failures_before_imitation
+
+
+def _resolve_default_initial_model_path() -> Path:
     if NeuralThreePlayerBot.MODEL_FILE_V4.exists():
         return NeuralThreePlayerBot.MODEL_FILE_V4
     if NeuralThreePlayerBot.MODEL_FILE_V3.exists():
@@ -179,13 +222,41 @@ def resolve_initial_model_path(explicit_path: Path | None) -> Path:
     return NeuralThreePlayerBot.MODEL_FILE_V1
 
 
+def resolve_initial_model_path(explicit_path: Path | None) -> tuple[Path, str | None]:
+    if explicit_path is None:
+        return _resolve_default_initial_model_path(), None
+
+    requested_path = Path(explicit_path)
+    if requested_path.exists():
+        return requested_path, None
+
+    requested_resolved = requested_path.resolve(strict=False)
+    canonical_v4_path = NeuralThreePlayerBot.MODEL_FILE_V4.resolve(strict=False)
+    if requested_resolved == canonical_v4_path:
+        fallback_path = _resolve_default_initial_model_path()
+        if fallback_path.resolve(strict=False) != canonical_v4_path:
+            return (
+                fallback_path,
+                (
+                    f"requested initial model {requested_path} was missing; "
+                    f"using {fallback_path} instead"
+                ),
+            )
+
+    raise FileNotFoundError(
+        f"initial model not found: {requested_path}"
+    )
+
+
 def train_with_alternating_phases(
     *,
     initial_bundle: dict,
     teacher_specs: list,
     alpha: int,
     bootstrap_matches: int,
+    repeat_imitation_bootstrap_matches: int = 0,
     dagger_matches: int,
+    repeat_imitation_dagger_matches: int | None = None,
     dagger_iterations: int,
     self_play_matches: int,
     replay_window: int,
@@ -233,6 +304,9 @@ def train_with_alternating_phases(
     deadline: float | None = None,
     run_started_at: float | None = None,
     start_phase: str = "imitation",
+    self_play_phases_per_cycle: int = 1,
+    self_play_failures_before_imitation: int = 0,
+    retain_replay_iterations_after_promotion: int = 0,
     replay_history: SelfPlayDatasetHistory | None = None,
     checkpoint_dir: Path | None = None,
     best_path: Path | None = None,
@@ -245,15 +319,31 @@ def train_with_alternating_phases(
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     normalized_start_phase = _normalize_phase_name(start_phase)
+    if repeat_imitation_bootstrap_matches < 0:
+        raise ValueError("repeat_imitation_bootstrap_matches must be non-negative")
+    if repeat_imitation_dagger_matches is not None and repeat_imitation_dagger_matches < 0:
+        raise ValueError("repeat_imitation_dagger_matches must be non-negative")
+    if self_play_phases_per_cycle <= 0:
+        raise ValueError("self_play_phases_per_cycle must be positive")
+    if self_play_failures_before_imitation < 0:
+        raise ValueError("self_play_failures_before_imitation must be non-negative")
+    if retain_replay_iterations_after_promotion < 0:
+        raise ValueError("retain_replay_iterations_after_promotion must be non-negative")
     started_at = run_started_at if run_started_at is not None else time.time()
     current_best_bundle = initial_bundle
+    working_bundle = initial_bundle
     current_replay_history = replay_history or SelfPlayDatasetHistory()
     incumbent_baseline_cache: dict | None = None
     previous_outer_snapshot: dict[str, object] | None = None
     self_play_phase_count = 0
+    imitation_phase_count = 0
+    self_play_phases_since_imitation = 0
+    failed_self_play_phases_since_imitation = 0
     iteration_index = 1
     iteration_reports: list[dict] = []
     resolved_run_id = run_id or "neural-3p-v4"
+    adaptive_imitation_schedule = self_play_failures_before_imitation > 0
+    next_phase = normalized_start_phase
 
     while True:
         if max_iterations is not None and iteration_index > max_iterations:
@@ -261,10 +351,19 @@ def train_with_alternating_phases(
         if deadline is not None and time.time() >= deadline and iteration_index > 1:
             break
 
-        phase = _phase_for_iteration(
-            start_phase=normalized_start_phase,
-            iteration_index=iteration_index - 1,
-        )
+        if adaptive_imitation_schedule:
+            phase = next_phase
+        else:
+            phase = _phase_for_iteration(
+                start_phase=normalized_start_phase,
+                iteration_index=iteration_index - 1,
+            )
+            if self_play_phases_per_cycle != 1:
+                phase = _phase_for_iteration_with_burst(
+                    start_phase=normalized_start_phase,
+                    iteration_index=iteration_index - 1,
+                    self_play_phases_per_cycle=self_play_phases_per_cycle,
+                )
         phase_label = _display_phase_name(phase)
         iteration_seed = seed + (iteration_index * 10_000)
         iteration_started_at = time.perf_counter()
@@ -285,10 +384,20 @@ def train_with_alternating_phases(
         replay_shard_path: Path | None = None
 
         if phase == "imitation":
+            phase_bootstrap_matches = (
+                bootstrap_matches
+                if imitation_phase_count == 0
+                else repeat_imitation_bootstrap_matches
+            )
+            phase_dagger_matches = (
+                dagger_matches
+                if imitation_phase_count == 0 or repeat_imitation_dagger_matches is None
+                else repeat_imitation_dagger_matches
+            )
             candidate_bundle, training_report = train_with_dagger(
                 teacher_specs=teacher_specs,
-                bootstrap_matches=bootstrap_matches,
-                dagger_matches=dagger_matches,
+                bootstrap_matches=phase_bootstrap_matches,
+                dagger_matches=phase_dagger_matches,
                 alpha=alpha,
                 dagger_iterations=dagger_iterations,
                 seed=iteration_seed,
@@ -305,7 +414,7 @@ def train_with_alternating_phases(
                 play_value_learning_rate=play_value_learning_rate,
                 auction_value_learning_rate=auction_value_learning_rate,
                 l2=l2,
-                initial_bundle=current_best_bundle,
+                initial_bundle=working_bundle,
                 play_value_weight=play_value_weight,
                 auction_value_weight=auction_value_weight,
                 play_rollout_depth=play_rollout_depth,
@@ -323,14 +432,15 @@ def train_with_alternating_phases(
                 bundle_version=3,
                 extra_metadata={
                     "training_mode": "alternating_imitation",
-                    "seed_bot_id": current_best_bundle.get("bot_id", V4_BOT_ID),
+                    "seed_bot_id": working_bundle.get("bot_id", V4_BOT_ID),
                 },
                 verbose=verbose,
             )
             phase_training_report = training_report["training"]
+            imitation_phase_count += 1
         else:
             candidate_bundle, training_report = train_with_self_play(
-                initial_bundle=current_best_bundle,
+                initial_bundle=working_bundle,
                 self_play_matches=self_play_matches,
                 alpha=alpha,
                 self_play_iterations=1,
@@ -372,7 +482,7 @@ def train_with_alternating_phases(
                 bundle_version=3,
                 extra_metadata={
                     "training_mode": "alternating_self_play",
-                    "seed_bot_id": current_best_bundle.get("bot_id", V4_BOT_ID),
+                    "seed_bot_id": working_bundle.get("bot_id", V4_BOT_ID),
                 },
                 verbose=verbose,
             )
@@ -384,7 +494,7 @@ def train_with_alternating_phases(
                     dataset=current_replay_history.iterations[-1],
                     run_id=resolved_run_id,
                     iteration=iteration_index,
-                    source_bot_id=current_best_bundle.get("bot_id", V4_BOT_ID),
+                    source_bot_id=working_bundle.get("bot_id", V4_BOT_ID),
                 )
                 prune_replay_shards(
                     replay_store_dir=replay_store_dir,
@@ -441,6 +551,7 @@ def train_with_alternating_phases(
         replay_reset = False
         if evaluation_report["accepted"]:
             current_best_bundle = candidate_bundle
+            working_bundle = candidate_bundle
             incumbent_baseline_cache = _build_incumbent_baseline_cache_from_evaluation(
                 evaluation_report,
                 promoted_candidate=True,
@@ -450,14 +561,63 @@ def train_with_alternating_phases(
             if replay_store_dir is not None:
                 current_replay_history = reset_replay_state_after_promotion(
                     replay_store_dir=replay_store_dir,
+                    replay_history=current_replay_history,
+                    retain_recent_iterations=min(
+                        retain_replay_iterations_after_promotion,
+                        replay_window,
+                    ),
                     verbose=verbose,
                 )
             else:
-                current_replay_history = SelfPlayDatasetHistory()
+                if retain_replay_iterations_after_promotion > 0:
+                    current_replay_history = SelfPlayDatasetHistory(
+                        iterations=list(
+                            current_replay_history.iterations[
+                                -min(retain_replay_iterations_after_promotion, replay_window) :
+                            ]
+                        )
+                    )
+                else:
+                    current_replay_history = SelfPlayDatasetHistory()
             replay_reset = True
             _log(verbose, f"[v4] iteration {iteration_index} promoted candidate")
         else:
+            working_bundle = candidate_bundle
             _log(verbose, f"[v4] iteration {iteration_index} kept incumbent")
+            _log(
+                verbose,
+                _render_promotion_outcome_block(
+                    prefix="[v4]",
+                    title=f"iteration {iteration_index} promotion",
+                    evaluation_report=evaluation_report,
+                    head_to_head_margin=promotion_head_to_head_margin,
+                    greedy_regression_tolerance=promotion_greedy_regression_tolerance,
+                    optimal_regression_tolerance=promotion_optimal_regression_tolerance,
+                ),
+            )
+
+        if adaptive_imitation_schedule:
+            if phase == "imitation":
+                self_play_phases_since_imitation = 0
+                failed_self_play_phases_since_imitation = 0
+                next_phase = "self_play"
+            else:
+                self_play_phases_since_imitation += 1
+                if evaluation_report["accepted"]:
+                    failed_self_play_phases_since_imitation = 0
+                else:
+                    failed_self_play_phases_since_imitation += 1
+                next_phase = (
+                    "imitation"
+                    if _should_run_imitation_after_self_play(
+                        evaluation_report=evaluation_report,
+                        self_play_phases_since_imitation=self_play_phases_since_imitation,
+                        failed_self_play_phases_since_imitation=failed_self_play_phases_since_imitation,
+                        self_play_phases_per_cycle=self_play_phases_per_cycle,
+                        self_play_failures_before_imitation=self_play_failures_before_imitation,
+                    )
+                    else "self_play"
+                )
 
         iteration_elapsed_seconds = time.perf_counter() - iteration_started_at
         iteration_snapshot = _build_self_play_outer_snapshot(
@@ -488,6 +648,8 @@ def train_with_alternating_phases(
             "accepted": evaluation_report["accepted"],
             "candidate_bot_id": candidate_bundle.get("bot_id"),
             "candidate_version": candidate_bundle.get("version"),
+            "working_bot_id": working_bundle.get("bot_id"),
+            "incumbent_bot_id": current_best_bundle.get("bot_id"),
             "training": training_report,
             "evaluation": evaluation_report,
             "timing": {
@@ -532,14 +694,44 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--alpha", type=int, default=12)
     parser.add_argument("--bootstrap-matches", type=int, default=24)
+    parser.add_argument(
+        "--repeat-imitation-bootstrap-matches",
+        type=int,
+        default=0,
+        help="bootstrap teacher matches for imitation phases after the first; use 0 to skip repeated bootstrap",
+    )
+    parser.add_argument(
+        "--repeat-imitation-dagger-matches",
+        type=int,
+        default=8,
+        help="student rollout matches for imitation phases after the first",
+    )
     parser.add_argument("--dagger-matches", type=int, default=16)
     parser.add_argument("--dagger-iterations", type=int, default=1)
     parser.add_argument("--self-play-matches", type=int, default=DEFAULT_SELF_PLAY_MATCHES)
+    parser.add_argument(
+        "--self-play-phases-per-cycle",
+        type=int,
+        default=2,
+        help="number of self-play phases to run between imitation phases, or the minimum self-play burst in adaptive mode",
+    )
+    parser.add_argument(
+        "--self-play-failures-before-imitation",
+        type=int,
+        default=0,
+        help="adaptive mode: run imitation only after this many consecutive rejected self-play phases; use 0 for fixed cadence",
+    )
     parser.add_argument("--replay-window", type=int, default=DEFAULT_REPLAY_WINDOW)
     parser.add_argument(
         "--persisted-replay-limit",
         type=int,
         default=DEFAULT_PERSISTED_REPLAY_LIMIT,
+    )
+    parser.add_argument(
+        "--retain-replay-iterations-after-promotion",
+        type=int,
+        default=1,
+        help="how many freshest replay iterations to keep after a promotion",
     )
     parser.add_argument("--eval-games", type=int, default=36)
     parser.add_argument("--eval-games-vs-optimal", type=int, default=18)
@@ -631,7 +823,9 @@ def main() -> None:
     args = parser.parse_args()
 
     teacher_specs = parse_teacher_specs(args.teacher_pool)
-    initial_model_path = resolve_initial_model_path(args.initial_model)
+    initial_model_path, initial_model_resolution_note = resolve_initial_model_path(
+        args.initial_model
+    )
     current_best_bundle = load_model_bundle(initial_model_path)
     verbose = not args.quiet
 
@@ -663,11 +857,16 @@ def main() -> None:
                 "duration_hours": args.duration_hours,
                 "alpha": args.alpha,
                 "bootstrap_matches": args.bootstrap_matches,
+                "repeat_imitation_bootstrap_matches": args.repeat_imitation_bootstrap_matches,
                 "dagger_matches": args.dagger_matches,
+                "repeat_imitation_dagger_matches": args.repeat_imitation_dagger_matches,
                 "dagger_iterations": args.dagger_iterations,
                 "self_play_matches": args.self_play_matches,
+                "self_play_phases_per_cycle": args.self_play_phases_per_cycle,
+                "self_play_failures_before_imitation": args.self_play_failures_before_imitation,
                 "replay_window": args.replay_window,
                 "persisted_replay_limit": args.persisted_replay_limit,
+                "retain_replay_iterations_after_promotion": args.retain_replay_iterations_after_promotion,
                 "loaded_persisted_replay_shards": len(replay_history.iterations),
                 "eval_games": args.eval_games,
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
@@ -691,7 +890,20 @@ def main() -> None:
             rows=[
                 ("run dir", str(run_dir)),
                 ("initial", str(initial_model_path)),
-                ("phase order", f"{args.start_phase} -> {'self-play' if args.start_phase == 'imitation' else 'imitation'}"),
+                (
+                    "phase order",
+                    (
+                        (
+                            f"{args.start_phase} -> adaptive self-play/imitation"
+                            if args.self_play_failures_before_imitation > 0
+                            else (
+                                f"{args.start_phase} -> self-play x{args.self_play_phases_per_cycle}"
+                                if args.start_phase == "imitation"
+                                else f"self-play x{args.self_play_phases_per_cycle} -> imitation"
+                            )
+                        )
+                    ),
+                ),
                 ("teachers", args.teacher_pool),
                 (
                     "budget",
@@ -703,8 +915,20 @@ def main() -> None:
                 (
                     "schedule",
                     (
-                        f"bootstrap {args.bootstrap_matches} | dagger {args.dagger_matches} x{args.dagger_iterations} | "
-                        f"self-play {args.self_play_matches} | replay {args.replay_window}"
+                        (
+                            f"bootstrap {args.bootstrap_matches}/{args.repeat_imitation_bootstrap_matches} | "
+                            f"dagger {args.dagger_matches}/{args.repeat_imitation_dagger_matches} x{args.dagger_iterations} | "
+                            f"self-play {args.self_play_matches} min-burst {args.self_play_phases_per_cycle} | "
+                            f"imitate after {args.self_play_failures_before_imitation} self-play fails | "
+                            f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion}"
+                        )
+                        if args.self_play_failures_before_imitation > 0
+                        else (
+                            f"bootstrap {args.bootstrap_matches}/{args.repeat_imitation_bootstrap_matches} | "
+                            f"dagger {args.dagger_matches}/{args.repeat_imitation_dagger_matches} x{args.dagger_iterations} | "
+                            f"self-play {args.self_play_matches} x{args.self_play_phases_per_cycle} | "
+                            f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion}"
+                        )
                     ),
                 ),
                 (
@@ -717,6 +941,8 @@ def main() -> None:
             ],
         ),
     )
+    if initial_model_resolution_note is not None:
+        _log(verbose, f"[v4] note {initial_model_resolution_note}")
 
     started_at = time.time()
     deadline = started_at + (args.duration_hours * 3600.0)
@@ -725,11 +951,16 @@ def main() -> None:
         teacher_specs=teacher_specs,
         alpha=args.alpha,
         bootstrap_matches=args.bootstrap_matches,
+        repeat_imitation_bootstrap_matches=args.repeat_imitation_bootstrap_matches,
         dagger_matches=args.dagger_matches,
+        repeat_imitation_dagger_matches=args.repeat_imitation_dagger_matches,
         dagger_iterations=args.dagger_iterations,
         self_play_matches=args.self_play_matches,
+        self_play_phases_per_cycle=args.self_play_phases_per_cycle,
+        self_play_failures_before_imitation=args.self_play_failures_before_imitation,
         replay_window=args.replay_window,
         persisted_replay_limit=args.persisted_replay_limit,
+        retain_replay_iterations_after_promotion=args.retain_replay_iterations_after_promotion,
         seed=args.seed,
         play_hidden_dim=args.play_hidden_dim,
         auction_hidden_dim=args.auction_hidden_dim,

@@ -352,6 +352,7 @@ def train_with_alternating_phases(
     replay_history: SelfPlayDatasetHistory | None = None,
     checkpoint_dir: Path | None = None,
     best_path: Path | None = None,
+    promote_to_path: Path | None = None,
     report_path: Path | None = None,
     replay_store_dir: Path | None = None,
     run_id: str | None = None,
@@ -626,6 +627,8 @@ def train_with_alternating_phases(
             )
             if best_path is not None:
                 save_model_bundle(current_best_bundle, best_path)
+            if promote_to_path is not None:
+                save_model_bundle(current_best_bundle, promote_to_path)
             if replay_store_dir is not None:
                 current_replay_history = reset_replay_state_after_promotion(
                     replay_store_dir=replay_store_dir,
@@ -1108,6 +1111,7 @@ def main() -> None:
         replay_history=replay_history,
         checkpoint_dir=checkpoint_dir,
         best_path=best_path,
+        promote_to_path=args.promote_to,
         report_path=report_path,
         replay_store_dir=args.replay_store_dir,
         run_id=timestamp,

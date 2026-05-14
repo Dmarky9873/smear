@@ -2,11 +2,19 @@
   "name": "smear",
   "private": true,
   "workspaces": [
-    "frontend"
+    "frontend",
+    "apps/play-ui",
+    "packages/web-core"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace smear-debug-ui",
-    "build": "npm run build --workspace smear-debug-ui",
-    "preview": "npm run preview --workspace smear-debug-ui"
+    "dev": "npm run dev --workspace @smear/play-ui",
+    "dev:play": "npm run dev --workspace @smear/play-ui",
+    "dev:debug": "npm run dev --workspace @smear/debug-ui",
+    "build": "npm run build:play && npm run build:debug",
+    "build:play": "npm run build --workspace @smear/play-ui",
+    "build:debug": "npm run build --workspace @smear/debug-ui",
+    "preview": "npm run preview --workspace @smear/play-ui",
+    "preview:play": "npm run preview --workspace @smear/play-ui",
+    "preview:debug": "npm run preview --workspace @smear/debug-ui"
   }
 }

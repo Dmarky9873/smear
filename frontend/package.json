@@ -1,5 +1,5 @@
 {
-  "name": "smear-debug-ui",
+  "name": "@smear/debug-ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 try:
     from .schemas import (
@@ -35,6 +35,7 @@ except ImportError:
 
 
 router = APIRouter()
+DEFAULT_SESSION_ID = "default"
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -43,6 +44,21 @@ def _not_found(detail: str) -> HTTPException:
 
 def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def resolve_session_id(
+    x_smear_session_id: str | None = Header(
+        default=None,
+        alias="X-Smear-Session-Id",
+    ),
+    session_id: str | None = Query(default=None),
+) -> str:
+    resolved = (x_smear_session_id or session_id or DEFAULT_SESSION_ID).strip()
+    if not resolved:
+        raise _bad_request("session id must not be blank")
+    if len(resolved) > 128:
+        raise _bad_request("session id must be 128 characters or fewer")
+    return resolved
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -60,9 +76,13 @@ def get_ready_bots() -> dict:
     response_model=GameStateResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def new_game(payload: NewGameRequest) -> dict:
+def new_game(
+    payload: NewGameRequest,
+    session_id: str = Depends(resolve_session_id),
+) -> dict:
     try:
         game = game_store.create_game(
+            session_id=session_id,
             num_players=payload.num_players,
             player_names=payload.player_names,
             teams=payload.teams,
@@ -76,9 +96,13 @@ def new_game(payload: NewGameRequest) -> dict:
 
 
 @router.post("/game/auction/bid", response_model=GameStateResponse)
-def place_bid(payload: BidRequest) -> dict:
+def place_bid(
+    payload: BidRequest,
+    session_id: str = Depends(resolve_session_id),
+) -> dict:
     try:
         session = game_store.place_bid(
+            session_id,
             payload.amount,
             auto_run_bots=payload.auto_run_bots,
         )
@@ -91,9 +115,15 @@ def place_bid(payload: BidRequest) -> dict:
 
 
 @router.post("/game/auction/pass", response_model=GameStateResponse)
-def pass_auction(auto_run_bots: bool = True) -> dict:
+def pass_auction(
+    auto_run_bots: bool = True,
+    session_id: str = Depends(resolve_session_id),
+) -> dict:
     try:
-        session = game_store.pass_auction(auto_run_bots=auto_run_bots)
+        session = game_store.pass_auction(
+            session_id,
+            auto_run_bots=auto_run_bots,
+        )
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
@@ -103,9 +133,15 @@ def pass_auction(auto_run_bots: bool = True) -> dict:
 
 
 @router.post("/game/reset", response_model=GameStateResponse)
-def reset_game(auto_run_bots: bool = True) -> dict:
+def reset_game(
+    auto_run_bots: bool = True,
+    session_id: str = Depends(resolve_session_id),
+) -> dict:
     try:
-        game = game_store.reset_round(auto_run_bots=auto_run_bots)
+        game = game_store.reset_round(
+            session_id,
+            auto_run_bots=auto_run_bots,
+        )
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
@@ -113,9 +149,15 @@ def reset_game(auto_run_bots: bool = True) -> dict:
 
 
 @router.post("/game/next-round", response_model=GameStateResponse)
-def next_round(auto_run_bots: bool = True) -> dict:
+def next_round(
+    auto_run_bots: bool = True,
+    session_id: str = Depends(resolve_session_id),
+) -> dict:
     try:
-        session = game_store.next_round(auto_run_bots=auto_run_bots)
+        session = game_store.next_round(
+            session_id,
+            auto_run_bots=auto_run_bots,
+        )
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
@@ -125,9 +167,9 @@ def next_round(auto_run_bots: bool = True) -> dict:
 
 
 @router.get("/game/state", response_model=GameStateResponse)
-def get_game_state() -> dict:
+def get_game_state(session_id: str = Depends(resolve_session_id)) -> dict:
     try:
-        game = game_store.get_state()
+        game = game_store.get_state(session_id)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
@@ -135,9 +177,9 @@ def get_game_state() -> dict:
 
 
 @router.get("/game/legal-actions", response_model=LegalActionsResponse)
-def get_game_legal_actions() -> dict:
+def get_game_legal_actions(session_id: str = Depends(resolve_session_id)) -> dict:
     try:
-        actions = game_store.get_legal_actions()
+        actions = game_store.get_legal_actions(session_id)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
@@ -145,9 +187,13 @@ def get_game_legal_actions() -> dict:
 
 
 @router.post("/game/play", response_model=GameStateResponse)
-def play_card(payload: PlayCardRequest) -> dict:
+def play_card(
+    payload: PlayCardRequest,
+    session_id: str = Depends(resolve_session_id),
+) -> dict:
     try:
         game = game_store.play_card(
+            session_id,
             payload.card_code,
             auto_run_bots=payload.auto_run_bots,
         )
@@ -160,9 +206,9 @@ def play_card(payload: PlayCardRequest) -> dict:
 
 
 @router.post("/game/bots/step", response_model=GameStateResponse)
-def step_bot_turn() -> dict:
+def step_bot_turn(session_id: str = Depends(resolve_session_id)) -> dict:
     try:
-        session = game_store.advance_bot_turn()
+        session = game_store.advance_bot_turn(session_id)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except ValueError as exc:
@@ -172,17 +218,17 @@ def step_bot_turn() -> dict:
 
 
 @router.get("/game/bots/progress", response_model=BotProgressResponse)
-def get_bot_progress() -> dict:
+def get_bot_progress(session_id: str = Depends(resolve_session_id)) -> dict:
     try:
-        return game_store.get_bot_progress()
+        return game_store.get_bot_progress(session_id)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
 
 @router.get("/game/score", response_model=RoundScoreResponse)
-def get_game_score() -> dict:
+def get_game_score(session_id: str = Depends(resolve_session_id)) -> dict:
     try:
-        return serialize_score_details(game_store.get_score())
+        return serialize_score_details(game_store.get_score(session_id))
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
     except RoundNotTerminalError as exc:

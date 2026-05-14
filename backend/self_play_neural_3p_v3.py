@@ -822,12 +822,17 @@ def _merge_self_play_shard_reports(
     sampled_auction_actions = 0
     sampled_play_actions = 0
     worker_elapsed_seconds = 0.0
+    league_opponent_counts: dict[str, int] = {}
     for shard_report in shard_reports:
         forced_auction_actions += shard_report["forced_auction_actions"]
         forced_play_actions += shard_report["forced_play_actions"]
         sampled_auction_actions += shard_report["sampled_auction_actions"]
         sampled_play_actions += shard_report["sampled_play_actions"]
         worker_elapsed_seconds += shard_report["elapsed_seconds"]
+        _merge_count_dict(
+            league_opponent_counts,
+            shard_report.get("league_opponent_counts", {}),
+        )
     return {
         "matches": match_count,
         "alpha": alpha,
@@ -841,6 +846,7 @@ def _merge_self_play_shard_reports(
         "sampled_play_actions": sampled_play_actions,
         "elapsed_seconds": elapsed_seconds,
         "worker_elapsed_seconds": worker_elapsed_seconds,
+        "league_opponent_counts": league_opponent_counts,
         "workers": worker_count,
     }
 
@@ -858,6 +864,8 @@ def _collect_self_play_training_dataset_sequential(
     policy_advantage_scale: float,
     value_weight_scale: float,
     winner_policy_weight: float,
+    league_opponent_specs: list[TeacherSpec] | None = None,
+    incumbent_bundle: dict | None = None,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
     if match_count <= 0:
@@ -871,6 +879,7 @@ def _collect_self_play_training_dataset_sequential(
     forced_play_actions = 0
     sampled_auction_actions = 0
     sampled_play_actions = 0
+    league_opponent_counts: dict[str, int] = {}
     started_at = time.perf_counter()
     progress = LiveProgressDisplay(
         verbose=verbose,
@@ -885,19 +894,24 @@ def _collect_self_play_training_dataset_sequential(
             f"[collect:self-play] start matches={match_count} alpha={alpha} "
             f"seed={seed} play_temp={play_temperature:.2f} "
             f"auction_temp={auction_temperature:.2f} epsilon={epsilon:.2f}"
+            + (
+                f" league={_format_league_pool(league_opponent_specs)}"
+                if league_opponent_specs
+                else ""
+            )
         ),
     )
     progress.start(detail=_format_dataset_counts(dataset))
 
     for match_index in range(match_count):
         random.seed(seed + match_index)
-        controller = MatchController.create(
-            num_players=3,
-            player_names=THREE_PLAYER_NAMES,
-            teams=None,
-            bots=_build_self_play_bots(model_bundle),
-            auto_run_bots=False,
+        controller, learner_player_names, match_league_counts = _build_self_play_match_controller(
+            learner_bundle=model_bundle,
+            seat_rng=rng,
+            league_opponent_specs=league_opponent_specs,
+            incumbent_bundle=incumbent_bundle,
         )
+        _merge_count_dict(league_opponent_counts, match_league_counts)
         round_start_match_scores = dict(controller.session.match_scores)
         pending_play_values: list[PendingValueExample] = []
         pending_auction_values: list[PendingValueExample] = []
@@ -911,111 +925,125 @@ def _collect_self_play_training_dataset_sequential(
                     raise ValueError("match controller had no active bot turn")
                 controller._sync_bot_hand(player_name)
                 bot = controller.session.bots[player_name]
+                learner_controlled = player_name in learner_player_names
 
                 if controller.session.phase == "auction":
                     auction_state = controller.session.auction.state
-                    scored_actions = bot.score_auction_candidates(auction_state)
-                    legal_actions = [action for action, _, _ in scored_actions]
+                    legal_actions = ordered_legal_auction_actions(auction_state)
                     if not legal_actions:
                         raise ValueError("self-play found no legal auction actions")
 
-                    if len(legal_actions) == 1:
-                        forced_auction_actions += 1
-                        chosen_index = 0
-                    else:
-                        sampled_auction_actions += 1
-                        chosen_index = _sample_index(
-                            scores=[score for _, score, _ in scored_actions],
-                            rng=rng,
-                            temperature=auction_temperature,
-                            epsilon=epsilon,
-                        )
-                        pending_auction_policy.append(
-                            PendingPolicyExample(
+                    if learner_controlled:
+                        scored_actions = bot.score_auction_candidates(auction_state)
+                        if len(legal_actions) == 1:
+                            forced_auction_actions += 1
+                            chosen_index = 0
+                        else:
+                            sampled_auction_actions += 1
+                            chosen_index = _sample_index(
+                                scores=[score for _, score, _ in scored_actions],
+                                rng=rng,
+                                temperature=auction_temperature,
+                                epsilon=epsilon,
+                            )
+                            pending_auction_policy.append(
+                                PendingPolicyExample(
+                                    player_name=player_name,
+                                    candidate_features=[
+                                        features for _, _, features in scored_actions
+                                    ],
+                                    chosen_index=chosen_index,
+                                    baseline_value=bot.estimate_auction_state_value(
+                                        auction_state,
+                                        perspective_player_name=player_name,
+                                    ),
+                                    phase="auction",
+                                )
+                            )
+                        chosen_action = scored_actions[chosen_index][0]
+                        successor_auction = deepcopy(auction_state)
+                        apply_auction_action_for_search(successor_auction, chosen_action)
+                        pending_auction_values.append(
+                            PendingValueExample(
                                 player_name=player_name,
-                                candidate_features=[
-                                    features for _, _, features in scored_actions
-                                ],
-                                chosen_index=chosen_index,
-                                baseline_value=bot.estimate_auction_state_value(
-                                    auction_state,
+                                features=encode_auction_state(
+                                    auction_state=successor_auction,
                                     perspective_player_name=player_name,
+                                    hand=set(bot.cards),
+                                    match_scores=round_start_match_scores,
+                                    target_score=controller.session.target_score,
                                 ),
-                                phase="auction",
+                                weight=1.0,
                             )
                         )
-
-                    chosen_action = legal_actions[chosen_index]
-                    successor_auction = deepcopy(auction_state)
-                    apply_auction_action_for_search(successor_auction, chosen_action)
-                    pending_auction_values.append(
-                        PendingValueExample(
-                            player_name=player_name,
-                            features=encode_auction_state(
-                                auction_state=successor_auction,
-                                perspective_player_name=player_name,
-                                hand=set(bot.cards),
-                                match_scores=round_start_match_scores,
-                                target_score=controller.session.target_score,
-                            ),
-                            weight=1.0,
-                        )
-                    )
+                    else:
+                        chosen_action = bot.choose_auction_action(auction_state)
+                        if chosen_action not in legal_actions:
+                            raise ValueError(
+                                f"league opponent selected illegal auction action {chosen_action}"
+                            )
                     controller.session.auction.apply_event(chosen_action)
                     controller._advance_or_finalize_auction()
                     continue
 
                 round_state = controller.session.game.round_state
-                scored_cards = bot.score_play_candidates(round_state)
-                legal_cards = [card for card, _, _ in scored_cards]
+                legal_cards = ordered_legal_cards(round_state)
                 if not legal_cards:
                     raise ValueError("self-play found no legal cards")
 
-                if len(legal_cards) == 1:
-                    forced_play_actions += 1
-                    chosen_index = 0
-                else:
-                    sampled_play_actions += 1
-                    chosen_index = _sample_index(
-                        scores=[score for _, score, _ in scored_cards],
-                        rng=rng,
-                        temperature=play_temperature,
-                        epsilon=epsilon,
-                    )
-                    pending_play_policy.append(
-                        PendingPolicyExample(
-                            player_name=player_name,
-                            candidate_features=[
-                                features for _, _, features in scored_cards
-                            ],
-                            chosen_index=chosen_index,
-                            baseline_value=bot.estimate_play_state_value(
-                                round_state,
-                                perspective_player_name=player_name,
-                            ),
-                            phase="play",
+                if learner_controlled:
+                    scored_cards = bot.score_play_candidates(round_state)
+                    if len(legal_cards) == 1:
+                        forced_play_actions += 1
+                        chosen_index = 0
+                    else:
+                        sampled_play_actions += 1
+                        chosen_index = _sample_index(
+                            scores=[score for _, score, _ in scored_cards],
+                            rng=rng,
+                            temperature=play_temperature,
+                            epsilon=epsilon,
                         )
-                    )
+                        pending_play_policy.append(
+                            PendingPolicyExample(
+                                player_name=player_name,
+                                candidate_features=[
+                                    features for _, _, features in scored_cards
+                                ],
+                                chosen_index=chosen_index,
+                                baseline_value=bot.estimate_play_state_value(
+                                    round_state,
+                                    perspective_player_name=player_name,
+                                ),
+                                phase="play",
+                            )
+                        )
 
-                chosen_card = legal_cards[chosen_index]
-                successor_round = apply_trick_action_to_state(
-                    round_state,
-                    Play(round_state.current_player, chosen_card),
-                )
-                if not successor_round.is_terminal:
-                    pending_play_values.append(
-                        PendingValueExample(
-                            player_name=player_name,
-                            features=encode_play_state(
-                                round_state=successor_round,
-                                perspective_player_name=player_name,
-                                match_scores=round_start_match_scores,
-                                target_score=controller.session.target_score,
-                                auction_state=controller.session.auction.state,
-                            ),
-                            weight=1.0,
-                        )
+                    chosen_card = scored_cards[chosen_index][0]
+                    successor_round = apply_trick_action_to_state(
+                        round_state,
+                        Play(round_state.current_player, chosen_card),
                     )
+                    if not successor_round.is_terminal:
+                        pending_play_values.append(
+                            PendingValueExample(
+                                player_name=player_name,
+                                features=encode_play_state(
+                                    round_state=successor_round,
+                                    perspective_player_name=player_name,
+                                    match_scores=round_start_match_scores,
+                                    target_score=controller.session.target_score,
+                                    auction_state=controller.session.auction.state,
+                                ),
+                                weight=1.0,
+                            )
+                        )
+                else:
+                    chosen_card = bot.choose_card(round_state)
+                    if chosen_card not in legal_cards:
+                        raise ValueError(
+                            f"league opponent selected illegal card {chosen_card.code}"
+                        )
                 controller.session.game.apply_trick_action(
                     Play(controller.session.game.curr_player, chosen_card)
                 )
@@ -1121,6 +1149,7 @@ def _collect_self_play_training_dataset_sequential(
         "forced_play_actions": forced_play_actions,
         "sampled_auction_actions": sampled_auction_actions,
         "sampled_play_actions": sampled_play_actions,
+        "league_opponent_counts": league_opponent_counts,
         "elapsed_seconds": elapsed_seconds,
     }
     _log(
@@ -1130,6 +1159,11 @@ def _collect_self_play_training_dataset_sequential(
             f"elapsed={_format_seconds(elapsed_seconds)} "
             f"forced_auction={forced_auction_actions} forced_play={forced_play_actions} "
             f"sampled_auction={sampled_auction_actions} sampled_play={sampled_play_actions}"
+            + (
+                f" league={league_opponent_counts}"
+                if league_opponent_counts
+                else ""
+            )
         ),
     )
     return dataset, report
@@ -1148,6 +1182,8 @@ def collect_self_play_training_dataset(
     policy_advantage_scale: float,
     value_weight_scale: float,
     winner_policy_weight: float,
+    league_opponent_specs: list[TeacherSpec] | None = None,
+    incumbent_bundle: dict | None = None,
     workers: int = DEFAULT_WORKERS,
     verbose: bool = False,
 ) -> tuple[TrainingDataset, dict]:
@@ -1164,6 +1200,8 @@ def collect_self_play_training_dataset(
             policy_advantage_scale=policy_advantage_scale,
             value_weight_scale=value_weight_scale,
             winner_policy_weight=winner_policy_weight,
+            league_opponent_specs=league_opponent_specs,
+            incumbent_bundle=incumbent_bundle,
             verbose=verbose,
         )
 
@@ -1184,6 +1222,11 @@ def collect_self_play_training_dataset(
             f"seed={seed} play_temp={play_temperature:.2f} "
             f"auction_temp={auction_temperature:.2f} epsilon={epsilon:.2f} "
             f"workers={resolved_workers}"
+            + (
+                f" league={_format_league_pool(league_opponent_specs)}"
+                if league_opponent_specs
+                else ""
+            )
         ),
     )
     progress.start(detail=_format_dataset_counts(aggregate_dataset))
@@ -1200,6 +1243,8 @@ def collect_self_play_training_dataset(
             "policy_advantage_scale": policy_advantage_scale,
             "value_weight_scale": value_weight_scale,
             "winner_policy_weight": winner_policy_weight,
+            "league_opponent_specs": league_opponent_specs,
+            "incumbent_bundle": incumbent_bundle,
             "verbose": False,
         }
         for match_index in range(match_count)
@@ -1253,6 +1298,7 @@ def collect_self_play_training_dataset(
 def train_with_self_play(
     *,
     initial_bundle: dict,
+    incumbent_bundle: dict | None = None,
     self_play_matches: int,
     alpha: int,
     self_play_iterations: int,
@@ -1287,6 +1333,7 @@ def train_with_self_play(
     gradient_clip: float = 3.0,
     trainer_backend: str = DEFAULT_TRAINING_BACKEND,
     trainer_batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
+    league_opponent_specs: list[TeacherSpec] | None = None,
     replay_history: SelfPlayDatasetHistory | None = None,
     iteration_offset: int = 0,
     workers: int = DEFAULT_WORKERS,
@@ -1296,6 +1343,7 @@ def train_with_self_play(
     verbose: bool = False,
 ) -> tuple[dict, dict]:
     current_bundle = initial_bundle
+    resolved_incumbent_bundle = incumbent_bundle or initial_bundle
     if replay_history is None:
         replay_history = SelfPlayDatasetHistory()
     iteration_reports: list[dict] = []
@@ -1345,6 +1393,8 @@ def train_with_self_play(
             policy_advantage_scale=policy_advantage_scale,
             value_weight_scale=value_weight_scale,
             winner_policy_weight=winner_policy_weight,
+            league_opponent_specs=league_opponent_specs,
+            incumbent_bundle=resolved_incumbent_bundle,
             workers=workers,
             verbose=verbose,
         )
@@ -1367,6 +1417,10 @@ def train_with_self_play(
             "training_mode": "self_play",
             "seed_bot_id": initial_bundle.get("bot_id", "neural-3p-v2"),
         }
+        if league_opponent_specs:
+            self_play_bundle_metadata["league_opponent_pool"] = _serialize_league_opponent_specs(
+                league_opponent_specs
+            )
         if extra_metadata:
             self_play_bundle_metadata.update(extra_metadata)
 
@@ -1458,6 +1512,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=int, default=12)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--initial-model", type=Path, default=None)
+    parser.add_argument(
+        "--self-play-league-pool",
+        default="",
+        help=(
+            "optional weighted opponent pool for league self-play; use ready bot ids "
+            "and/or incumbent, e.g. 'incumbent:2,greedy:2,1-trick-minmax:2,optimal-bot:1'"
+        ),
+    )
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--replay-store-dir", type=Path, default=DEFAULT_REPLAY_STORE_DIR)
     parser.add_argument("--promote-to", type=Path, default=DEFAULT_OUTPUT)
@@ -1557,6 +1619,7 @@ def main() -> None:
 
     initial_model_path = _resolve_initial_model_path(args.initial_model)
     current_best_bundle = load_model_bundle(initial_model_path)
+    league_opponent_specs = parse_league_opponent_specs(args.self_play_league_pool)
     verbose = not args.quiet
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1580,6 +1643,7 @@ def main() -> None:
             {
                 "started_at": timestamp,
                 "initial_model_path": str(initial_model_path),
+                "self_play_league_pool": args.self_play_league_pool,
                 "replay_store_dir": str(args.replay_store_dir),
                 "self_play_matches": args.self_play_matches,
                 "alpha": args.alpha,
@@ -1610,6 +1674,10 @@ def main() -> None:
             rows=[
                 ("run dir", str(run_dir)),
                 ("initial", str(initial_model_path)),
+                (
+                    "league",
+                    _format_league_pool(league_opponent_specs),
+                ),
                 ("replay", f"{args.replay_store_dir} | window {args.replay_window} | disk {args.persisted_replay_limit}"),
                 (
                     "budget",
@@ -1663,6 +1731,7 @@ def main() -> None:
         )
         candidate_bundle, report = train_with_self_play(
             initial_bundle=current_best_bundle,
+            incumbent_bundle=current_best_bundle,
             self_play_matches=args.self_play_matches,
             alpha=args.alpha,
             self_play_iterations=1,
@@ -1692,6 +1761,7 @@ def main() -> None:
             epsilon_decay=args.epsilon_decay,
             trainer_backend=args.trainer_backend,
             trainer_batch_size=args.trainer_batch_size,
+            league_opponent_specs=league_opponent_specs,
             iteration_offset=iteration_index - 1,
             policy_advantage_threshold=args.policy_advantage_threshold,
             policy_advantage_scale=args.policy_advantage_scale,

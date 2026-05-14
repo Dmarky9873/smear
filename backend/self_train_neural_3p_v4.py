@@ -25,7 +25,9 @@ try:
         SELF_PLAY_OUTER_METRICS,
         SelfPlayDatasetHistory,
         _build_self_play_outer_snapshot,
+        _format_league_pool,
         load_persisted_replay_history,
+        parse_league_opponent_specs,
         prune_replay_shards,
         reset_replay_state_after_promotion,
         save_replay_shard,
@@ -60,6 +62,7 @@ try:
         DEFAULT_WARM_START_EPOCH_SCALE,
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WORKERS,
+        TeacherSpec,
         TRAINING_BACKEND_CHOICES,
         _render_compact_block,
         _render_iteration_comparison_table,
@@ -86,7 +89,9 @@ except ImportError:
         SELF_PLAY_OUTER_METRICS,
         SelfPlayDatasetHistory,
         _build_self_play_outer_snapshot,
+        _format_league_pool,
         load_persisted_replay_history,
+        parse_league_opponent_specs,
         prune_replay_shards,
         reset_replay_state_after_promotion,
         save_replay_shard,
@@ -121,6 +126,7 @@ except ImportError:
         DEFAULT_WARM_START_EPOCH_SCALE,
         DEFAULT_WARM_START_LR_SCALE,
         DEFAULT_WORKERS,
+        TeacherSpec,
         TRAINING_BACKEND_CHOICES,
         _render_compact_block,
         _render_iteration_comparison_table,
@@ -135,6 +141,9 @@ V4_BOT_ID = "neural-3p-v4"
 DEFAULT_OUTPUT = NeuralThreePlayerBot.MODEL_FILE_V4
 DEFAULT_RUN_ROOT = NeuralThreePlayerBot.MODEL_DIR / "self_train_runs_v4"
 DEFAULT_REPLAY_STORE_DIR = NeuralThreePlayerBot.MODEL_DIR / "self_play_replay_v4"
+DEFAULT_GUARD_FOCUS_MULTIPLIER = 2.0
+GREEDY_FOCUS_BOT_IDS = frozenset({"greedy", "1-trick-minmax"})
+OPTIMAL_FOCUS_BOT_IDS = frozenset({"optimal-bot"})
 ALTERNATING_OUTER_METRICS: tuple[ComparisonMetric, ...] = (
     ComparisonMetric(
         key="phase",
@@ -199,10 +208,6 @@ def _should_run_imitation_after_self_play(
     if evaluation_report["accepted"]:
         return False
 
-    # A candidate that survives head-to-head but fails a baseline guard has drifted.
-    if not evaluation_report["rejected_after_precheck"] and not evaluation_report["rejected_after_head_to_head"]:
-        return True
-
     if self_play_phases_since_imitation < self_play_phases_per_cycle:
         return False
 
@@ -210,6 +215,41 @@ def _should_run_imitation_after_self_play(
         return True
 
     return failed_self_play_phases_since_imitation >= self_play_failures_before_imitation
+
+
+def _extract_guard_focus_bot_ids(
+    evaluation_report: dict,
+) -> tuple[set[str], set[str]]:
+    diagnostics = evaluation_report.get("promotion_diagnostics", {})
+    reasons = diagnostics.get("reasons", [])
+    teacher_focus_bot_ids: set[str] = set()
+    league_focus_bot_ids: set[str] = set()
+
+    if any(reason.startswith("greedy guard failed:") for reason in reasons):
+        teacher_focus_bot_ids.update(GREEDY_FOCUS_BOT_IDS)
+        league_focus_bot_ids.update(GREEDY_FOCUS_BOT_IDS)
+    if any(reason.startswith("optimal guard failed:") for reason in reasons):
+        teacher_focus_bot_ids.update(OPTIMAL_FOCUS_BOT_IDS)
+        league_focus_bot_ids.update(OPTIMAL_FOCUS_BOT_IDS)
+
+    return teacher_focus_bot_ids, league_focus_bot_ids
+
+
+def _apply_focus_to_specs(
+    specs: list[TeacherSpec],
+    *,
+    focus_bot_ids: set[str],
+    multiplier: float,
+) -> list[TeacherSpec]:
+    if not specs or not focus_bot_ids or multiplier <= 1.0:
+        return specs
+    return [
+        TeacherSpec(
+            spec.bot_id,
+            spec.weight * multiplier if spec.bot_id in focus_bot_ids else spec.weight,
+        )
+        for spec in specs
+    ]
 
 
 def _resolve_default_initial_model_path() -> Path:
@@ -252,6 +292,8 @@ def train_with_alternating_phases(
     *,
     initial_bundle: dict,
     teacher_specs: list,
+    self_play_league_specs: list[TeacherSpec] | None = None,
+    guard_focus_multiplier: float = DEFAULT_GUARD_FOCUS_MULTIPLIER,
     alpha: int,
     bootstrap_matches: int,
     repeat_imitation_bootstrap_matches: int = 0,
@@ -329,6 +371,8 @@ def train_with_alternating_phases(
         raise ValueError("self_play_failures_before_imitation must be non-negative")
     if retain_replay_iterations_after_promotion < 0:
         raise ValueError("retain_replay_iterations_after_promotion must be non-negative")
+    if guard_focus_multiplier <= 0:
+        raise ValueError("guard_focus_multiplier must be positive")
     started_at = run_started_at if run_started_at is not None else time.time()
     current_best_bundle = initial_bundle
     working_bundle = initial_bundle
@@ -344,6 +388,8 @@ def train_with_alternating_phases(
     resolved_run_id = run_id or "neural-3p-v4"
     adaptive_imitation_schedule = self_play_failures_before_imitation > 0
     next_phase = normalized_start_phase
+    teacher_focus_bot_ids: set[str] = set()
+    league_focus_bot_ids: set[str] = set()
 
     while True:
         if max_iterations is not None and iteration_index > max_iterations:
@@ -365,6 +411,16 @@ def train_with_alternating_phases(
                     self_play_phases_per_cycle=self_play_phases_per_cycle,
                 )
         phase_label = _display_phase_name(phase)
+        active_teacher_specs = _apply_focus_to_specs(
+            teacher_specs,
+            focus_bot_ids=teacher_focus_bot_ids,
+            multiplier=guard_focus_multiplier,
+        )
+        active_league_specs = _apply_focus_to_specs(
+            self_play_league_specs or [],
+            focus_bot_ids=league_focus_bot_ids,
+            multiplier=guard_focus_multiplier,
+        )
         iteration_seed = seed + (iteration_index * 10_000)
         iteration_started_at = time.perf_counter()
         _log(
@@ -376,6 +432,14 @@ def train_with_alternating_phases(
                     ("phase", phase_label),
                     ("seed", str(iteration_seed)),
                     ("elapsed", f"{(time.time() - started_at) / 3600.0:.2f}h"),
+                    (
+                        "focus",
+                        (
+                            ", ".join(sorted(teacher_focus_bot_ids or league_focus_bot_ids))
+                            if (teacher_focus_bot_ids or league_focus_bot_ids)
+                            else "-"
+                        ),
+                    ),
                 ],
             ),
         )
@@ -395,7 +459,7 @@ def train_with_alternating_phases(
                 else repeat_imitation_dagger_matches
             )
             candidate_bundle, training_report = train_with_dagger(
-                teacher_specs=teacher_specs,
+                teacher_specs=active_teacher_specs,
                 bootstrap_matches=phase_bootstrap_matches,
                 dagger_matches=phase_dagger_matches,
                 alpha=alpha,
@@ -441,6 +505,7 @@ def train_with_alternating_phases(
         else:
             candidate_bundle, training_report = train_with_self_play(
                 initial_bundle=working_bundle,
+                incumbent_bundle=current_best_bundle,
                 self_play_matches=self_play_matches,
                 alpha=alpha,
                 self_play_iterations=1,
@@ -475,6 +540,7 @@ def train_with_alternating_phases(
                 gradient_clip=gradient_clip,
                 trainer_backend=trainer_backend,
                 trainer_batch_size=trainer_batch_size,
+                league_opponent_specs=active_league_specs,
                 replay_history=current_replay_history,
                 iteration_offset=self_play_phase_count,
                 workers=workers,
@@ -552,6 +618,8 @@ def train_with_alternating_phases(
         if evaluation_report["accepted"]:
             current_best_bundle = candidate_bundle
             working_bundle = candidate_bundle
+            teacher_focus_bot_ids.clear()
+            league_focus_bot_ids.clear()
             incumbent_baseline_cache = _build_incumbent_baseline_cache_from_evaluation(
                 evaluation_report,
                 promoted_candidate=True,
@@ -607,6 +675,17 @@ def train_with_alternating_phases(
                     failed_self_play_phases_since_imitation = 0
                 else:
                     failed_self_play_phases_since_imitation += 1
+                    if (
+                        not evaluation_report["rejected_after_precheck"]
+                        and not evaluation_report["rejected_after_head_to_head"]
+                    ):
+                        (
+                            teacher_focus_bot_ids,
+                            league_focus_bot_ids,
+                        ) = _extract_guard_focus_bot_ids(evaluation_report)
+                    else:
+                        teacher_focus_bot_ids.clear()
+                        league_focus_bot_ids.clear()
                 next_phase = (
                     "imitation"
                     if _should_run_imitation_after_self_play(
@@ -687,6 +766,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="which phase should run first in the alternating schedule",
     )
     parser.add_argument("--teacher-pool", default=DEFAULT_TEACHER_POOL)
+    parser.add_argument(
+        "--self-play-league-pool",
+        default="",
+        help=(
+            "optional weighted opponent pool for league self-play; use ready bot ids "
+            "and/or incumbent, e.g. 'incumbent:2,greedy:2,1-trick-minmax:2,optimal-bot:1'"
+        ),
+    )
+    parser.add_argument(
+        "--guard-focus-multiplier",
+        type=float,
+        default=DEFAULT_GUARD_FOCUS_MULTIPLIER,
+        help="multiply focused teacher/league opponent weights after greedy or optimal guard failures",
+    )
     parser.add_argument("--initial-model", type=Path, default=None)
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--replay-store-dir", type=Path, default=DEFAULT_REPLAY_STORE_DIR)
@@ -823,6 +916,7 @@ def main() -> None:
     args = parser.parse_args()
 
     teacher_specs = parse_teacher_specs(args.teacher_pool)
+    self_play_league_specs = parse_league_opponent_specs(args.self_play_league_pool)
     initial_model_path, initial_model_resolution_note = resolve_initial_model_path(
         args.initial_model
     )
@@ -852,6 +946,8 @@ def main() -> None:
                 "started_at": timestamp,
                 "initial_model_path": str(initial_model_path),
                 "teacher_pool": args.teacher_pool,
+                "self_play_league_pool": args.self_play_league_pool,
+                "guard_focus_multiplier": args.guard_focus_multiplier,
                 "start_phase": args.start_phase,
                 "replay_store_dir": str(args.replay_store_dir),
                 "duration_hours": args.duration_hours,
@@ -905,6 +1001,7 @@ def main() -> None:
                     ),
                 ),
                 ("teachers", args.teacher_pool),
+                ("league", _format_league_pool(self_play_league_specs)),
                 (
                     "budget",
                     (
@@ -920,14 +1017,16 @@ def main() -> None:
                             f"dagger {args.dagger_matches}/{args.repeat_imitation_dagger_matches} x{args.dagger_iterations} | "
                             f"self-play {args.self_play_matches} min-burst {args.self_play_phases_per_cycle} | "
                             f"imitate after {args.self_play_failures_before_imitation} self-play fails | "
-                            f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion}"
+                            f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion} | "
+                            f"focus x{args.guard_focus_multiplier:.1f}"
                         )
                         if args.self_play_failures_before_imitation > 0
                         else (
                             f"bootstrap {args.bootstrap_matches}/{args.repeat_imitation_bootstrap_matches} | "
                             f"dagger {args.dagger_matches}/{args.repeat_imitation_dagger_matches} x{args.dagger_iterations} | "
                             f"self-play {args.self_play_matches} x{args.self_play_phases_per_cycle} | "
-                            f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion}"
+                            f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion} | "
+                            f"focus x{args.guard_focus_multiplier:.1f}"
                         )
                     ),
                 ),
@@ -949,6 +1048,8 @@ def main() -> None:
     best_bundle, report = train_with_alternating_phases(
         initial_bundle=current_best_bundle,
         teacher_specs=teacher_specs,
+        self_play_league_specs=self_play_league_specs,
+        guard_focus_multiplier=args.guard_focus_multiplier,
         alpha=args.alpha,
         bootstrap_matches=args.bootstrap_matches,
         repeat_imitation_bootstrap_matches=args.repeat_imitation_bootstrap_matches,

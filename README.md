@@ -128,14 +128,25 @@ The implementation also applies one important match rule:
 
 In other words, only the scoring unit that won the auction can win the match at the end of a round. Everyone else can improve their score, but they cannot cross the finish line unless they were the bidder for that round.
 
+## Monorepo Apps
+
+This repo now carries the browser clients and the engine in one monorepo-style layout:
+
+- `backend/` exposes the FastAPI API around the existing Smear engine.
+- `frontend/` is the internal debug UI. It still includes the inspector-heavy debug surface plus the older play mode.
+- `apps/play-ui/` is the cleaner public-facing play app intended for online access.
+- `packages/web-core/` contains the shared TypeScript game client, types, helpers, and card component used by both frontends.
+
+The public app and the debug app both talk to the same backend API, but they now isolate games by browser session instead of sharing one global in-memory match.
+
 ## Local Debug Harness
 
-This repo now includes a minimal local full-stack debug harness:
+This repo includes two local browser frontends:
 
-- `backend/` exposes a small FastAPI API around the existing Smear engine.
-- `frontend/` is a plain React + Vite + TypeScript debug UI for inspecting and playing a round.
+- `npm run dev:play` starts the public play app.
+- `npm run dev:debug` starts the internal debug app.
 
-This is intentionally a basic testing interface, not the final product.
+Both expect the FastAPI backend to be running locally.
 
 ### Backend
 
@@ -150,6 +161,11 @@ python -m uvicorn backend.server:app --reload
 
 The API will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
+Useful environment variables for the backend:
+
+- `SMEAR_CORS_ORIGINS` is a comma-separated allowlist of frontend origins. By default the API allows the two local Vite apps on ports `5173` and `5174`.
+- `SMEAR_SESSION_TTL_HOURS` controls how long inactive browser sessions are kept in memory. The default is `12`.
+
 Useful endpoints:
 
 - `GET /health`
@@ -162,6 +178,35 @@ Useful endpoints:
 - `GET /game/legal-actions`
 - `POST /game/play`
 - `GET /game/score`
+
+Every stateful endpoint also accepts an `X-Smear-Session-Id` header. The browser apps generate and persist that header automatically so each browser gets its own isolated game.
+
+### Frontends
+
+Install the root workspace dependencies once:
+
+```bash
+npm install
+```
+
+Run the public play app:
+
+```bash
+npm run dev:play
+```
+
+Run the internal debug app:
+
+```bash
+npm run dev:debug
+```
+
+By default:
+
+- the debug app runs at [http://127.0.0.1:5173](http://127.0.0.1:5173)
+- the public play app runs at [http://127.0.0.1:5174](http://127.0.0.1:5174)
+
+To point either frontend at a deployed backend, set `VITE_API_BASE_URL` before starting or building it.
 
 ### Simulator
 

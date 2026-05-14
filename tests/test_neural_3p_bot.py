@@ -1,5 +1,6 @@
 import json
 import math
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,10 @@ from backend.bots.registry import build_ready_bot, list_ready_bot_metadata
 from backend.models import AuctionState, Card, Play, Player, RoundState, Team, TrickState
 from backend.self_play_neural_3p_v3 import (
     SelfPlayDatasetHistory,
+    _build_self_play_match_controller,
     load_persisted_replay_history,
+    collect_self_play_training_dataset,
+    parse_league_opponent_specs,
     prune_replay_shards,
     reset_replay_state_after_promotion,
     resolve_self_play_exploration,
@@ -1037,7 +1041,7 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             ["imitation", "self-play", "self-play", "imitation"],
         )
 
-    def test_train_with_alternating_phases_refreshes_after_guard_failure(self):
+    def test_train_with_alternating_phases_keeps_self_playing_after_guard_failure(self):
         def _bundle(bot_id: str) -> dict:
             return {"bot_id": bot_id, "version": 3}
 
@@ -1090,22 +1094,33 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
                     "incumbent": {"win_percentage": 38.9},
                 }
             },
+            "promotion_diagnostics": {
+                "summary": "not promoted: promotion guard failed",
+                "reasons": [
+                    "greedy guard failed: 22.2% < required 50.0% (incumbent 50.0% - tol 0.0)",
+                ],
+            },
         }
+
+        self_play_calls: list[dict] = []
+
+        def _fake_train_with_self_play(**kwargs):
+            self_play_calls.append(kwargs)
+            return _bundle(f"cand-self-play-{len(self_play_calls)}"), {
+                "self_play_iterations": [{"training": _training_metrics(0.92, 0.019)}],
+            }
 
         with (
             patch(
                 "backend.self_train_neural_3p_v4.train_with_dagger",
-                side_effect=[
-                    (_bundle("cand-imitation-1"), {"training": _training_metrics(0.61, 0.012)}),
-                    (_bundle("cand-imitation-2"), {"training": _training_metrics(0.63, 0.011)}),
-                ],
+                return_value=(
+                    _bundle("cand-imitation-1"),
+                    {"training": _training_metrics(0.61, 0.012)},
+                ),
             ),
             patch(
                 "backend.self_train_neural_3p_v4.train_with_self_play",
-                return_value=(
-                    _bundle("cand-self-play-1"),
-                    {"self_play_iterations": [{"training": _training_metrics(0.92, 0.019)}]},
-                ),
+                side_effect=_fake_train_with_self_play,
             ),
             patch(
                 "backend.self_train_neural_3p_v4.evaluate_candidate",
@@ -1115,6 +1130,10 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             _, report = train_with_alternating_phases(
                 initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
                 teacher_specs=parse_teacher_specs("greedy"),
+                self_play_league_specs=parse_league_opponent_specs(
+                    "incumbent:3,greedy:2,1-trick-minmax:2,optimal-bot:1"
+                ),
+                guard_focus_multiplier=2.0,
                 alpha=1,
                 bootstrap_matches=1,
                 repeat_imitation_bootstrap_matches=0,
@@ -1166,7 +1185,125 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
 
         self.assertEqual(
             [iteration["phase"] for iteration in report["iterations"]],
-            ["imitation", "self-play", "imitation"],
+            ["imitation", "self-play", "self-play"],
+        )
+        self.assertEqual(len(self_play_calls), 2)
+        self.assertEqual(
+            [(spec.bot_id, spec.weight) for spec in self_play_calls[0]["league_opponent_specs"]],
+            [("incumbent", 3.0), ("greedy", 2.0), ("1-trick-minmax", 2.0), ("optimal-bot", 1.0)],
+        )
+        self.assertEqual(
+            [(spec.bot_id, spec.weight) for spec in self_play_calls[1]["league_opponent_specs"]],
+            [("incumbent", 3.0), ("greedy", 4.0), ("1-trick-minmax", 4.0), ("optimal-bot", 1.0)],
+        )
+
+    def test_train_with_alternating_phases_passes_league_pool_to_self_play(self):
+        initial_bundle = load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2)
+        league_specs = parse_league_opponent_specs("incumbent,greedy")
+        self_play_calls: list[dict] = []
+
+        def _fake_train_with_self_play(**kwargs):
+            self_play_calls.append(kwargs)
+            return initial_bundle, {
+                "self_play_iterations": [
+                    {
+                        "training": {
+                            "play_history": [{"accuracy": 0.9}],
+                            "auction_history": [{"accuracy": 0.9}],
+                            "play_value_history": [{"mse": 0.02}],
+                            "auction_value_history": [{"mse": 0.02}],
+                            "elapsed_seconds": 1.0,
+                        }
+                    }
+                ]
+            }
+
+        rejected_eval = {
+            "accepted": False,
+            "rejected_after_precheck": True,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 58.3},
+                    "incumbent": {"win_percentage": 41.7},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 58.3},
+                    "incumbent": {"win_percentage": 41.7},
+                }
+            },
+            "vs_greedy": None,
+            "vs_optimal_bot": None,
+            "incumbent_vs_greedy": None,
+            "incumbent_vs_optimal": None,
+        }
+
+        with (
+            patch("backend.self_train_neural_3p_v4.train_with_self_play", side_effect=_fake_train_with_self_play),
+            patch("backend.self_train_neural_3p_v4.evaluate_candidate", return_value=rejected_eval),
+        ):
+            train_with_alternating_phases(
+                initial_bundle=initial_bundle,
+                teacher_specs=parse_teacher_specs("greedy"),
+                self_play_league_specs=league_specs,
+                alpha=1,
+                bootstrap_matches=1,
+                repeat_imitation_bootstrap_matches=0,
+                dagger_matches=1,
+                repeat_imitation_dagger_matches=1,
+                dagger_iterations=1,
+                self_play_matches=1,
+                self_play_phases_per_cycle=1,
+                replay_window=1,
+                persisted_replay_limit=1,
+                seed=0,
+                play_hidden_dim=8,
+                auction_hidden_dim=8,
+                play_value_hidden_dim=8,
+                auction_value_hidden_dim=8,
+                play_epochs=1,
+                auction_epochs=1,
+                play_value_epochs=1,
+                auction_value_epochs=1,
+                play_learning_rate=0.02,
+                auction_learning_rate=0.02,
+                play_value_learning_rate=0.02,
+                auction_value_learning_rate=0.02,
+                l2=0.0,
+                play_value_weight=0.5,
+                auction_value_weight=0.3,
+                play_rollout_depth=1,
+                auction_rollout_depth=1,
+                warm_start_lr_scale=0.8,
+                warm_start_epoch_scale=0.8,
+                gradient_clip=1.0,
+                play_temperature=0.8,
+                auction_temperature=0.7,
+                epsilon=0.05,
+                temperature_decay=1.0,
+                epsilon_decay=1.0,
+                policy_advantage_threshold=-0.25,
+                policy_advantage_scale=2.0,
+                value_weight_scale=1.0,
+                winner_policy_weight=0.5,
+                eval_games=2,
+                eval_games_vs_optimal=1,
+                precheck_games=1,
+                max_iterations=1,
+                workers=1,
+                start_phase="self-play",
+            )
+
+        self.assertEqual(len(self_play_calls), 1)
+        self.assertEqual(
+            [(spec.bot_id, spec.weight) for spec in self_play_calls[0]["league_opponent_specs"]],
+            [("incumbent", 1.0), ("greedy", 1.0)],
+        )
+        self.assertEqual(
+            self_play_calls[0]["incumbent_bundle"].get("bot_id"),
+            initial_bundle.get("bot_id"),
         )
 
     def test_train_with_self_play_persists_replay_history_across_calls(self):
@@ -1235,6 +1372,69 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             second_aggregate_play,
             first_collection_play + second_collection_play,
         )
+
+    def test_parse_league_opponent_specs_accepts_incumbent(self):
+        specs = parse_league_opponent_specs("incumbent:2,greedy")
+
+        self.assertEqual(
+            [(spec.bot_id, spec.weight) for spec in specs],
+            [("incumbent", 2.0), ("greedy", 1.0)],
+        )
+
+    def test_build_self_play_match_controller_assigns_incumbent_opponents(self):
+        learner_bundle = dict(load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2))
+        learner_bundle["bot_id"] = "league-learner"
+        incumbent_bundle = dict(load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V3))
+        incumbent_bundle["bot_id"] = "league-incumbent"
+
+        controller, learner_player_names, opponent_counts = _build_self_play_match_controller(
+            learner_bundle=learner_bundle,
+            seat_rng=random.Random(0),
+            league_opponent_specs=parse_league_opponent_specs("incumbent"),
+            incumbent_bundle=incumbent_bundle,
+        )
+
+        self.assertEqual(len(learner_player_names), 1)
+        self.assertEqual(opponent_counts, {"incumbent": 2})
+
+        learner_player_name = next(iter(learner_player_names))
+        self.assertEqual(
+            controller.session.player_bot_ids[learner_player_name],
+            "league-learner",
+        )
+        self.assertEqual(
+            sum(
+                1
+                for player_name, bot_id in controller.session.player_bot_ids.items()
+                if player_name != learner_player_name and bot_id == "incumbent"
+            ),
+            2,
+        )
+
+    def test_collect_self_play_training_dataset_supports_league_opponents(self):
+        initial_bundle = load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2)
+
+        dataset, report = collect_self_play_training_dataset(
+            model_bundle=initial_bundle,
+            match_count=1,
+            alpha=1,
+            seed=0,
+            play_temperature=0.8,
+            auction_temperature=0.7,
+            epsilon=0.05,
+            policy_advantage_threshold=-0.25,
+            policy_advantage_scale=2.0,
+            value_weight_scale=1.0,
+            winner_policy_weight=0.5,
+            league_opponent_specs=parse_league_opponent_specs("greedy"),
+            incumbent_bundle=initial_bundle,
+            workers=1,
+            verbose=False,
+        )
+
+        self.assertEqual(report["league_opponent_counts"], {"greedy": 2})
+        self.assertGreater(len(dataset.play_value_examples), 0)
+        self.assertGreater(len(dataset.auction_value_examples), 0)
 
     def test_self_play_replay_shards_persist_and_reload_recent_window(self):
         replay_history = SelfPlayDatasetHistory()

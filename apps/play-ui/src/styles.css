@@ -1,0 +1,533 @@
+:root {
+  color: #f7efe1;
+  background:
+    radial-gradient(circle at top, rgba(245, 209, 126, 0.16), transparent 30%),
+    linear-gradient(180deg, #123d31 0%, #0c261f 52%, #081813 100%);
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  line-height: 1.45;
+  font-weight: 500;
+  --page-shadow: 0 24px 64px rgba(0, 0, 0, 0.32);
+  --panel: rgba(8, 19, 16, 0.76);
+  --panel-strong: rgba(10, 25, 21, 0.92);
+  --panel-soft: rgba(19, 49, 40, 0.62);
+  --border: rgba(247, 231, 197, 0.14);
+  --border-strong: rgba(247, 231, 197, 0.28);
+  --text-main: #f7efe1;
+  --text-muted: rgba(247, 239, 225, 0.72);
+  --text-dim: rgba(247, 239, 225, 0.54);
+  --accent: #f5c768;
+  --accent-strong: #f7df9d;
+  --danger-bg: rgba(114, 22, 28, 0.84);
+  --danger-border: rgba(253, 190, 193, 0.28);
+  --danger-text: #ffe8e8;
+  --button-bg: rgba(247, 199, 104, 0.14);
+  --button-border: rgba(247, 199, 104, 0.36);
+  --button-hover: rgba(247, 199, 104, 0.22);
+  --felt: linear-gradient(180deg, rgba(36, 92, 74, 0.94), rgba(13, 43, 34, 0.96));
+  --table-ring: rgba(247, 223, 157, 0.22);
+  --status-bg: rgba(247, 231, 197, 0.08);
+  --progress-bg: rgba(255, 255, 255, 0.08);
+  --progress-fill: linear-gradient(90deg, #f5c768 0%, #f0934d 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.public-shell {
+  width: min(1440px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 48px;
+}
+
+.hero-card,
+.control-card,
+.felt-card,
+.hand-card,
+.history-card,
+.summary-card,
+.empty-state-card,
+.progress-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--page-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.hero-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px;
+  border-radius: 28px;
+  margin-bottom: 24px;
+}
+
+.hero-copy h1,
+.card-header h2,
+.result-card h3,
+.seat-card h3 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  letter-spacing: -0.02em;
+}
+
+.hero-copy p,
+.help-copy,
+.seat-card p,
+.result-card p {
+  color: var(--text-muted);
+}
+
+.eyebrow {
+  display: inline-flex;
+  margin-bottom: 10px;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.hero-actions {
+  display: grid;
+  align-content: space-between;
+  justify-items: end;
+  gap: 18px;
+}
+
+.hero-badge,
+.status-pill,
+.award-card,
+.result-card,
+.seat-card,
+.seat-editor__card {
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--status-bg);
+}
+
+.hero-badge {
+  padding: 12px 14px;
+  min-width: 110px;
+}
+
+.hero-badge span,
+.status-pill span,
+.award-card span,
+.table-copy span,
+.seat-card__meta {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.cta-button,
+.ghost-button,
+.preset-button,
+.button-row button {
+  border-radius: 999px;
+  border: 1px solid var(--button-border);
+  background: var(--button-bg);
+  color: var(--text-main);
+  padding: 12px 18px;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.cta-button:hover,
+.ghost-button:hover,
+.preset-button:hover,
+.button-row button:hover {
+  background: var(--button-hover);
+  transform: translateY(-1px);
+}
+
+.cta-button {
+  background: linear-gradient(135deg, #f5c768 0%, #ef9f57 100%);
+  border-color: transparent;
+  color: #1e1208;
+  font-weight: 700;
+}
+
+.banner {
+  border-radius: 18px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+
+.banner--error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.experience-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.control-card,
+.board-column {
+  display: grid;
+  gap: 20px;
+}
+
+.control-card {
+  padding: 24px;
+  border-radius: 24px;
+  position: sticky;
+  top: 18px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.card-header__actions {
+  display: flex;
+  gap: 10px;
+}
+
+.preset-grid,
+.button-row,
+.status-row,
+.award-grid,
+.result-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.preset-button {
+  flex: 1 1 140px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  padding: 12px 14px;
+}
+
+.slider-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.slider-row input {
+  width: 100%;
+}
+
+.seat-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.seat-editor__card {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.board-column {
+  min-width: 0;
+}
+
+.empty-state-card,
+.felt-card,
+.hand-card,
+.history-card,
+.summary-card,
+.progress-card {
+  border-radius: 24px;
+  padding: 24px;
+}
+
+.progress-card__header,
+.result-card__header,
+.seat-card__header,
+.seat-card__footer,
+.history-item__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.progress-track {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--progress-bg);
+  margin: 14px 0 10px;
+}
+
+.progress-track.is-indeterminate::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  background: var(--progress-fill);
+  animation: progress-sweep 1.1s linear infinite;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--progress-fill);
+}
+
+@keyframes progress-sweep {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+.status-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.status-pill {
+  padding: 14px 16px;
+}
+
+.status-pill--wide {
+  grid-column: span 2;
+}
+
+.felt-card {
+  background: var(--felt);
+  border-color: var(--table-ring);
+}
+
+.seat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.seat-card {
+  padding: 16px;
+  background: rgba(6, 19, 15, 0.38);
+}
+
+.seat-card--current {
+  border-color: rgba(247, 223, 157, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(247, 223, 157, 0.16);
+}
+
+.seat-table {
+  min-height: 110px;
+  display: grid;
+  place-items: center;
+}
+
+.seat-table__empty {
+  width: 72px;
+  height: 100px;
+  border-radius: 16px;
+  border: 1px dashed rgba(247, 231, 197, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.table-actions {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.table-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  align-items: center;
+}
+
+.hand-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.empty-inline {
+  border-radius: 18px;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  padding: 16px;
+}
+
+.history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.history-item {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 14px;
+}
+
+.history-item__cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.history-play {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  color: var(--text-muted);
+}
+
+.award-grid {
+  margin-top: 18px;
+}
+
+.award-card,
+.result-card {
+  padding: 14px 16px;
+}
+
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-top: 18px;
+}
+
+.playing-card {
+  width: 88px;
+  min-width: 88px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.18);
+}
+
+.playing-card--compact {
+  width: 66px;
+  min-width: 66px;
+}
+
+.playing-card--clickable:hover:not(:disabled) {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 28px rgba(0, 0, 0, 0.24);
+}
+
+.playing-card--clickable:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.playing-card--trump {
+  outline: 2px solid rgba(245, 199, 104, 0.8);
+  outline-offset: 2px;
+}
+
+.playing-card__art {
+  display: block;
+  line-height: 0;
+}
+
+.playing-card__svg {
+  display: block;
+  border-radius: 16px;
+}
+
+.playing-card__fallback {
+  aspect-ratio: 5 / 7;
+  display: grid;
+  place-items: center;
+}
+
+@media (max-width: 1080px) {
+  .experience-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .control-card {
+    position: static;
+  }
+}
+
+@media (max-width: 760px) {
+  .public-shell {
+    width: min(100% - 20px, 100%);
+    padding-top: 18px;
+  }
+
+  .hero-card,
+  .felt-card,
+  .hand-card,
+  .history-card,
+  .summary-card,
+  .empty-state-card,
+  .control-card,
+  .progress-card {
+    padding: 18px;
+    border-radius: 20px;
+  }
+
+  .hero-card {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .hero-actions {
+    justify-items: stretch;
+  }
+
+  .status-pill--wide {
+    grid-column: auto;
+  }
+
+  .playing-card {
+    width: 74px;
+    min-width: 74px;
+  }
+}

@@ -76,24 +76,24 @@ button {
 }
 
 .hero-card {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 28px;
-  border-radius: 28px;
+  padding: 18px 22px;
+  border-radius: 20px;
   margin-bottom: 24px;
 }
 
-.hero-copy h1,
+.hero-card h1,
 .card-header h2,
 .result-card h3,
 .seat-card h3 {
   margin: 0;
   font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
-.hero-copy p,
+.hero-card h1 {
+  font-size: 1.35rem;
+}
+
 .help-copy,
 .seat-card p,
 .result-card p {
@@ -107,13 +107,6 @@ button {
   font-size: 0.78rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-}
-
-.hero-actions {
-  display: grid;
-  align-content: space-between;
-  justify-items: end;
-  gap: 18px;
 }
 
 .hero-badge,
@@ -144,7 +137,6 @@ button {
 
 .cta-button,
 .ghost-button,
-.preset-button,
 .button-row button {
   border-radius: 999px;
   border: 1px solid var(--button-border);
@@ -156,7 +148,6 @@ button {
 
 .cta-button:hover,
 .ghost-button:hover,
-.preset-button:hover,
 .button-row button:hover {
   background: var(--button-hover);
   transform: translateY(-1px);
@@ -213,7 +204,6 @@ button {
   gap: 10px;
 }
 
-.preset-grid,
 .button-row,
 .status-row,
 .award-grid,
@@ -223,13 +213,21 @@ button {
   gap: 12px;
 }
 
-.preset-button {
-  flex: 1 1 140px;
-}
-
 .field {
   display: grid;
   gap: 8px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
 }
 
 .field input,
@@ -241,17 +239,6 @@ button {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-main);
   padding: 12px 14px;
-}
-
-.slider-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-}
-
-.slider-row input {
-  width: 100%;
 }
 
 .seat-editor {
@@ -351,6 +338,8 @@ button {
 .seat-card {
   padding: 16px;
   background: rgba(6, 19, 15, 0.38);
+  display: grid;
+  gap: 12px;
 }
 
 .seat-card--current {
@@ -370,6 +359,35 @@ button {
   border-radius: 16px;
   border: 1px dashed rgba(247, 231, 197, 0.18);
   background: rgba(255, 255, 255, 0.02);
+}
+
+.seat-captured {
+  display: grid;
+  gap: 8px;
+}
+
+.seat-captured__label,
+.seat-captured__empty {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.seat-captured__cards {
+  min-height: 46px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.seat-captured__cards .playing-card--compact {
+  width: 44px;
+  min-width: 44px;
+  border-radius: 10px;
+}
+
+.seat-captured__cards .playing-card__svg {
+  border-radius: 10px;
 }
 
 .table-actions {
@@ -511,15 +529,6 @@ button {
   .progress-card {
     padding: 18px;
     border-radius: 20px;
-  }
-
-  .hero-card {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
-
-  .hero-actions {
-    justify-items: stretch;
   }
 
   .status-pill--wide {

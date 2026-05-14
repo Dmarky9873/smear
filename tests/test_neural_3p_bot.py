@@ -51,6 +51,7 @@ from backend.self_train_neural_3p_v4 import (
 )
 from backend.train_neural_3p_bot import (
     ComparisonMetric,
+    TrainingDataset,
     _render_iteration_comparison_table,
     collect_teacher_training_dataset,
     load_model_bundle,
@@ -978,6 +979,7 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
                 workers=1,
                 start_phase="imitation",
                 self_play_phases_per_cycle=1,
+                carry_rejected_candidates=True,
             )
 
         self.assertEqual(report["iterations_completed"], 3)
@@ -999,6 +1001,124 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         )
         self.assertEqual(report["iterations"][2]["working_bot_id"], "cand-imitation-2")
         self.assertEqual(report["iterations"][2]["incumbent_bot_id"], "neural-3p-v2")
+
+    def test_train_with_alternating_phases_rolls_back_rejected_candidates_by_default(self):
+        def _bundle(bot_id: str) -> dict:
+            return {"bot_id": bot_id, "version": 3}
+
+        def _training_metrics(accuracy: float, mse: float) -> dict:
+            return {
+                "play_history": [{"accuracy": accuracy}],
+                "auction_history": [{"accuracy": accuracy}],
+                "play_value_history": [{"mse": mse}],
+                "auction_value_history": [{"mse": mse}],
+                "elapsed_seconds": 1.0,
+            }
+
+        rejected_eval = {
+            "accepted": False,
+            "rejected_after_precheck": True,
+            "rejected_after_head_to_head": False,
+            "precheck_vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_incumbent": {
+                "models": {
+                    "candidate": {"win_percentage": 41.7},
+                    "incumbent": {"win_percentage": 58.3},
+                }
+            },
+            "vs_greedy": None,
+            "vs_optimal_bot": None,
+            "incumbent_vs_greedy": None,
+            "incumbent_vs_optimal": None,
+        }
+        initial_bundle_ids: list[str] = []
+        replay_lengths: list[int] = []
+
+        def _fake_train_with_self_play(**kwargs):
+            initial_bundle_ids.append(kwargs["initial_bundle"]["bot_id"])
+            replay_history = kwargs["replay_history"]
+            replay_lengths.append(len(replay_history.iterations))
+            replay_history.iterations.append(TrainingDataset())
+            candidate_index = len(initial_bundle_ids)
+            return (
+                _bundle(f"cand-self-play-{candidate_index}"),
+                {
+                    "self_play_iterations": [
+                        {"training": _training_metrics(0.92, 0.019)}
+                    ]
+                },
+            )
+
+        with (
+            patch(
+                "backend.self_train_neural_3p_v4.train_with_self_play",
+                side_effect=_fake_train_with_self_play,
+            ),
+            patch(
+                "backend.self_train_neural_3p_v4.evaluate_candidate",
+                side_effect=[rejected_eval, rejected_eval],
+            ),
+        ):
+            _, report = train_with_alternating_phases(
+                initial_bundle=load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2),
+                teacher_specs=parse_teacher_specs("greedy"),
+                alpha=1,
+                bootstrap_matches=0,
+                dagger_matches=1,
+                dagger_iterations=1,
+                self_play_matches=1,
+                self_play_phases_per_cycle=2,
+                replay_window=2,
+                persisted_replay_limit=2,
+                seed=0,
+                play_hidden_dim=8,
+                auction_hidden_dim=8,
+                play_value_hidden_dim=8,
+                auction_value_hidden_dim=8,
+                play_epochs=1,
+                auction_epochs=1,
+                play_value_epochs=1,
+                auction_value_epochs=1,
+                play_learning_rate=0.02,
+                auction_learning_rate=0.02,
+                play_value_learning_rate=0.02,
+                auction_value_learning_rate=0.02,
+                l2=0.0,
+                play_value_weight=0.5,
+                auction_value_weight=0.3,
+                play_rollout_depth=1,
+                auction_rollout_depth=1,
+                warm_start_lr_scale=0.8,
+                warm_start_epoch_scale=0.8,
+                gradient_clip=1.0,
+                play_temperature=0.8,
+                auction_temperature=0.7,
+                epsilon=0.05,
+                temperature_decay=1.0,
+                epsilon_decay=1.0,
+                policy_advantage_threshold=-0.25,
+                policy_advantage_scale=2.0,
+                value_weight_scale=1.0,
+                winner_policy_weight=0.5,
+                eval_games=2,
+                eval_games_vs_optimal=1,
+                precheck_games=1,
+                max_iterations=2,
+                workers=1,
+                start_phase="self-play",
+            )
+
+        self.assertEqual(initial_bundle_ids, ["neural-3p-v2", "neural-3p-v2"])
+        self.assertEqual(replay_lengths, [0, 0])
+        self.assertEqual(report["remaining_replay_iterations"], 0)
+        self.assertTrue(report["iterations"][0]["replay_rolled_back"])
+        self.assertFalse(report["iterations"][0]["carried_rejected_candidate"])
+        self.assertEqual(report["iterations"][0]["working_bot_id"], "neural-3p-v2")
 
     def test_train_with_alternating_phases_supports_self_play_bursts(self):
         _, report = train_with_alternating_phases(

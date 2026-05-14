@@ -349,6 +349,7 @@ def train_with_alternating_phases(
     self_play_phases_per_cycle: int = 1,
     self_play_failures_before_imitation: int = 0,
     retain_replay_iterations_after_promotion: int = 0,
+    carry_rejected_candidates: bool = False,
     replay_history: SelfPlayDatasetHistory | None = None,
     checkpoint_dir: Path | None = None,
     best_path: Path | None = None,
@@ -447,6 +448,7 @@ def train_with_alternating_phases(
 
         checkpoint_path: Path | None = None
         replay_shard_path: Path | None = None
+        replay_iterations_before_phase = list(current_replay_history.iterations)
 
         if phase == "imitation":
             phase_bootstrap_matches = (
@@ -563,12 +565,6 @@ def train_with_alternating_phases(
                     iteration=iteration_index,
                     source_bot_id=working_bundle.get("bot_id", V4_BOT_ID),
                 )
-                prune_replay_shards(
-                    replay_store_dir=replay_store_dir,
-                    replay_window=replay_window,
-                    persisted_replay_limit=persisted_replay_limit,
-                    verbose=verbose,
-                )
 
         if checkpoint_dir is not None:
             checkpoint_path = checkpoint_dir / f"iteration-{iteration_index:03d}.json"
@@ -616,6 +612,8 @@ def train_with_alternating_phases(
             )
 
         replay_reset = False
+        replay_rolled_back = False
+        carried_rejected_candidate = False
         if evaluation_report["accepted"]:
             current_best_bundle = candidate_bundle
             working_bundle = candidate_bundle
@@ -653,8 +651,37 @@ def train_with_alternating_phases(
             replay_reset = True
             _log(verbose, f"[v4] iteration {iteration_index} promoted candidate")
         else:
-            working_bundle = candidate_bundle
+            if carry_rejected_candidates:
+                working_bundle = candidate_bundle
+                carried_rejected_candidate = True
+                if replay_store_dir is not None and replay_shard_path is not None:
+                    prune_replay_shards(
+                        replay_store_dir=replay_store_dir,
+                        replay_window=replay_window,
+                        persisted_replay_limit=persisted_replay_limit,
+                        verbose=verbose,
+                    )
+            else:
+                working_bundle = current_best_bundle
+                if phase == "self_play":
+                    current_replay_history = SelfPlayDatasetHistory(
+                        iterations=replay_iterations_before_phase,
+                    )
+                    replay_rolled_back = True
+                    if replay_shard_path is not None:
+                        replay_shard_path.unlink(missing_ok=True)
+                        replay_shard_path = None
             _log(verbose, f"[v4] iteration {iteration_index} kept incumbent")
+            if replay_rolled_back:
+                _log(
+                    verbose,
+                    f"[v4] iteration {iteration_index} rolled back rejected self-play replay",
+                )
+            if carried_rejected_candidate:
+                _log(
+                    verbose,
+                    f"[v4] iteration {iteration_index} carrying rejected candidate forward",
+                )
             _log(
                 verbose,
                 _render_promotion_outcome_block(
@@ -739,6 +766,8 @@ def train_with_alternating_phases(
             },
             "replay_history_iterations": len(current_replay_history.iterations),
             "replay_reset": replay_reset,
+            "replay_rolled_back": replay_rolled_back,
+            "carried_rejected_candidate": carried_rejected_candidate,
         }
         iteration_reports.append(iteration_report)
         if report_path is not None:
@@ -828,6 +857,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="how many freshest replay iterations to keep after a promotion",
+    )
+    parser.add_argument(
+        "--carry-rejected-candidates",
+        action="store_true",
+        help=(
+            "continue training from rejected candidates and keep their replay shards; "
+            "by default v4 rolls back to the incumbent after failed promotion checks"
+        ),
     )
     parser.add_argument("--eval-games", type=int, default=36)
     parser.add_argument("--eval-games-vs-optimal", type=int, default=18)
@@ -966,6 +1003,7 @@ def main() -> None:
                 "replay_window": args.replay_window,
                 "persisted_replay_limit": args.persisted_replay_limit,
                 "retain_replay_iterations_after_promotion": args.retain_replay_iterations_after_promotion,
+                "carry_rejected_candidates": args.carry_rejected_candidates,
                 "loaded_persisted_replay_shards": len(replay_history.iterations),
                 "eval_games": args.eval_games,
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
@@ -1021,6 +1059,7 @@ def main() -> None:
                             f"self-play {args.self_play_matches} min-burst {args.self_play_phases_per_cycle} | "
                             f"imitate after {args.self_play_failures_before_imitation} self-play fails | "
                             f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion} | "
+                            f"rejected {'carry' if args.carry_rejected_candidates else 'rollback'} | "
                             f"focus x{args.guard_focus_multiplier:.1f}"
                         )
                         if args.self_play_failures_before_imitation > 0
@@ -1029,6 +1068,7 @@ def main() -> None:
                             f"dagger {args.dagger_matches}/{args.repeat_imitation_dagger_matches} x{args.dagger_iterations} | "
                             f"self-play {args.self_play_matches} x{args.self_play_phases_per_cycle} | "
                             f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion} | "
+                            f"rejected {'carry' if args.carry_rejected_candidates else 'rollback'} | "
                             f"focus x{args.guard_focus_multiplier:.1f}"
                         )
                     ),
@@ -1065,6 +1105,7 @@ def main() -> None:
         replay_window=args.replay_window,
         persisted_replay_limit=args.persisted_replay_limit,
         retain_replay_iterations_after_promotion=args.retain_replay_iterations_after_promotion,
+        carry_rejected_candidates=args.carry_rejected_candidates,
         seed=args.seed,
         play_hidden_dim=args.play_hidden_dim,
         auction_hidden_dim=args.auction_hidden_dim,

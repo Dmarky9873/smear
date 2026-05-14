@@ -7,58 +7,12 @@ import {
   sortCardsHighToLow,
   useSmearGame,
   type Card,
-  type ReadyBot,
-  type SmearSetupDraft,
   type TrickState,
 } from "@smear/web-core";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
-
-function chooseBotId(availableBots: ReadyBot[]): string {
-  const preferredIds = ["greedy", "1-trick-minmax", "optimal-bot", "random"];
-
-  for (const id of preferredIds) {
-    if (availableBots.some((bot) => bot.id === id)) {
-      return id;
-    }
-  }
-
-  return availableBots[0]?.id ?? "greedy";
-}
-
-function buildClassicTeamPreset(availableBots: ReadyBot[]): SmearSetupDraft {
-  const botId = chooseBotId(availableBots);
-
-  return {
-    numPlayers: 4,
-    playerNames: ["You", "North", "East", "West"],
-    playerBots: [null, botId, botId, botId],
-    teamsInput: "You, North\nEast, West",
-  };
-}
-
-function buildCutthroatPreset(availableBots: ReadyBot[]): SmearSetupDraft {
-  const botId = chooseBotId(availableBots);
-
-  return {
-    numPlayers: 3,
-    playerNames: ["You", "North", "West"],
-    playerBots: [null, botId, botId],
-    teamsInput: "",
-  };
-}
-
-function buildOpenTablePreset(availableBots: ReadyBot[]): SmearSetupDraft {
-  const botId = chooseBotId(availableBots);
-
-  return {
-    numPlayers: 4,
-    playerNames: ["You", "Riley", "Marlow", "Quinn"],
-    playerBots: [null, botId, botId, botId],
-    teamsInput: "",
-  };
-}
+const DEFAULT_TEAMS_INPUT = "You, North\nEast, West";
 
 function getRoundBanner(phase: string, currentTurnName: string): string {
   if (phase === "auction") {
@@ -99,27 +53,18 @@ function getJokerAwardText(results: Array<{ name: string; joker_count: number }>
   return jokerWinners.join(", ");
 }
 
-function getBotDescription(availableBots: ReadyBot[], botId: string | null) {
-  if (!botId) {
-    return "Human seat";
-  }
-
-  return availableBots.find((bot) => bot.id === botId)?.description ?? botId;
-}
-
 export default function App() {
   const [sessionId] = useState(() =>
     loadOrCreateSessionId("smear-play-session-id"),
   );
-  const [showSetup, setShowSetup] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
+  const [teamsEnabled, setTeamsEnabled] = useState(true);
+  const [savedTeamsInput, setSavedTeamsInput] = useState(DEFAULT_TEAMS_INPUT);
 
   const {
-    applySetupDraft,
     availableBots,
     awaitingNextTrick,
     bidActions,
-    botActionDelayMs,
     botProgress,
     botThinkingName,
     canPassAuction,
@@ -140,7 +85,6 @@ export default function App() {
     playerNames,
     revealedTrick,
     score,
-    setBotActionDelayMs,
     setNumPlayers,
     setTeamsInput,
     state,
@@ -153,7 +97,7 @@ export default function App() {
     initialNumPlayers: 4,
     initialPlayerBots: [null, "greedy", "greedy", "greedy"],
     initialPlayerNames: ["You", "North", "East", "West"],
-    initialTeamsInput: "You, North\nEast, West",
+    initialTeamsInput: DEFAULT_TEAMS_INPUT,
     sessionId,
   });
 
@@ -191,43 +135,31 @@ export default function App() {
     }
 
     await handleNewGamePlay();
-    setShowSetup(false);
   }
 
-  function applyPreset(draft: SmearSetupDraft) {
-    applySetupDraft(draft);
-    setShowSetup(true);
+  function handleTeamsEnabledChange(enabled: boolean) {
+    setTeamsEnabled(enabled);
+
+    if (enabled) {
+      setTeamsInput(savedTeamsInput.trim() ? savedTeamsInput : DEFAULT_TEAMS_INPUT);
+      return;
+    }
+
+    if (teamsInput.trim()) {
+      setSavedTeamsInput(teamsInput);
+    }
+    setTeamsInput("");
   }
 
-  const sessionHint = sessionId.slice(0, 8);
+  function handleTeamsInputChange(value: string) {
+    setTeamsInput(value);
+    setSavedTeamsInput(value);
+  }
 
   return (
     <main className="public-shell">
       <section className="hero-card">
-        <div className="hero-copy">
-          <span className="eyebrow">Smear online alpha</span>
-          <h1>Play the table-first web version.</h1>
-          <p>
-            This browser keeps its own isolated session, so public traffic will not
-            collide with your game state.
-          </p>
-        </div>
-        <div className="hero-actions">
-          <div className="hero-badge">
-            <span>Session</span>
-            <strong>{sessionHint}</strong>
-          </div>
-          <button
-            type="button"
-            className="cta-button"
-            onClick={() => {
-              void handleStartTable();
-            }}
-            disabled={isLoading}
-          >
-            {state ? "Start new table" : "Start playing"}
-          </button>
-        </div>
+        <h1>smear online alpha</h1>
       </section>
 
       {error ? <div className="banner banner--error">{error}</div> : null}
@@ -237,131 +169,96 @@ export default function App() {
           <div className="card-header">
             <div>
               <span className="eyebrow">Table setup</span>
-              <h2>Choose the room feel</h2>
+              <h2>Players and teams</h2>
             </div>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => setShowSetup((current) => !current)}
-            >
-              {showSetup ? "Hide setup" : "Show setup"}
-            </button>
           </div>
 
-          <div className="preset-grid">
-            <button
-              type="button"
-              className="preset-button"
-              onClick={() => applyPreset(buildClassicTeamPreset(availableBots))}
-            >
-              Classic teams
-            </button>
-            <button
-              type="button"
-              className="preset-button"
-              onClick={() => applyPreset(buildCutthroatPreset(availableBots))}
-            >
-              3-player cutthroat
-            </button>
-            <button
-              type="button"
-              className="preset-button"
-              onClick={() => applyPreset(buildOpenTablePreset(availableBots))}
-            >
-              Open table
-            </button>
-          </div>
-
-          <label className="field">
-            <span>Bot pace</span>
-            <div className="slider-row">
-              <input
-                type="range"
-                min={0}
-                max={2000}
-                step={100}
-                value={botActionDelayMs}
-                onChange={(event) =>
-                  setBotActionDelayMs(Number(event.target.value))
-                }
-              />
-              <strong>{botActionDelayMs} ms</strong>
-            </div>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={teamsEnabled}
+              onChange={(event) =>
+                handleTeamsEnabledChange(event.target.checked)
+              }
+            />
+            <span>Play with teams</span>
           </label>
 
-          {showSetup ? (
-            <>
-              <label className="field">
-                <span>Seats</span>
-                <input
-                  type="number"
-                  min={3}
-                  max={8}
-                  value={numPlayers}
-                  onChange={(event) =>
-                    setNumPlayers(Number(event.target.value) || 3)
-                  }
-                />
-              </label>
+          <label className="field">
+            <span>Seats</span>
+            <input
+              type="number"
+              min={3}
+              max={8}
+              value={numPlayers}
+              onChange={(event) =>
+                setNumPlayers(Number(event.target.value) || 3)
+              }
+            />
+          </label>
 
-              <div className="seat-editor">
-                {playerNames.map((playerName, index) => (
-                  <article key={index} className="seat-editor__card">
-                    <label className="field">
-                      <span>Seat {index + 1}</span>
-                      <input
-                        type="text"
-                        value={playerName}
-                        onChange={(event) =>
-                          handlePlayerNameChange(index, event.target.value)
-                        }
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Controller</span>
-                      <select
-                        value={playerBots[index] ?? ""}
-                        onChange={(event) =>
-                          handlePlayerBotChange(index, event.target.value || null)
-                        }
-                      >
-                        <option value="">Human</option>
-                        {availableBots.map((bot) => (
-                          <option key={bot.id} value={bot.id}>
-                            {bot.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <p className="help-copy">
-                      {getBotDescription(availableBots, playerBots[index] ?? null)}
-                    </p>
-                  </article>
-                ))}
-              </div>
+          <div className="seat-editor">
+            {playerNames.map((playerName, index) => (
+              <article key={index} className="seat-editor__card">
+                <label className="field">
+                  <span>Seat {index + 1}</span>
+                  <input
+                    type="text"
+                    value={playerName}
+                    onChange={(event) =>
+                      handlePlayerNameChange(index, event.target.value)
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>Controller</span>
+                  <select
+                    value={playerBots[index] ?? ""}
+                    onChange={(event) =>
+                      handlePlayerBotChange(index, event.target.value || null)
+                    }
+                  >
+                    <option value="">Human</option>
+                    {availableBots.map((bot) => (
+                      <option key={bot.id} value={bot.id}>
+                        {bot.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </article>
+            ))}
+          </div>
 
-              <label className="field">
-                <span>Teams</span>
-                <textarea
-                  rows={4}
-                  value={teamsInput}
-                  onChange={(event) => setTeamsInput(event.target.value)}
-                  placeholder={"You, North\nEast, West"}
-                />
-              </label>
-            </>
+          {teamsEnabled ? (
+            <label className="field">
+              <span>Teams</span>
+              <textarea
+                rows={4}
+                value={teamsInput}
+                onChange={(event) => handleTeamsInputChange(event.target.value)}
+                placeholder={DEFAULT_TEAMS_INPUT}
+              />
+            </label>
           ) : null}
+
+          <button
+            type="button"
+            className="cta-button"
+            onClick={() => {
+              void handleStartTable();
+            }}
+            disabled={isLoading}
+          >
+            New game
+          </button>
         </aside>
 
         <section className="board-column">
           {!state ? (
             <section className="empty-state-card">
               <span className="eyebrow">No active table</span>
-              <h2>Deal a new match from the left-hand setup.</h2>
-              <p>
-                The default preset is a four-seat partnership game with you as the
-                only human player.
-              </p>
+              <h2>Start a new game from the table setup.</h2>
             </section>
           ) : (
             <>
@@ -502,13 +399,39 @@ export default function App() {
                         </div>
 
                         <div className="seat-card__footer">
-                          <span>Won {displayCaptured.count}</span>
+                          <span>Captured {displayCaptured.count}</span>
                           <span>
                             {state.auction.highest_bidder_name === player.name &&
                             state.auction.current_high_bid !== null
                               ? `Bid ${state.auction.current_high_bid}`
                               : " "}
                           </span>
+                        </div>
+
+                        <div className="seat-captured">
+                          <span className="seat-captured__label">
+                            Captured cards
+                          </span>
+                          <div
+                            className="seat-captured__cards"
+                            aria-label={`${player.name} captured cards`}
+                          >
+                            {displayCaptured.cards.length > 0 ? (
+                              displayCaptured.cards.map((card: Card, index) => (
+                                <PlayingCard
+                                  key={`${player.name}-${card.code}-${index}`}
+                                  card={card}
+                                  compact
+                                  isTrump={
+                                    !card.is_joker &&
+                                    state.round.trump === card.suit
+                                  }
+                                />
+                              ))
+                            ) : (
+                              <span className="seat-captured__empty">None</span>
+                            )}
+                          </div>
                         </div>
                       </article>
                     );

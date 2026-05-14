@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   buildDisplayCapturedByPlayer,
@@ -13,6 +13,10 @@ import {
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const DEFAULT_TEAMS_INPUT = "You, North\nEast, West";
+const DEFAULT_TEAM_SELECTIONS = [
+  [0, 1],
+  [2, 3],
+];
 
 function getRoundBanner(phase: string, currentTurnName: string): string {
   if (phase === "auction") {
@@ -53,13 +57,37 @@ function getJokerAwardText(results: Array<{ name: string; joker_count: number }>
   return jokerWinners.join(", ");
 }
 
+function getPlayerDisplayName(playerNames: string[], index: number): string {
+  return playerNames[index]?.trim() || `Player ${index + 1}`;
+}
+
+function buildTeamsInputFromSelections(
+  teamSelections: number[][],
+  playerNames: string[],
+  numPlayers: number,
+): string {
+  return teamSelections
+    .map((team) =>
+      team
+        .filter((playerIndex) => playerIndex >= 0 && playerIndex < numPlayers)
+        .map((playerIndex) => getPlayerDisplayName(playerNames, playerIndex))
+        .join(", "),
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
 export default function App() {
   const [sessionId] = useState(() =>
     loadOrCreateSessionId("smear-play-session-id"),
   );
   const [showHistory, setShowHistory] = useState(false);
   const [teamsEnabled, setTeamsEnabled] = useState(true);
-  const [savedTeamsInput, setSavedTeamsInput] = useState(DEFAULT_TEAMS_INPUT);
+  const [teamSelections, setTeamSelections] = useState<number[][]>(
+    DEFAULT_TEAM_SELECTIONS,
+  );
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const gameAreaRef = useRef<HTMLElement | null>(null);
 
   const {
     availableBots,
@@ -88,7 +116,6 @@ export default function App() {
     setNumPlayers,
     setTeamsInput,
     state,
-    teamsInput,
     turnPlayer,
   } = useSmearGame({
     apiBaseUrl: API_BASE_URL,
@@ -120,6 +147,69 @@ export default function App() {
     0,
     Math.min(100, botProgress?.percent_complete ?? 0),
   );
+  const playerOptions = useMemo(
+    () =>
+      Array.from({ length: numPlayers }, (_, index) => ({
+        index,
+        name: getPlayerDisplayName(playerNames, index),
+      })),
+    [numPlayers, playerNames],
+  );
+  const assignedPlayerIndexes = useMemo(
+    () => new Set(teamSelections.flat()),
+    [teamSelections],
+  );
+  const unassignedPlayers = playerOptions.filter(
+    (player) => !assignedPlayerIndexes.has(player.index),
+  );
+  const teamsAreComplete = !teamsEnabled || unassignedPlayers.length === 0;
+  const canUseFullscreenControl = typeof document !== "undefined";
+
+  useEffect(() => {
+    setTeamSelections((current) => {
+      const next = current.map((team) =>
+        team.filter((playerIndex) => playerIndex < numPlayers),
+      );
+
+      return next.length > 0 ? next : [[]];
+    });
+  }, [numPlayers]);
+
+  useEffect(() => {
+    setTeamsInput(
+      teamsEnabled
+        ? buildTeamsInputFromSelections(teamSelections, playerNames, numPlayers)
+        : "",
+    );
+  }, [numPlayers, playerNames, setTeamsInput, teamSelections, teamsEnabled]);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsFullscreen(document.fullscreenElement === gameAreaRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleFullscreenEscape(event: KeyboardEvent) {
+      if (
+        event.key === "Escape" &&
+        isFullscreen &&
+        document.fullscreenElement !== gameAreaRef.current
+      ) {
+        setIsFullscreen(false);
+      }
+    }
+
+    document.addEventListener("keydown", handleFullscreenEscape);
+    return () => {
+      document.removeEventListener("keydown", handleFullscreenEscape);
+    };
+  }, [isFullscreen]);
 
   function confirmNewGameIfNeeded() {
     if (!state) {
@@ -139,21 +229,60 @@ export default function App() {
 
   function handleTeamsEnabledChange(enabled: boolean) {
     setTeamsEnabled(enabled);
+  }
 
-    if (enabled) {
-      setTeamsInput(savedTeamsInput.trim() ? savedTeamsInput : DEFAULT_TEAMS_INPUT);
+  function handleTeamMemberToggle(teamIndex: number, playerIndex: number) {
+    setTeamSelections((current) => {
+      const selectedInTeam = current[teamIndex]?.includes(playerIndex) ?? false;
+      const withoutPlayer = current.map((team) =>
+        team.filter((memberIndex) => memberIndex !== playerIndex),
+      );
+
+      if (selectedInTeam) {
+        return withoutPlayer;
+      }
+
+      return withoutPlayer.map((team, index) =>
+        index === teamIndex
+          ? [...team, playerIndex].sort((left, right) => left - right)
+          : team,
+      );
+    });
+  }
+
+  function handleAddTeam() {
+    setTeamSelections((current) => [...current, []]);
+  }
+
+  function handleRemoveTeam(teamIndex: number) {
+    setTeamSelections((current) =>
+      current.filter((_, index) => index !== teamIndex),
+    );
+  }
+
+  async function handleFullscreenToggle() {
+    const gameArea = gameAreaRef.current;
+
+    if (!gameArea) {
       return;
     }
 
-    if (teamsInput.trim()) {
-      setSavedTeamsInput(teamsInput);
+    if (isFullscreen || document.fullscreenElement === gameArea) {
+      if (document.fullscreenElement === gameArea) {
+        await document.exitFullscreen();
+      }
+      setIsFullscreen(false);
+      return;
     }
-    setTeamsInput("");
-  }
 
-  function handleTeamsInputChange(value: string) {
-    setTeamsInput(value);
-    setSavedTeamsInput(value);
+    try {
+      if (document.fullscreenEnabled) {
+        await gameArea.requestFullscreen();
+      }
+      setIsFullscreen(true);
+    } catch {
+      setIsFullscreen(true);
+    }
   }
 
   return (
@@ -231,15 +360,74 @@ export default function App() {
           </div>
 
           {teamsEnabled ? (
-            <label className="field">
-              <span>Teams</span>
-              <textarea
-                rows={4}
-                value={teamsInput}
-                onChange={(event) => handleTeamsInputChange(event.target.value)}
-                placeholder={DEFAULT_TEAMS_INPUT}
-              />
-            </label>
+            <div className="team-picker">
+              <div className="team-picker__header">
+                <span>Teams</span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={handleAddTeam}
+                  disabled={teamSelections.length >= numPlayers}
+                >
+                  Add team
+                </button>
+              </div>
+
+              {teamSelections.map((team, teamIndex) => (
+                <section key={teamIndex} className="team-picker__team">
+                  <div className="team-picker__team-header">
+                    <strong>Team {teamIndex + 1}</strong>
+                    {teamSelections.length > 1 ? (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => handleRemoveTeam(teamIndex)}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="player-chip-grid">
+                    {playerOptions.map((player) => {
+                      const isSelected = team.includes(player.index);
+                      const isAssignedElsewhere =
+                        !isSelected && assignedPlayerIndexes.has(player.index);
+
+                      return (
+                        <button
+                          key={player.index}
+                          type="button"
+                          className={[
+                            "player-chip",
+                            isSelected ? "is-selected" : "",
+                            isAssignedElsewhere ? "is-assigned-elsewhere" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          aria-pressed={isSelected}
+                          onClick={() =>
+                            handleTeamMemberToggle(teamIndex, player.index)
+                          }
+                        >
+                          {player.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+
+              {unassignedPlayers.length > 0 ? (
+                <div className="team-picker__unassigned">
+                  <span>Unassigned</span>
+                  <div className="team-picker__unassigned-list">
+                    {unassignedPlayers.map((player) => (
+                      <span key={player.index}>{player.name}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           ) : null}
 
           <button
@@ -248,13 +436,46 @@ export default function App() {
             onClick={() => {
               void handleStartTable();
             }}
-            disabled={isLoading}
+            disabled={isLoading || !teamsAreComplete}
+            title={
+              teamsAreComplete
+                ? undefined
+                : "Assign every player before starting a team game"
+            }
           >
             New game
           </button>
         </aside>
 
-        <section className="board-column">
+        <section
+          ref={gameAreaRef}
+          className={[
+            "board-column",
+            "game-stage",
+            isFullscreen ? "game-stage--fullscreen" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          <div className="game-toolbar">
+            <div>
+              <span className="eyebrow">Game</span>
+              <strong>
+                {state ? getRoundBanner(state.phase, currentTurnName) : "Ready"}
+              </strong>
+            </div>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                void handleFullscreenToggle();
+              }}
+              disabled={!state || !canUseFullscreenControl}
+            >
+              {isFullscreen ? "Exit full screen" : "Full screen"}
+            </button>
+          </div>
+
           {!state ? (
             <section className="empty-state-card">
               <span className="eyebrow">No active table</span>
@@ -262,39 +483,45 @@ export default function App() {
             </section>
           ) : (
             <>
-              {showBotProgress ? (
-                <section className="progress-card" aria-live="polite">
-                  <div className="progress-card__header">
-                    <span>Bot thinking</span>
-                    <strong>{botThinkingName}</strong>
-                  </div>
-                  <div
-                    className={[
-                      "progress-track",
-                      botProgress ? "" : "is-indeterminate",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    role="progressbar"
-                    aria-label={`${botThinkingName} is evaluating moves`}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={botProgress ? progressPercent : undefined}
-                  >
+              <div className="progress-slot">
+                {showBotProgress ? (
+                  <section className="progress-card" aria-live="polite">
+                    <div className="progress-card__header">
+                      <span>Bot thinking</span>
+                      <strong>{botThinkingName}</strong>
+                    </div>
                     <div
-                      className="progress-bar"
-                      style={botProgress ? { width: `${progressPercent}%` } : undefined}
-                    />
-                  </div>
-                  <p className="help-copy">
-                    {botProgress
-                      ? `${botProgress.label ?? "Search in progress"}: ${botProgress.completed_units ?? 0}/${botProgress.total_units ?? 0}${
-                          botProgress.detail ? `, ${botProgress.detail}` : ""
-                        }`
-                      : "Smear is evaluating the next move."}
-                  </p>
-                </section>
-              ) : null}
+                      className={[
+                        "progress-track",
+                        botProgress ? "" : "is-indeterminate",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      role="progressbar"
+                      aria-label={`${botThinkingName} is evaluating moves`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={botProgress ? progressPercent : undefined}
+                    >
+                      <div
+                        className="progress-bar"
+                        style={
+                          botProgress
+                            ? { width: `${progressPercent}%` }
+                            : undefined
+                        }
+                      />
+                    </div>
+                    <p className="help-copy">
+                      {botProgress
+                        ? `${botProgress.label ?? "Search in progress"}: ${botProgress.completed_units ?? 0}/${botProgress.total_units ?? 0}${
+                            botProgress.detail ? `, ${botProgress.detail}` : ""
+                          }`
+                        : "Smear is evaluating the next move."}
+                    </p>
+                  </section>
+                ) : null}
+              </div>
 
               <section className="status-row">
                 <div className="status-pill">

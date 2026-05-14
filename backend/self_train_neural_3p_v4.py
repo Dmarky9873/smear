@@ -142,6 +142,10 @@ DEFAULT_OUTPUT = NeuralThreePlayerBot.MODEL_FILE_V4
 DEFAULT_RUN_ROOT = NeuralThreePlayerBot.MODEL_DIR / "self_train_runs_v4"
 DEFAULT_REPLAY_STORE_DIR = NeuralThreePlayerBot.MODEL_DIR / "self_play_replay_v4"
 DEFAULT_GUARD_FOCUS_MULTIPLIER = 2.0
+DEFAULT_REJECTED_REPLAY_POLICY = "rollback"
+REJECTED_REPLAY_POLICIES = ("rollback", "keep", "near-miss")
+DEFAULT_REJECTED_REPLAY_MIN_HEAD_TO_HEAD = 50.0
+DEFAULT_REJECTED_REPLAY_GUARD_TOLERANCE = 12.5
 GREEDY_FOCUS_BOT_IDS = frozenset({"greedy", "1-trick-minmax"})
 OPTIMAL_FOCUS_BOT_IDS = frozenset({"optimal-bot"})
 ALTERNATING_OUTER_METRICS: tuple[ComparisonMetric, ...] = (
@@ -252,6 +256,121 @@ def _apply_focus_to_specs(
     ]
 
 
+def _evaluation_win_percentage(
+    evaluation_report: dict,
+    *,
+    report_key: str,
+    model_key: str,
+) -> float | None:
+    report = evaluation_report.get(report_key)
+    if report is None:
+        return None
+    try:
+        return float(report["models"][model_key]["win_percentage"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _guard_deficits(
+    evaluation_report: dict,
+    *,
+    greedy_regression_tolerance: float,
+    optimal_regression_tolerance: float,
+) -> list[float] | None:
+    candidate_vs_greedy = _evaluation_win_percentage(
+        evaluation_report,
+        report_key="vs_greedy",
+        model_key="candidate",
+    )
+    incumbent_vs_greedy = _evaluation_win_percentage(
+        evaluation_report,
+        report_key="incumbent_vs_greedy",
+        model_key="incumbent",
+    )
+    candidate_vs_optimal = _evaluation_win_percentage(
+        evaluation_report,
+        report_key="vs_optimal_bot",
+        model_key="candidate",
+    )
+    incumbent_vs_optimal = _evaluation_win_percentage(
+        evaluation_report,
+        report_key="incumbent_vs_optimal",
+        model_key="incumbent",
+    )
+    if (
+        candidate_vs_greedy is None
+        or incumbent_vs_greedy is None
+        or candidate_vs_optimal is None
+        or incumbent_vs_optimal is None
+    ):
+        return None
+    return [
+        max(0.0, incumbent_vs_greedy - greedy_regression_tolerance - candidate_vs_greedy),
+        max(0.0, incumbent_vs_optimal - optimal_regression_tolerance - candidate_vs_optimal),
+    ]
+
+
+def _should_keep_rejected_self_play_replay(
+    evaluation_report: dict,
+    *,
+    rejected_replay_policy: str,
+    rejected_replay_min_head_to_head: float,
+    rejected_replay_guard_tolerance: float,
+    greedy_regression_tolerance: float,
+    optimal_regression_tolerance: float,
+) -> tuple[bool, str]:
+    if rejected_replay_policy not in REJECTED_REPLAY_POLICIES:
+        raise ValueError(
+            "rejected_replay_policy must be one of: "
+            + ", ".join(REJECTED_REPLAY_POLICIES)
+        )
+    if rejected_replay_policy == "rollback":
+        return False, "policy rollback"
+    if rejected_replay_policy == "keep":
+        return True, "policy keep"
+
+    candidate_vs_incumbent = _evaluation_win_percentage(
+        evaluation_report,
+        report_key="vs_incumbent",
+        model_key="candidate",
+    )
+    if candidate_vs_incumbent is None:
+        return False, "no head-to-head result"
+    if candidate_vs_incumbent < rejected_replay_min_head_to_head:
+        return (
+            False,
+            (
+                f"head-to-head {candidate_vs_incumbent:.1f}% "
+                f"< {rejected_replay_min_head_to_head:.1f}%"
+            ),
+        )
+
+    deficits = _guard_deficits(
+        evaluation_report,
+        greedy_regression_tolerance=greedy_regression_tolerance,
+        optimal_regression_tolerance=optimal_regression_tolerance,
+    )
+    if deficits is None:
+        return True, f"head-to-head {candidate_vs_incumbent:.1f}%"
+
+    max_deficit = max(deficits)
+    if max_deficit <= rejected_replay_guard_tolerance:
+        return (
+            True,
+            (
+                f"head-to-head {candidate_vs_incumbent:.1f}% "
+                f"and guard deficit {max_deficit:.1f} pts"
+            ),
+        )
+    return (
+        False,
+        (
+            f"guard deficit {max_deficit:.1f} pts "
+            f"> {rejected_replay_guard_tolerance:.1f} pts"
+        ),
+    )
+
+
 def _resolve_default_initial_model_path() -> Path:
     if NeuralThreePlayerBot.MODEL_FILE_V4.exists():
         return NeuralThreePlayerBot.MODEL_FILE_V4
@@ -350,6 +469,9 @@ def train_with_alternating_phases(
     self_play_failures_before_imitation: int = 0,
     retain_replay_iterations_after_promotion: int = 0,
     carry_rejected_candidates: bool = False,
+    rejected_replay_policy: str = DEFAULT_REJECTED_REPLAY_POLICY,
+    rejected_replay_min_head_to_head: float = DEFAULT_REJECTED_REPLAY_MIN_HEAD_TO_HEAD,
+    rejected_replay_guard_tolerance: float = DEFAULT_REJECTED_REPLAY_GUARD_TOLERANCE,
     replay_history: SelfPlayDatasetHistory | None = None,
     checkpoint_dir: Path | None = None,
     best_path: Path | None = None,
@@ -375,6 +497,15 @@ def train_with_alternating_phases(
         raise ValueError("retain_replay_iterations_after_promotion must be non-negative")
     if guard_focus_multiplier <= 0:
         raise ValueError("guard_focus_multiplier must be positive")
+    if rejected_replay_policy not in REJECTED_REPLAY_POLICIES:
+        raise ValueError(
+            "rejected_replay_policy must be one of: "
+            + ", ".join(REJECTED_REPLAY_POLICIES)
+        )
+    if rejected_replay_min_head_to_head < 0 or rejected_replay_min_head_to_head > 100:
+        raise ValueError("rejected_replay_min_head_to_head must be between 0 and 100")
+    if rejected_replay_guard_tolerance < 0:
+        raise ValueError("rejected_replay_guard_tolerance must be non-negative")
     started_at = run_started_at if run_started_at is not None else time.time()
     current_best_bundle = initial_bundle
     working_bundle = initial_bundle
@@ -613,6 +744,8 @@ def train_with_alternating_phases(
 
         replay_reset = False
         replay_rolled_back = False
+        rejected_replay_kept = False
+        rejected_replay_reason: str | None = None
         carried_rejected_candidate = False
         if evaluation_report["accepted"]:
             current_best_bundle = candidate_bundle
@@ -654,6 +787,8 @@ def train_with_alternating_phases(
             if carry_rejected_candidates:
                 working_bundle = candidate_bundle
                 carried_rejected_candidate = True
+                rejected_replay_kept = phase == "self_play"
+                rejected_replay_reason = "carrying rejected candidate"
                 if replay_store_dir is not None and replay_shard_path is not None:
                     prune_replay_shards(
                         replay_store_dir=replay_store_dir,
@@ -664,18 +799,50 @@ def train_with_alternating_phases(
             else:
                 working_bundle = current_best_bundle
                 if phase == "self_play":
-                    current_replay_history = SelfPlayDatasetHistory(
-                        iterations=replay_iterations_before_phase,
+                    (
+                        rejected_replay_kept,
+                        rejected_replay_reason,
+                    ) = _should_keep_rejected_self_play_replay(
+                        evaluation_report,
+                        rejected_replay_policy=rejected_replay_policy,
+                        rejected_replay_min_head_to_head=rejected_replay_min_head_to_head,
+                        rejected_replay_guard_tolerance=rejected_replay_guard_tolerance,
+                        greedy_regression_tolerance=promotion_greedy_regression_tolerance,
+                        optimal_regression_tolerance=promotion_optimal_regression_tolerance,
                     )
-                    replay_rolled_back = True
-                    if replay_shard_path is not None:
-                        replay_shard_path.unlink(missing_ok=True)
-                        replay_shard_path = None
+                    if rejected_replay_kept:
+                        if replay_store_dir is not None and replay_shard_path is not None:
+                            prune_replay_shards(
+                                replay_store_dir=replay_store_dir,
+                                replay_window=replay_window,
+                                persisted_replay_limit=persisted_replay_limit,
+                                verbose=verbose,
+                            )
+                    else:
+                        current_replay_history = SelfPlayDatasetHistory(
+                            iterations=replay_iterations_before_phase,
+                        )
+                        replay_rolled_back = True
+                        if replay_shard_path is not None:
+                            replay_shard_path.unlink(missing_ok=True)
+                            replay_shard_path = None
             _log(verbose, f"[v4] iteration {iteration_index} kept incumbent")
             if replay_rolled_back:
                 _log(
                     verbose,
                     f"[v4] iteration {iteration_index} rolled back rejected self-play replay",
+                )
+            if rejected_replay_kept:
+                _log(
+                    verbose,
+                    (
+                        f"[v4] iteration {iteration_index} kept rejected self-play replay"
+                        + (
+                            f" ({rejected_replay_reason})"
+                            if rejected_replay_reason is not None
+                            else ""
+                        )
+                    ),
                 )
             if carried_rejected_candidate:
                 _log(
@@ -767,6 +934,8 @@ def train_with_alternating_phases(
             "replay_history_iterations": len(current_replay_history.iterations),
             "replay_reset": replay_reset,
             "replay_rolled_back": replay_rolled_back,
+            "rejected_replay_kept": rejected_replay_kept,
+            "rejected_replay_reason": rejected_replay_reason,
             "carried_rejected_candidate": carried_rejected_candidate,
         }
         iteration_reports.append(iteration_report)
@@ -865,6 +1034,28 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "continue training from rejected candidates and keep their replay shards; "
             "by default v4 rolls back to the incumbent after failed promotion checks"
         ),
+    )
+    parser.add_argument(
+        "--rejected-replay-policy",
+        choices=REJECTED_REPLAY_POLICIES,
+        default=DEFAULT_REJECTED_REPLAY_POLICY,
+        help=(
+            "what to do with self-play replay from rejected candidates when not carrying "
+            "candidate weights: rollback discards it, keep retains all, near-miss keeps "
+            "only rejected candidates that were competitive enough to be useful"
+        ),
+    )
+    parser.add_argument(
+        "--rejected-replay-min-head-to-head",
+        type=float,
+        default=DEFAULT_REJECTED_REPLAY_MIN_HEAD_TO_HEAD,
+        help="near-miss replay requires this candidate win percentage vs incumbent",
+    )
+    parser.add_argument(
+        "--rejected-replay-guard-tolerance",
+        type=float,
+        default=DEFAULT_REJECTED_REPLAY_GUARD_TOLERANCE,
+        help="near-miss replay allows this maximum greedy/optimal guard deficit in points",
     )
     parser.add_argument("--eval-games", type=int, default=36)
     parser.add_argument("--eval-games-vs-optimal", type=int, default=18)
@@ -1004,6 +1195,9 @@ def main() -> None:
                 "persisted_replay_limit": args.persisted_replay_limit,
                 "retain_replay_iterations_after_promotion": args.retain_replay_iterations_after_promotion,
                 "carry_rejected_candidates": args.carry_rejected_candidates,
+                "rejected_replay_policy": args.rejected_replay_policy,
+                "rejected_replay_min_head_to_head": args.rejected_replay_min_head_to_head,
+                "rejected_replay_guard_tolerance": args.rejected_replay_guard_tolerance,
                 "loaded_persisted_replay_shards": len(replay_history.iterations),
                 "eval_games": args.eval_games,
                 "eval_games_vs_optimal": args.eval_games_vs_optimal,
@@ -1059,7 +1253,7 @@ def main() -> None:
                             f"self-play {args.self_play_matches} min-burst {args.self_play_phases_per_cycle} | "
                             f"imitate after {args.self_play_failures_before_imitation} self-play fails | "
                             f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion} | "
-                            f"rejected {'carry' if args.carry_rejected_candidates else 'rollback'} | "
+                            f"rejected {'carry' if args.carry_rejected_candidates else args.rejected_replay_policy} | "
                             f"focus x{args.guard_focus_multiplier:.1f}"
                         )
                         if args.self_play_failures_before_imitation > 0
@@ -1068,7 +1262,7 @@ def main() -> None:
                             f"dagger {args.dagger_matches}/{args.repeat_imitation_dagger_matches} x{args.dagger_iterations} | "
                             f"self-play {args.self_play_matches} x{args.self_play_phases_per_cycle} | "
                             f"replay {args.replay_window} keep {args.retain_replay_iterations_after_promotion} | "
-                            f"rejected {'carry' if args.carry_rejected_candidates else 'rollback'} | "
+                            f"rejected {'carry' if args.carry_rejected_candidates else args.rejected_replay_policy} | "
                             f"focus x{args.guard_focus_multiplier:.1f}"
                         )
                     ),
@@ -1106,6 +1300,9 @@ def main() -> None:
         persisted_replay_limit=args.persisted_replay_limit,
         retain_replay_iterations_after_promotion=args.retain_replay_iterations_after_promotion,
         carry_rejected_candidates=args.carry_rejected_candidates,
+        rejected_replay_policy=args.rejected_replay_policy,
+        rejected_replay_min_head_to_head=args.rejected_replay_min_head_to_head,
+        rejected_replay_guard_tolerance=args.rejected_replay_guard_tolerance,
         seed=args.seed,
         play_hidden_dim=args.play_hidden_dim,
         auction_hidden_dim=args.auction_hidden_dim,

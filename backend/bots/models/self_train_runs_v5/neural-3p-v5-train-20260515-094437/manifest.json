@@ -1,0 +1,14 @@
+{
+  "started_at": "20260515-094437",
+  "initial_model_path": "backend/bots/models/neural_3p_v4.json",
+  "promote_to": "/Users/danielmarkusson/Documents/GitHub/smear/backend/bots/models/neural_3p_v5.json",
+  "actor_pool": "incumbent:4,greedy:2,1-trick-minmax:2,optimal-bot:1,random:1",
+  "teacher_pool": "optimal-bot:6,1-trick-minmax:3,greedy:1",
+  "train_matches": 240,
+  "validation_matches": 64,
+  "alpha": 40,
+  "seed": 0,
+  "workers": 10,
+  "trainer_backend": "torch",
+  "trainer_batch_size": 256
+}

@@ -30,6 +30,7 @@ try:
         NeuralThreePlayerV1Bot,
         NeuralThreePlayerV3Bot,
         NeuralThreePlayerV4Bot,
+        NeuralThreePlayerV5Bot,
     )
     from .omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from .omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
@@ -63,6 +64,7 @@ except ImportError:
         NeuralThreePlayerV1Bot,
         NeuralThreePlayerV3Bot,
         NeuralThreePlayerV4Bot,
+        NeuralThreePlayerV5Bot,
     )
     from bots.omniscient_minimax_n_trick_bot import OmniscientMinimaxNTrickPlayer
     from bots.omniscient_minimax_one_trick_bot import OmniscientMinimaxOneTrickPlayer
@@ -240,6 +242,19 @@ READY_BOTS: tuple[ReadyBotSpec, ...] = (
             model_path=NeuralThreePlayerBot.MODEL_FILE_V4,
         ),
         rating_fingerprint="neural-3p-v4:v2",
+    ),
+    ReadyBotSpec(
+        id="neural-3p-v5",
+        label="Neural 3P v5",
+        description=(
+            "A dependency-free 3-player singleton neural bot trained by offline "
+            "policy improvement over fixed actor rollouts and teacher-scored states."
+        ),
+        factory=lambda player_name: NeuralThreePlayerV5Bot(
+            player_name,
+            model_path=NeuralThreePlayerBot.MODEL_FILE_V5,
+        ),
+        rating_fingerprint="neural-3p-v5:v1",
     ),
     ReadyBotSpec(
         id="1-trick-minmax",

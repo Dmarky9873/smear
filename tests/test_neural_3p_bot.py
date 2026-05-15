@@ -11,6 +11,7 @@ from backend.bots.neural_3p_bot import (
     NeuralThreePlayerV1Bot,
     NeuralThreePlayerV3Bot,
     NeuralThreePlayerV4Bot,
+    NeuralThreePlayerV5Bot,
 )
 from backend.bots.neural_3p_features import (
     encode_auction_candidate,
@@ -48,6 +49,10 @@ from backend.self_train_neural_3p_v2 import (
 from backend.self_train_neural_3p_v4 import (
     resolve_initial_model_path,
     train_with_alternating_phases,
+)
+from backend.self_train_neural_3p_v5 import (
+    collect_offline_policy_dataset,
+    parse_actor_specs,
 )
 from backend.train_neural_3p_bot import (
     ComparisonMetric,
@@ -349,16 +354,19 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         upgraded_bot = build_ready_bot("neural-3p-v2", "A")
         self_play_bot = build_ready_bot("neural-3p-v3", "A")
         alternating_bot = build_ready_bot("neural-3p-v4", "A")
+        offline_bot = build_ready_bot("neural-3p-v5", "A")
 
         self.assertIsInstance(legacy_bot, NeuralThreePlayerV1Bot)
         self.assertIsInstance(upgraded_bot, NeuralThreePlayerBot)
         self.assertIsInstance(self_play_bot, NeuralThreePlayerBot)
         self.assertIsInstance(alternating_bot, NeuralThreePlayerV4Bot)
+        self.assertIsInstance(offline_bot, NeuralThreePlayerV5Bot)
         bot_ids = {bot["id"] for bot in list_ready_bot_metadata()}
         self.assertIn("neural-3p-v1", bot_ids)
         self.assertIn("neural-3p-v2", bot_ids)
         self.assertIn("neural-3p-v3", bot_ids)
         self.assertIn("neural-3p-v4", bot_ids)
+        self.assertIn("neural-3p-v5", bot_ids)
 
     def test_neural_bot_chooses_legal_card_in_supported_context(self):
         round_state = self._build_supported_round_state()
@@ -457,6 +465,31 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
             chosen_card = trained_bot.choose_card(round_state)
 
         self.assertIn(chosen_card, ordered_legal_cards(round_state))
+
+    def test_v5_offline_collector_labels_fixed_actor_rollouts(self):
+        actor_specs = parse_actor_specs("random")
+        teacher_specs = parse_teacher_specs("greedy")
+        incumbent_bundle = load_model_bundle(NeuralThreePlayerBot.MODEL_FILE_V2)
+
+        dataset, collection_report = collect_offline_policy_dataset(
+            actor_specs=actor_specs,
+            teacher_specs=teacher_specs,
+            incumbent_bundle=incumbent_bundle,
+            match_count=1,
+            alpha=1,
+            seed=0,
+            actor_sample_scale=0.1,
+            teacher_sample_scale=0.1,
+            workers=1,
+            verbose=False,
+        )
+
+        self.assertGreater(collection_report["teacher_queries"], 0)
+        self.assertGreater(collection_report["play_policy_examples"], 0)
+        self.assertGreater(collection_report["auction_policy_examples"], 0)
+        self.assertGreater(collection_report["play_value_examples"], 0)
+        self.assertGreater(collection_report["auction_value_examples"], 0)
+        self.assertEqual(len(dataset.play_policy_examples), collection_report["play_policy_examples"])
 
     def test_save_model_bundle_creates_missing_parent_directories(self):
         bundle = {
@@ -2083,10 +2116,12 @@ class NeuralThreePlayerBotTests(unittest.TestCase):
         v1_bot = NeuralThreePlayerV1Bot("A")
         v3_bot = NeuralThreePlayerV3Bot("B")
         v4_bot = NeuralThreePlayerV4Bot("C")
+        v5_bot = NeuralThreePlayerV5Bot("D")
 
         self.assertEqual(v1_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V1.name)
         self.assertEqual(v3_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V3.name)
         self.assertEqual(v4_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V4.name)
+        self.assertEqual(v5_bot._model_path.name, NeuralThreePlayerBot.MODEL_FILE_V5.name)
 
     def test_resolve_self_play_exploration_anneals_and_respects_floors(self):
         self.assertEqual(

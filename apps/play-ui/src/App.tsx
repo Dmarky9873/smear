@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type TouchEvent,
 } from "react";
 
 import {
@@ -40,8 +41,9 @@ const DONATION_PRESETS = [
 ];
 const DONATION_MIN_CENTS = 100;
 const DONATION_MAX_CENTS = 10000;
-const DONATION_CURRENCY =
-  (import.meta.env.VITE_DONATION_CURRENCY ?? "CAD").toUpperCase();
+const DONATION_CURRENCY = (
+  import.meta.env.VITE_DONATION_CURRENCY ?? "CAD"
+).toUpperCase();
 const MOBILE_TABLE_QUERY =
   "(max-width: 760px), (pointer: coarse) and (max-width: 920px)";
 
@@ -132,10 +134,7 @@ function parseDonationAmount(value: string): number | null {
   }
 
   const amountCents = Math.round(Number(normalized) * 100);
-  if (
-    amountCents < DONATION_MIN_CENTS ||
-    amountCents > DONATION_MAX_CENTS
-  ) {
+  if (amountCents < DONATION_MIN_CENTS || amountCents > DONATION_MAX_CENTS) {
     return null;
   }
 
@@ -167,10 +166,7 @@ function getRoundBanner(phase: string, currentTurnName: string): string {
   return "Round over";
 }
 
-function getVisiblePlayForPlayer(
-  trick: TrickState | null,
-  playerName: string,
-) {
+function getVisiblePlayForPlayer(trick: TrickState | null, playerName: string) {
   return trick?.plays.find((play) => play.player_name === playerName) ?? null;
 }
 
@@ -178,7 +174,9 @@ function getScoreHeading(roundIsTerminal: boolean): string {
   return roundIsTerminal ? "Round Summary" : "Last Round Summary";
 }
 
-function getJokerAwardText(results: Array<{ name: string; joker_count: number }>) {
+function getJokerAwardText(
+  results: Array<{ name: string; joker_count: number }>,
+) {
   const jokerWinners = results
     .filter((result) => result.joker_count > 0)
     .map((result) => `${result.name} (${result.joker_count})`);
@@ -235,6 +233,7 @@ function PlayBotsPage({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const isMobileTable = useMobileTableMode();
   const gameAreaRef = useRef<HTMLElement | null>(null);
+  const setupDrawerTouchStart = useRef<{ x: number; y: number } | null>(null);
 
   const {
     availableBots,
@@ -280,7 +279,7 @@ function PlayBotsPage({
   const visibleTrick = state
     ? state.round.current_trick.plays.length > 0
       ? state.round.current_trick
-      : revealedTrick ?? state.round.current_trick
+      : (revealedTrick ?? state.round.current_trick)
     : null;
   const completedTricks = state ? [...state.round.trick_history].reverse() : [];
   const displayCapturedByPlayer = state
@@ -312,6 +311,8 @@ function PlayBotsPage({
   const teamsAreComplete = !teamsEnabled || unassignedPlayers.length === 0;
   const canUseFullscreenControl = typeof document !== "undefined";
   const useMobileGameLayout = Boolean(state && isMobileTable);
+  const wasMobileLayout = useRef(useMobileGameLayout);
+  const isSetupDrawerOpen = setupSidebarOpen && useMobileGameLayout;
 
   useEffect(() => {
     setTeamSelections((current) => {
@@ -360,6 +361,27 @@ function PlayBotsPage({
   }, [isFullscreen]);
 
   useEffect(() => {
+    if (wasMobileLayout.current && !useMobileGameLayout) {
+      setSetupSidebarOpen(false);
+    }
+
+    wasMobileLayout.current = useMobileGameLayout;
+  }, [useMobileGameLayout]);
+
+  useEffect(() => {
+    function handleDrawerEscape(event: KeyboardEvent) {
+      if (event.key === "Escape" && isSetupDrawerOpen) {
+        setSetupSidebarOpen(false);
+      }
+    }
+
+    document.addEventListener("keydown", handleDrawerEscape);
+    return () => {
+      document.removeEventListener("keydown", handleDrawerEscape);
+    };
+  }, [isSetupDrawerOpen]);
+
+  useEffect(() => {
     document.body.classList.toggle("mobile-game-locked", useMobileGameLayout);
 
     return () => {
@@ -375,12 +397,20 @@ function PlayBotsPage({
     return window.confirm("Start a fresh table with the current setup?");
   }
 
-  async function handleStartTable() {
+  async function handleStartTable(): Promise<boolean> {
     if (!confirmNewGameIfNeeded()) {
-      return;
+      return false;
     }
 
     await handleNewGamePlay();
+    return true;
+  }
+
+  async function handleStartTableFromPanel() {
+    const started = await handleStartTable();
+    if (started && useMobileGameLayout) {
+      setSetupSidebarOpen(false);
+    }
   }
 
   function handleTeamsEnabledChange(enabled: boolean) {
@@ -415,6 +445,208 @@ function PlayBotsPage({
       current.filter((_, index) => index !== teamIndex),
     );
   }
+
+  function handleCloseSetupDrawer() {
+    setSetupSidebarOpen(false);
+  }
+
+  function handleToggleSetupDrawer() {
+    setSetupSidebarOpen((current) => !current);
+  }
+
+  function handleNavigateHomeFromDrawer() {
+    setSetupSidebarOpen(false);
+    onNavigateHome();
+  }
+
+  function handleDrawerTouchStart(event: TouchEvent<HTMLDivElement>) {
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+
+    setupDrawerTouchStart.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+    };
+  }
+
+  function handleDrawerTouchMove(event: TouchEvent<HTMLDivElement>) {
+    const start = setupDrawerTouchStart.current;
+    const touch = event.touches[0];
+    if (!start || !touch) {
+      return;
+    }
+
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (deltaX < -70 && Math.abs(deltaY) < 60) {
+      handleCloseSetupDrawer();
+      setupDrawerTouchStart.current = null;
+    }
+  }
+
+  function handleDrawerTouchEnd() {
+    setupDrawerTouchStart.current = null;
+  }
+
+  const setupPanelContent = (
+    <>
+      <div className="card-header">
+        <div>
+          <span className="eyebrow">Table setup</span>
+          <h2>Players and teams</h2>
+        </div>
+        <button
+          type="button"
+          className="text-button control-card__collapse"
+          onClick={handleCloseSetupDrawer}
+        >
+          Hide
+        </button>
+      </div>
+
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={teamsEnabled}
+          onChange={(event) => handleTeamsEnabledChange(event.target.checked)}
+        />
+        <span>Play with teams</span>
+      </label>
+
+      <label className="field">
+        <span>Seats</span>
+        <input
+          type="number"
+          min={3}
+          max={8}
+          value={numPlayers}
+          onChange={(event) => setNumPlayers(Number(event.target.value) || 3)}
+        />
+      </label>
+
+      <div className="seat-editor">
+        {playerNames.map((playerName, index) => (
+          <article key={index} className="seat-editor__card">
+            <label className="field">
+              <span>Seat {index + 1}</span>
+              <input
+                type="text"
+                value={playerName}
+                onChange={(event) =>
+                  handlePlayerNameChange(index, event.target.value)
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Controller</span>
+              <select
+                value={playerBots[index] ?? ""}
+                onChange={(event) =>
+                  handlePlayerBotChange(index, event.target.value || null)
+                }
+              >
+                <option value="">Human</option>
+                {availableBots.map((bot) => (
+                  <option key={bot.id} value={bot.id}>
+                    {bot.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </article>
+        ))}
+      </div>
+
+      {teamsEnabled ? (
+        <div className="team-picker">
+          <div className="team-picker__header">
+            <span>Teams</span>
+            <button
+              type="button"
+              className="text-button"
+              onClick={handleAddTeam}
+              disabled={teamSelections.length >= numPlayers}
+            >
+              Add team
+            </button>
+          </div>
+
+          {teamSelections.map((team, teamIndex) => (
+            <section key={teamIndex} className="team-picker__team">
+              <div className="team-picker__team-header">
+                <strong>Team {teamIndex + 1}</strong>
+                {teamSelections.length > 1 ? (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => handleRemoveTeam(teamIndex)}
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+              <div className="player-chip-grid">
+                {playerOptions.map((player) => {
+                  const isSelected = team.includes(player.index);
+                  const isAssignedElsewhere =
+                    !isSelected && assignedPlayerIndexes.has(player.index);
+
+                  return (
+                    <button
+                      key={player.index}
+                      type="button"
+                      className={[
+                        "player-chip",
+                        isSelected ? "is-selected" : "",
+                        isAssignedElsewhere ? "is-assigned-elsewhere" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      aria-pressed={isSelected}
+                      onClick={() =>
+                        handleTeamMemberToggle(teamIndex, player.index)
+                      }
+                    >
+                      {player.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+
+          {unassignedPlayers.length > 0 ? (
+            <div className="team-picker__unassigned">
+              <span>Unassigned</span>
+              <div className="team-picker__unassigned-list">
+                {unassignedPlayers.map((player) => (
+                  <span key={player.index}>{player.name}</span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        className="cta-button"
+        onClick={() => {
+          void handleStartTableFromPanel();
+        }}
+        disabled={isLoading || !teamsAreComplete}
+        title={
+          teamsAreComplete
+            ? undefined
+            : "Assign every player before starting a team game"
+        }
+      >
+        New game
+      </button>
+    </>
+  );
 
   async function handleFullscreenToggle() {
     const gameArea = gameAreaRef.current;
@@ -456,13 +688,25 @@ function PlayBotsPage({
           <h1>Smear</h1>
         </div>
         <div className="top-actions">
-          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateHome}
+          >
             Home
           </button>
-          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateLearn}
+          >
             Learn
           </button>
-          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateDonate}
+          >
             Donate
           </button>
           <button
@@ -528,169 +772,13 @@ function PlayBotsPage({
             className="setup-sidebar__toggle"
             aria-expanded={setupSidebarOpen}
             aria-controls="table-setup-panel"
-            onClick={() => setSetupSidebarOpen((current) => !current)}
+            onClick={handleToggleSetupDrawer}
           >
             {setupSidebarOpen ? "Hide setup" : "New game"}
           </button>
 
           <aside id="table-setup-panel" className="control-card">
-            <div className="card-header">
-              <div>
-                <span className="eyebrow">Table setup</span>
-                <h2>Players and teams</h2>
-              </div>
-              <button
-                type="button"
-                className="text-button control-card__collapse"
-                onClick={() => setSetupSidebarOpen(false)}
-              >
-                Hide
-              </button>
-            </div>
-
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={teamsEnabled}
-                onChange={(event) =>
-                  handleTeamsEnabledChange(event.target.checked)
-                }
-              />
-              <span>Play with teams</span>
-            </label>
-
-            <label className="field">
-              <span>Seats</span>
-              <input
-                type="number"
-                min={3}
-                max={8}
-                value={numPlayers}
-                onChange={(event) =>
-                  setNumPlayers(Number(event.target.value) || 3)
-                }
-              />
-            </label>
-
-            <div className="seat-editor">
-              {playerNames.map((playerName, index) => (
-                <article key={index} className="seat-editor__card">
-                  <label className="field">
-                    <span>Seat {index + 1}</span>
-                    <input
-                      type="text"
-                      value={playerName}
-                      onChange={(event) =>
-                        handlePlayerNameChange(index, event.target.value)
-                      }
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Controller</span>
-                    <select
-                      value={playerBots[index] ?? ""}
-                      onChange={(event) =>
-                        handlePlayerBotChange(index, event.target.value || null)
-                      }
-                    >
-                      <option value="">Human</option>
-                      {availableBots.map((bot) => (
-                        <option key={bot.id} value={bot.id}>
-                          {bot.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </article>
-              ))}
-            </div>
-
-            {teamsEnabled ? (
-              <div className="team-picker">
-                <div className="team-picker__header">
-                  <span>Teams</span>
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={handleAddTeam}
-                    disabled={teamSelections.length >= numPlayers}
-                  >
-                    Add team
-                  </button>
-                </div>
-
-                {teamSelections.map((team, teamIndex) => (
-                  <section key={teamIndex} className="team-picker__team">
-                    <div className="team-picker__team-header">
-                      <strong>Team {teamIndex + 1}</strong>
-                      {teamSelections.length > 1 ? (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => handleRemoveTeam(teamIndex)}
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="player-chip-grid">
-                      {playerOptions.map((player) => {
-                        const isSelected = team.includes(player.index);
-                        const isAssignedElsewhere =
-                          !isSelected && assignedPlayerIndexes.has(player.index);
-
-                        return (
-                          <button
-                            key={player.index}
-                            type="button"
-                            className={[
-                              "player-chip",
-                              isSelected ? "is-selected" : "",
-                              isAssignedElsewhere ? "is-assigned-elsewhere" : "",
-                            ]
-                              .filter(Boolean)
-                              .join(" ")}
-                            aria-pressed={isSelected}
-                            onClick={() =>
-                              handleTeamMemberToggle(teamIndex, player.index)
-                            }
-                          >
-                            {player.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))}
-
-                {unassignedPlayers.length > 0 ? (
-                  <div className="team-picker__unassigned">
-                    <span>Unassigned</span>
-                    <div className="team-picker__unassigned-list">
-                      {unassignedPlayers.map((player) => (
-                        <span key={player.index}>{player.name}</span>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            <button
-              type="button"
-              className="cta-button"
-              onClick={() => {
-                void handleStartTable();
-              }}
-              disabled={isLoading || !teamsAreComplete}
-              title={
-                teamsAreComplete
-                  ? undefined
-                  : "Assign every player before starting a team game"
-              }
-            >
-              New game
-            </button>
+            {setupPanelContent}
           </aside>
         </div>
 
@@ -712,16 +800,18 @@ function PlayBotsPage({
               </strong>
             </div>
             <div className="game-toolbar__actions">
-              {state ? (
+              {useMobileGameLayout ? (
                 <button
                   type="button"
-                  className="ghost-button game-toolbar__mobile-new"
-                  onClick={() => {
-                    void handleStartTable();
-                  }}
-                  disabled={isLoading || !teamsAreComplete}
+                  className="ghost-button game-toolbar__drawer-toggle"
+                  aria-label={
+                    isSetupDrawerOpen ? "Close setup menu" : "Open setup menu"
+                  }
+                  aria-expanded={isSetupDrawerOpen}
+                  aria-controls="mobile-setup-drawer"
+                  onClick={handleToggleSetupDrawer}
                 >
-                  New
+                  Menu
                 </button>
               ) : null}
               <button
@@ -798,7 +888,8 @@ function PlayBotsPage({
                   <strong>
                     {awaitingNextTrick
                       ? "Next trick ready"
-                      : botThinkingName ?? getRoundBanner(state.phase, currentTurnName)}
+                      : (botThinkingName ??
+                        getRoundBanner(state.phase, currentTurnName))}
                   </strong>
                 </div>
                 {state.match.scores.map((entry) => (
@@ -813,7 +904,9 @@ function PlayBotsPage({
                 <div className="card-header">
                   <div>
                     <span className="eyebrow">Table</span>
-                    <h2>{state.phase === "auction" ? "Auction" : "Current trick"}</h2>
+                    <h2>
+                      {state.phase === "auction" ? "Auction" : "Current trick"}
+                    </h2>
                   </div>
                   <div className="card-header__actions">
                     {awaitingNextTrick ? (
@@ -846,8 +939,13 @@ function PlayBotsPage({
                 >
                   {state.round.players.map((player) => {
                     const isCurrentPlayer = player.name === turnPlayer?.name;
-                    const tablePlay = getVisiblePlayForPlayer(visibleTrick, player.name);
-                    const displayCaptured = displayCapturedByPlayer?.[player.name] ?? {
+                    const tablePlay = getVisiblePlayForPlayer(
+                      visibleTrick,
+                      player.name,
+                    );
+                    const displayCaptured = displayCapturedByPlayer?.[
+                      player.name
+                    ] ?? {
                       cards: player.captured_cards,
                       count: player.captured_count,
                     };
@@ -892,7 +990,8 @@ function PlayBotsPage({
                         <div className="seat-card__footer">
                           <span>Captured {displayCaptured.count}</span>
                           <span>
-                            {state.auction.highest_bidder_name === player.name &&
+                            {state.auction.highest_bidder_name ===
+                              player.name &&
                             state.auction.current_high_bid !== null
                               ? `Bid ${state.auction.current_high_bid}`
                               : " "}
@@ -963,7 +1062,9 @@ function PlayBotsPage({
                           ) : null}
                         </div>
                       ) : (
-                        <p className="help-copy">Waiting for {currentTurnName} to act.</p>
+                        <p className="help-copy">
+                          Waiting for {currentTurnName} to act.
+                        </p>
                       )}
                     </>
                   ) : (
@@ -995,7 +1096,9 @@ function PlayBotsPage({
                       <PlayingCard
                         key={card.code}
                         card={card}
-                        isTrump={!card.is_joker && state.round.trump === card.suit}
+                        isTrump={
+                          !card.is_joker && state.round.trump === card.suit
+                        }
                         disabled={
                           state.phase === "play"
                             ? awaitingNextTrick ||
@@ -1004,7 +1107,8 @@ function PlayBotsPage({
                             : true
                         }
                         onClick={
-                          state.phase === "play" && legalCardCodes.has(card.code)
+                          state.phase === "play" &&
+                          legalCardCodes.has(card.code)
                             ? () => {
                                 void handlePlayPlay(card.code);
                               }
@@ -1090,7 +1194,8 @@ function PlayBotsPage({
                     <div className="award-card">
                       <span>Jack</span>
                       <strong>
-                        {score.awards.jack.unit_name ?? score.awards.jack.reason}
+                        {score.awards.jack.unit_name ??
+                          score.awards.jack.reason}
                       </strong>
                     </div>
                     <div className="award-card">
@@ -1116,12 +1221,17 @@ function PlayBotsPage({
                       <article key={result.name} className="result-card">
                         <div className="result-card__header">
                           <h3>{result.name}</h3>
-                          <strong>{result.match_delta > 0 ? `+${result.match_delta}` : result.match_delta}</strong>
+                          <strong>
+                            {result.match_delta > 0
+                              ? `+${result.match_delta}`
+                              : result.match_delta}
+                          </strong>
                         </div>
                         <p>
-                          High {result.breakdown.high} | Jack {result.breakdown.jack} |
-                          Low {result.breakdown.low} | Jokers {result.breakdown.jokers} |
-                          Game {result.breakdown.game}
+                          High {result.breakdown.high} | Jack{" "}
+                          {result.breakdown.jack} | Low {result.breakdown.low} |
+                          Jokers {result.breakdown.jokers} | Game{" "}
+                          {result.breakdown.game}
                         </p>
                       </article>
                     ))}
@@ -1131,6 +1241,56 @@ function PlayBotsPage({
             </>
           )}
         </section>
+      </div>
+
+      <div
+        id="mobile-setup-drawer"
+        className={["mobile-drawer", isSetupDrawerOpen ? "is-open" : ""]
+          .filter(Boolean)
+          .join(" ")}
+        role="dialog"
+        aria-modal="true"
+        aria-hidden={!isSetupDrawerOpen}
+        aria-label="Table setup"
+      >
+        <div
+          className="mobile-drawer__scrim"
+          onClick={handleCloseSetupDrawer}
+        />
+        <div
+          className="mobile-drawer__panel"
+          onClick={(event) => event.stopPropagation()}
+          onTouchStart={handleDrawerTouchStart}
+          onTouchMove={handleDrawerTouchMove}
+          onTouchEnd={handleDrawerTouchEnd}
+          onTouchCancel={handleDrawerTouchEnd}
+        >
+          <div className="mobile-drawer__header">
+            <div>
+              <span className="eyebrow">Menu</span>
+              <h2>Table setup</h2>
+            </div>
+            <button
+              type="button"
+              className="ghost-button mobile-drawer__close"
+              onClick={handleCloseSetupDrawer}
+            >
+              Close
+            </button>
+          </div>
+          <nav className="mobile-drawer__nav" aria-label="Quick navigation">
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={handleNavigateHomeFromDrawer}
+            >
+              Home
+            </button>
+          </nav>
+          <div className="mobile-drawer__content">
+            <aside className="control-card">{setupPanelContent}</aside>
+          </div>
+        </div>
       </div>
     </main>
   );
@@ -1179,7 +1339,9 @@ function LandingPage({
           onClick={onNavigateLearn}
         >
           <span>Learn</span>
-          <strong>Practice random bid and card positions, then reveal the bot move.</strong>
+          <strong>
+            Practice random bid and card positions, then reveal the bot move.
+          </strong>
         </button>
         <button
           type="button"
@@ -1187,7 +1349,9 @@ function LandingPage({
           onClick={onNavigateDonate}
         >
           <span>Support Smear</span>
-          <strong>Make a small donation toward hosting and continued tuning.</strong>
+          <strong>
+            Make a small donation toward hosting and continued tuning.
+          </strong>
         </button>
       </section>
     </main>
@@ -1253,13 +1417,25 @@ function DonationPage({
           <h1>Donate to Smear</h1>
         </div>
         <div className="top-actions">
-          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateHome}
+          >
             Home
           </button>
-          <button type="button" className="ghost-button" onClick={onNavigatePlay}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigatePlay}
+          >
             Play with bots
           </button>
-          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateLearn}
+          >
             Learn
           </button>
         </div>
@@ -1392,7 +1568,9 @@ function LearnPage({
     [],
   );
   const [challenge, setChallenge] = useState<LearnChallenge | null>(null);
-  const [selectedAction, setSelectedAction] = useState<LearnAction | null>(null);
+  const [selectedAction, setSelectedAction] = useState<LearnAction | null>(
+    null,
+  );
   const [isLoadingChallenge, setIsLoadingChallenge] = useState(true);
   const [learnError, setLearnError] = useState<string | null>(null);
 
@@ -1419,9 +1597,9 @@ function LearnPage({
   }, [loadChallenge]);
 
   const actor = challenge
-    ? challenge.state.round.players.find(
+    ? (challenge.state.round.players.find(
         (player) => player.name === challenge.actor_name,
-      ) ?? null
+      ) ?? null)
     : null;
   const selectedKey = selectedAction ? getActionKey(selectedAction) : null;
   const bestKey = challenge ? getActionKey(challenge.best_action) : null;
@@ -1437,13 +1615,25 @@ function LearnPage({
           <h1>Practice a position</h1>
         </div>
         <div className="top-actions">
-          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateHome}
+          >
             Home
           </button>
-          <button type="button" className="ghost-button" onClick={onNavigatePlay}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigatePlay}
+          >
             Play with bots
           </button>
-          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateDonate}
+          >
             Donate
           </button>
         </div>
@@ -1463,7 +1653,7 @@ function LearnPage({
               <h2>
                 {isLoadingChallenge
                   ? "Loading a position"
-                  : challenge?.prompt ?? "No position loaded"}
+                  : (challenge?.prompt ?? "No position loaded")}
               </h2>
             </div>
             <button
@@ -1487,11 +1677,15 @@ function LearnPage({
                 </div>
                 <div className="status-pill">
                   <span>High bid</span>
-                  <strong>{challenge.state.auction.current_high_bid ?? "-"}</strong>
+                  <strong>
+                    {challenge.state.auction.current_high_bid ?? "-"}
+                  </strong>
                 </div>
                 <div className="status-pill">
                   <span>High bidder</span>
-                  <strong>{challenge.state.auction.highest_bidder_name ?? "-"}</strong>
+                  <strong>
+                    {challenge.state.auction.highest_bidder_name ?? "-"}
+                  </strong>
                 </div>
                 <div className="status-pill">
                   <span>Round</span>
@@ -1523,7 +1717,9 @@ function LearnPage({
                       </div>
                     ))
                   ) : (
-                    <div className="empty-inline">No cards have been played to this trick.</div>
+                    <div className="empty-inline">
+                      No cards have been played to this trick.
+                    </div>
                   )}
                 </div>
               </section>
@@ -1541,7 +1737,8 @@ function LearnPage({
                         card={card}
                         compact
                         isTrump={
-                          card.is_joker || card.suit === challenge.state.round.trump
+                          card.is_joker ||
+                          card.suit === challenge.state.round.trump
                         }
                         disabled={
                           challenge.phase === "play" &&
@@ -1562,7 +1759,11 @@ function LearnPage({
           ) : (
             <div className="empty-state-card">
               <span className="eyebrow">Practice</span>
-              <h2>{isLoadingChallenge ? "Finding a position." : "Try loading a new position."}</h2>
+              <h2>
+                {isLoadingChallenge
+                  ? "Finding a position."
+                  : "Try loading a new position."}
+              </h2>
             </div>
           )}
         </div>
@@ -1612,7 +1813,9 @@ function LearnPage({
               })}
             </div>
           ) : (
-            <div className="empty-inline">Options will appear after the position loads.</div>
+            <div className="empty-inline">
+              Options will appear after the position loads.
+            </div>
           )}
 
           {challenge && selectedAction ? (
@@ -1626,7 +1829,9 @@ function LearnPage({
               aria-live="polite"
             >
               <span className="eyebrow">Best bot</span>
-              <h2>{selectedMatchesBest ? "Same choice" : "Different choice"}</h2>
+              <h2>
+                {selectedMatchesBest ? "Same choice" : "Different choice"}
+              </h2>
               <p>
                 You chose <strong>{selectedAction.label}</strong>.{" "}
                 {challenge.best_bot_label} would choose{" "}

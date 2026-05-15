@@ -108,7 +108,9 @@ body {
   margin: 0;
   background: var(--page-bg);
   color: var(--text-primary);
-  transition: background-color 140ms ease-out, color 140ms ease-out;
+  transition:
+    background-color 140ms ease-out,
+    color 140ms ease-out;
 }
 
 button,
@@ -464,6 +466,19 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.mode-switcher__branding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.mode-switcher__logo {
+  width: 56px;
+  height: auto;
+  object-fit: contain;
 }
 
 .mode-switcher__copy {

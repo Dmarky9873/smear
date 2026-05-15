@@ -219,6 +219,20 @@ function SiteFooter() {
   return <footer className="site-footer">By Daniel Markusson</footer>;
 }
 
+type BrandLogoProps = {
+  className?: string;
+};
+
+function BrandLogo({ className = "" }: BrandLogoProps) {
+  return (
+    <img
+      className={["brand-logo", className].filter(Boolean).join(" ")}
+      src="/logo.png"
+      alt="Play Smear logo"
+    />
+  );
+}
+
 function PlayBotsPage({
   onNavigateHome,
   onNavigateLearn,
@@ -687,9 +701,12 @@ function PlayBotsPage({
         .join(" ")}
     >
       <section className="hero-card">
-        <div>
-          <span className="eyebrow">Play with bots</span>
-          <h1>Smear</h1>
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Play with bots</span>
+            <h1>Smear</h1>
+          </div>
         </div>
         <div className="top-actions">
           <button
@@ -1311,8 +1328,13 @@ function LandingPage({
     <main className="public-shell landing-shell">
       <section className="landing-hero">
         <div className="landing-hero__copy">
-          <span className="eyebrow">Smear online</span>
-          <h1>Smear</h1>
+          <div className="landing-hero__branding">
+            <BrandLogo className="brand-logo--hero" />
+            <div>
+              <span className="eyebrow">Smear online</span>
+              <h1>Smear</h1>
+            </div>
+          </div>
           <p>
             Sit down against bots, or work through one position at a time and
             compare your choice with the best bot.
@@ -1420,9 +1442,12 @@ function DonationPage({
   return (
     <main className="public-shell donation-shell">
       <section className="hero-card">
-        <div>
-          <span className="eyebrow">Support the site</span>
-          <h1>Donate to Smear</h1>
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Support the site</span>
+            <h1>Donate to Smear</h1>
+          </div>
         </div>
         <div className="top-actions">
           <button
@@ -1620,9 +1645,12 @@ function LearnPage({
   return (
     <main className="public-shell learn-shell">
       <section className="hero-card">
-        <div>
-          <span className="eyebrow">Learn</span>
-          <h1>Practice a position</h1>
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Learn</span>
+            <h1>Practice a position</h1>
+          </div>
         </div>
         <div className="top-actions">
           <button

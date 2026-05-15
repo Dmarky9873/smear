@@ -85,6 +85,29 @@ textarea:disabled {
   padding: 24px 0 48px;
 }
 
+.brand-logo {
+  display: block;
+  width: 96px;
+  height: auto;
+  object-fit: contain;
+}
+
+.brand-logo--hero {
+  width: min(220px, 40vw);
+}
+
+.brand-logo--badge {
+  width: 72px;
+}
+
+.hero-card__branding,
+.landing-hero__branding {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
 .site-footer {
   margin-top: 32px;
   padding-top: 16px;

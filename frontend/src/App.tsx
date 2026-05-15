@@ -1,9 +1,6 @@
 import { useEffect, useState } from "react";
 
-import {
-  loadOrCreateSessionId,
-  useSmearGame,
-} from "@smear/web-core";
+import { loadOrCreateSessionId, useSmearGame } from "@smear/web-core";
 import { DebugModeView } from "./components/DebugModeView";
 import { PlayModeView } from "./components/PlayModeView";
 
@@ -105,9 +102,18 @@ export default function App() {
   return (
     <>
       <header className="mode-switcher">
-        <div className="mode-switcher__copy">
-          <strong>Frontend mode</strong>
-          <span>Play is table-first. Debug keeps the full state inspector.</span>
+        <div className="mode-switcher__branding">
+          <img
+            className="mode-switcher__logo"
+            src="/logo.png"
+            alt="Play Smear logo"
+          />
+          <div className="mode-switcher__copy">
+            <strong>Frontend mode</strong>
+            <span>
+              Play is table-first. Debug keeps the full state inspector.
+            </span>
+          </div>
         </div>
         <div className="mode-switcher__actions">
           <button
@@ -123,14 +129,22 @@ export default function App() {
           <div className="mode-switcher__controls">
             <button
               type="button"
-              className={mode === "play" ? "mode-switcher__button is-active" : "mode-switcher__button"}
+              className={
+                mode === "play"
+                  ? "mode-switcher__button is-active"
+                  : "mode-switcher__button"
+              }
               onClick={() => setMode("play")}
             >
               Play
             </button>
             <button
               type="button"
-              className={mode === "debug" ? "mode-switcher__button is-active" : "mode-switcher__button"}
+              className={
+                mode === "debug"
+                  ? "mode-switcher__button is-active"
+                  : "mode-switcher__button"
+              }
               onClick={() => setMode("debug")}
             >
               Debug

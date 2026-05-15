@@ -13,6 +13,11 @@ export default defineConfig({
     port: 5174,
   },
   preview: {
-    allowedHosts: [".up.railway.app", "play-smear.com", ".play-smear.com"],
+    allowedHosts: [
+      ".up.railway.app",
+      "play-smear.com",
+      "www.play-smear.com",
+      ".play-smear.com",
+    ],
   },
 });

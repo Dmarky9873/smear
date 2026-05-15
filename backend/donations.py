@@ -7,7 +7,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 
 STRIPE_API_VERSION = "2026-04-22.dahlia"
-DEFAULT_DONATION_CURRENCY = "usd"
+DEFAULT_DONATION_CURRENCY = "cad"
 DEFAULT_PUBLIC_SITE_URL = "http://127.0.0.1:5174"
 LOCAL_DEV_ORIGINS = {
     "http://localhost:5173",

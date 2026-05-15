@@ -26,6 +26,12 @@ def test_build_donation_return_url_keeps_donate_route() -> None:
     )
 
 
+def test_get_donation_currency_defaults_to_cad(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SMEAR_DONATION_CURRENCY", raising=False)
+
+    assert donations.get_donation_currency() == "cad"
+
+
 def test_create_donation_checkout_session_uses_hosted_checkout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -56,6 +62,7 @@ def test_create_donation_checkout_session_uses_hosted_checkout(
     assert calls[0]["mode"] == "payment"
     assert calls[0]["submit_type"] == "donate"
     assert "payment_method_types" not in calls[0]
+    assert calls[0]["line_items"][0]["price_data"]["currency"] == "cad"
     assert calls[0]["success_url"] == "https://play-smear.com/?donation=success#donate"
     assert calls[0]["cancel_url"] == "https://play-smear.com/?donation=cancelled#donate"
 

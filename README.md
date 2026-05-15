@@ -168,7 +168,7 @@ Useful environment variables for the backend:
 - `SMEAR_SESSION_TTL_HOURS` controls how long inactive browser sessions are kept in the in-memory cache. Persisted sessions can still be restored from `SMEAR_STATE_DB_PATH` after cache expiry or server restart.
 - `STRIPE_SECRET_KEY` enables the donation checkout endpoint. Set it in your runtime environment or host secrets manager, not in source code.
 - `SMEAR_PUBLIC_SITE_URL` is the browser URL Stripe should redirect back to after donation checkout, for example `https://play-smear.com`. Local dev falls back to the Vite play app URL.
-- `SMEAR_DONATION_CURRENCY` controls donation currency. It defaults to `usd`.
+- `SMEAR_DONATION_CURRENCY` controls donation currency. It defaults to `cad`.
 
 Production packaging intentionally excludes neural bot replay/checkpoint output under `backend/bots/models/`. Only the small runtime bundles named `neural_3p_v*.json` should be committed or shipped to Railway.
 
@@ -217,7 +217,7 @@ By default:
 
 To point either frontend at a deployed backend, set `VITE_API_BASE_URL` before starting or building it.
 
-For the donation page, the browser display currency defaults to USD. Set `VITE_DONATION_CURRENCY` to match `SMEAR_DONATION_CURRENCY` if you change it.
+For the donation page, the browser display currency defaults to CAD. Set `VITE_DONATION_CURRENCY` to match `SMEAR_DONATION_CURRENCY` if you change it.
 
 ### Simulator
 

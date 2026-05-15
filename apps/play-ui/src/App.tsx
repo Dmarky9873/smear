@@ -34,14 +34,14 @@ const LANDING_CARDS: Card[] = [
   { code: "J1", rank: null, suit: null, is_joker: true },
 ];
 const DONATION_PRESETS = [
-  { amountCents: 300, label: "$3" },
-  { amountCents: 500, label: "$5" },
-  { amountCents: 1000, label: "$10" },
+  { amountCents: 300 },
+  { amountCents: 500 },
+  { amountCents: 1000 },
 ];
 const DONATION_MIN_CENTS = 100;
 const DONATION_MAX_CENTS = 10000;
 const DONATION_CURRENCY =
-  (import.meta.env.VITE_DONATION_CURRENCY ?? "USD").toUpperCase();
+  (import.meta.env.VITE_DONATION_CURRENCY ?? "CAD").toUpperCase();
 const MOBILE_TABLE_QUERY =
   "(max-width: 760px), (pointer: coarse) and (max-width: 920px)";
 
@@ -121,6 +121,7 @@ function formatDonationAmount(amountCents: number): string {
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: DONATION_CURRENCY,
+    currencyDisplay: "code",
   }).format(amountCents / 100);
 }
 
@@ -230,6 +231,7 @@ function PlayBotsPage({
   const [teamSelections, setTeamSelections] = useState<number[][]>(
     DEFAULT_TEAM_SELECTIONS,
   );
+  const [setupSidebarOpen, setSetupSidebarOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const isMobileTable = useMobileTableMode();
   const gameAreaRef = useRef<HTMLElement | null>(null);
@@ -510,159 +512,187 @@ function PlayBotsPage({
 
       {error ? <div className="banner banner--error">{error}</div> : null}
 
-      <div className="experience-grid">
-        <aside className="control-card">
-          <div className="card-header">
-            <div>
-              <span className="eyebrow">Table setup</span>
-              <h2>Players and teams</h2>
-            </div>
-          </div>
-
-          <label className="toggle-row">
-            <input
-              type="checkbox"
-              checked={teamsEnabled}
-              onChange={(event) =>
-                handleTeamsEnabledChange(event.target.checked)
-              }
-            />
-            <span>Play with teams</span>
-          </label>
-
-          <label className="field">
-            <span>Seats</span>
-            <input
-              type="number"
-              min={3}
-              max={8}
-              value={numPlayers}
-              onChange={(event) =>
-                setNumPlayers(Number(event.target.value) || 3)
-              }
-            />
-          </label>
-
-          <div className="seat-editor">
-            {playerNames.map((playerName, index) => (
-              <article key={index} className="seat-editor__card">
-                <label className="field">
-                  <span>Seat {index + 1}</span>
-                  <input
-                    type="text"
-                    value={playerName}
-                    onChange={(event) =>
-                      handlePlayerNameChange(index, event.target.value)
-                    }
-                  />
-                </label>
-                <label className="field">
-                  <span>Controller</span>
-                  <select
-                    value={playerBots[index] ?? ""}
-                    onChange={(event) =>
-                      handlePlayerBotChange(index, event.target.value || null)
-                    }
-                  >
-                    <option value="">Human</option>
-                    {availableBots.map((bot) => (
-                      <option key={bot.id} value={bot.id}>
-                        {bot.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </article>
-            ))}
-          </div>
-
-          {teamsEnabled ? (
-            <div className="team-picker">
-              <div className="team-picker__header">
-                <span>Teams</span>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={handleAddTeam}
-                  disabled={teamSelections.length >= numPlayers}
-                >
-                  Add team
-                </button>
-              </div>
-
-              {teamSelections.map((team, teamIndex) => (
-                <section key={teamIndex} className="team-picker__team">
-                  <div className="team-picker__team-header">
-                    <strong>Team {teamIndex + 1}</strong>
-                    {teamSelections.length > 1 ? (
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={() => handleRemoveTeam(teamIndex)}
-                      >
-                        Remove
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="player-chip-grid">
-                    {playerOptions.map((player) => {
-                      const isSelected = team.includes(player.index);
-                      const isAssignedElsewhere =
-                        !isSelected && assignedPlayerIndexes.has(player.index);
-
-                      return (
-                        <button
-                          key={player.index}
-                          type="button"
-                          className={[
-                            "player-chip",
-                            isSelected ? "is-selected" : "",
-                            isAssignedElsewhere ? "is-assigned-elsewhere" : "",
-                          ]
-                            .filter(Boolean)
-                            .join(" ")}
-                          aria-pressed={isSelected}
-                          onClick={() =>
-                            handleTeamMemberToggle(teamIndex, player.index)
-                          }
-                        >
-                          {player.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-
-              {unassignedPlayers.length > 0 ? (
-                <div className="team-picker__unassigned">
-                  <span>Unassigned</span>
-                  <div className="team-picker__unassigned-list">
-                    {unassignedPlayers.map((player) => (
-                      <span key={player.index}>{player.name}</span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
+      <div
+        className={[
+          "experience-grid",
+          setupSidebarOpen
+            ? "experience-grid--setup-open"
+            : "experience-grid--setup-collapsed",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <div className="setup-sidebar">
           <button
             type="button"
-            className="cta-button"
-            onClick={() => {
-              void handleStartTable();
-            }}
-            disabled={isLoading || !teamsAreComplete}
-            title={
-              teamsAreComplete
-                ? undefined
-                : "Assign every player before starting a team game"
-            }
+            className="setup-sidebar__toggle"
+            aria-expanded={setupSidebarOpen}
+            aria-controls="table-setup-panel"
+            onClick={() => setSetupSidebarOpen((current) => !current)}
           >
-            New game
+            {setupSidebarOpen ? "Hide setup" : "New game"}
           </button>
-        </aside>
+
+          <aside id="table-setup-panel" className="control-card">
+            <div className="card-header">
+              <div>
+                <span className="eyebrow">Table setup</span>
+                <h2>Players and teams</h2>
+              </div>
+              <button
+                type="button"
+                className="text-button control-card__collapse"
+                onClick={() => setSetupSidebarOpen(false)}
+              >
+                Hide
+              </button>
+            </div>
+
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={teamsEnabled}
+                onChange={(event) =>
+                  handleTeamsEnabledChange(event.target.checked)
+                }
+              />
+              <span>Play with teams</span>
+            </label>
+
+            <label className="field">
+              <span>Seats</span>
+              <input
+                type="number"
+                min={3}
+                max={8}
+                value={numPlayers}
+                onChange={(event) =>
+                  setNumPlayers(Number(event.target.value) || 3)
+                }
+              />
+            </label>
+
+            <div className="seat-editor">
+              {playerNames.map((playerName, index) => (
+                <article key={index} className="seat-editor__card">
+                  <label className="field">
+                    <span>Seat {index + 1}</span>
+                    <input
+                      type="text"
+                      value={playerName}
+                      onChange={(event) =>
+                        handlePlayerNameChange(index, event.target.value)
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Controller</span>
+                    <select
+                      value={playerBots[index] ?? ""}
+                      onChange={(event) =>
+                        handlePlayerBotChange(index, event.target.value || null)
+                      }
+                    >
+                      <option value="">Human</option>
+                      {availableBots.map((bot) => (
+                        <option key={bot.id} value={bot.id}>
+                          {bot.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </article>
+              ))}
+            </div>
+
+            {teamsEnabled ? (
+              <div className="team-picker">
+                <div className="team-picker__header">
+                  <span>Teams</span>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={handleAddTeam}
+                    disabled={teamSelections.length >= numPlayers}
+                  >
+                    Add team
+                  </button>
+                </div>
+
+                {teamSelections.map((team, teamIndex) => (
+                  <section key={teamIndex} className="team-picker__team">
+                    <div className="team-picker__team-header">
+                      <strong>Team {teamIndex + 1}</strong>
+                      {teamSelections.length > 1 ? (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => handleRemoveTeam(teamIndex)}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="player-chip-grid">
+                      {playerOptions.map((player) => {
+                        const isSelected = team.includes(player.index);
+                        const isAssignedElsewhere =
+                          !isSelected && assignedPlayerIndexes.has(player.index);
+
+                        return (
+                          <button
+                            key={player.index}
+                            type="button"
+                            className={[
+                              "player-chip",
+                              isSelected ? "is-selected" : "",
+                              isAssignedElsewhere ? "is-assigned-elsewhere" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ")}
+                            aria-pressed={isSelected}
+                            onClick={() =>
+                              handleTeamMemberToggle(teamIndex, player.index)
+                            }
+                          >
+                            {player.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+
+                {unassignedPlayers.length > 0 ? (
+                  <div className="team-picker__unassigned">
+                    <span>Unassigned</span>
+                    <div className="team-picker__unassigned-list">
+                      {unassignedPlayers.map((player) => (
+                        <span key={player.index}>{player.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              className="cta-button"
+              onClick={() => {
+                void handleStartTable();
+              }}
+              disabled={isLoading || !teamsAreComplete}
+              title={
+                teamsAreComplete
+                  ? undefined
+                  : "Assign every player before starting a team game"
+              }
+            >
+              New game
+            </button>
+          </aside>
+        </div>
 
         <section
           ref={gameAreaRef}
@@ -1288,7 +1318,7 @@ function DonationPage({
                   setCheckoutError(null);
                 }}
               >
-                {preset.label}
+                {formatDonationAmount(preset.amountCents)}
               </button>
             ))}
           </div>

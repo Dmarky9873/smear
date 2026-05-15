@@ -1331,8 +1331,7 @@ function LandingPage({
           <div className="landing-hero__branding">
             <BrandLogo className="brand-logo--hero" />
             <div>
-              <span className="eyebrow">Smear online</span>
-              <h1>Smear</h1>
+              <h1>Smear online</h1>
             </div>
           </div>
           <p>
@@ -1382,6 +1381,15 @@ function LandingPage({
           </strong>
         </button>
       </section>
+
+      <p className="landing-note">
+        Multiplayer with real people is in development, so the only available
+        game mode right now is playing with bots. The best bot to play against
+        is the Optimal bot, which is designed to play like a human and has no
+        information about human hands. All bots except the omniscient bots have
+        the same information a human would have. Questions? Reach out at{" "}
+        <a href="mailto:support@play-smear.com">support@play-smear.com</a>.
+      </p>
 
       <SiteFooter />
     </main>

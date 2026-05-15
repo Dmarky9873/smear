@@ -406,6 +406,18 @@ textarea:disabled {
   font-weight: 700;
 }
 
+.landing-note {
+  margin: 0;
+  max-width: 760px;
+  color: var(--text-muted);
+  font-size: 0.98rem;
+}
+
+.landing-note a {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
 .donation-shell {
   display: grid;
   gap: 20px;

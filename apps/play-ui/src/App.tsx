@@ -215,6 +215,10 @@ type PageNavigationProps = {
   onNavigateDonate: () => void;
 };
 
+function SiteFooter() {
+  return <footer className="site-footer">By Daniel Markusson</footer>;
+}
+
 function PlayBotsPage({
   onNavigateHome,
   onNavigateLearn,
@@ -1243,6 +1247,8 @@ function PlayBotsPage({
         </section>
       </div>
 
+      <SiteFooter />
+
       <div
         id="mobile-setup-drawer"
         className={["mobile-drawer", isSetupDrawerOpen ? "is-open" : ""]
@@ -1354,6 +1360,8 @@ function LandingPage({
           </strong>
         </button>
       </section>
+
+      <SiteFooter />
     </main>
   );
 }
@@ -1554,6 +1562,8 @@ function DonationPage({
           </div>
         </aside>
       </section>
+
+      <SiteFooter />
     </main>
   );
 }
@@ -1850,6 +1860,8 @@ function LearnPage({
           ) : null}
         </aside>
       </section>
+
+      <SiteFooter />
     </main>
   );
 }

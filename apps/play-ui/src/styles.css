@@ -672,6 +672,17 @@ textarea:disabled {
   font-size: 1.12rem;
 }
 
+.game-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.game-toolbar__mobile-new {
+  display: none;
+}
+
 .progress-slot {
   display: grid;
 }
@@ -990,6 +1001,382 @@ textarea:disabled {
 .game-stage.game-stage--fullscreen .seat-captured__cards .playing-card--compact {
   width: 60px;
   min-width: 60px;
+}
+
+@media (max-width: 760px), (pointer: coarse) and (max-width: 920px) {
+  body.mobile-game-locked {
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body.mobile-game-locked #root {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .public-shell--mobile-game {
+    width: 100%;
+    height: 100dvh;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .public-shell--mobile-game > .hero-card,
+  .public-shell--mobile-game .control-card,
+  .public-shell--mobile-game .history-card {
+    display: none;
+  }
+
+  .public-shell--mobile-game .experience-grid {
+    display: block;
+    height: 100%;
+  }
+
+  .public-shell--mobile-game .game-stage,
+  .public-shell--mobile-game .game-stage:fullscreen,
+  .public-shell--mobile-game .game-stage.game-stage--fullscreen {
+    width: 100vw;
+    height: 100dvh;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    gap: 6px;
+    overflow: hidden;
+    padding: max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+    background:
+      radial-gradient(circle at 50% 34%, rgba(255, 253, 248, 0.78), transparent 34%),
+      var(--page-bg);
+    overscroll-behavior: contain;
+  }
+
+  .public-shell--mobile-game .game-stage.game-stage--fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+
+  .public-shell--mobile-game .game-toolbar {
+    grid-row: 1;
+    min-height: 42px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .public-shell--mobile-game .game-toolbar .eyebrow {
+    display: none;
+  }
+
+  .public-shell--mobile-game .game-toolbar strong {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.94rem;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .ghost-button,
+  .public-shell--mobile-game .button-row button {
+    width: auto;
+    min-height: 36px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    line-height: 1.15;
+  }
+
+  .public-shell--mobile-game .game-toolbar__actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .public-shell--mobile-game .game-toolbar__mobile-new {
+    display: inline-flex;
+  }
+
+  .public-shell--mobile-game .progress-slot {
+    grid-row: 2;
+  }
+
+  .public-shell--mobile-game .progress-card {
+    padding: 7px 8px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .public-shell--mobile-game .progress-card__header {
+    flex-direction: row;
+    align-items: center;
+    font-size: 0.74rem;
+  }
+
+  .public-shell--mobile-game .progress-card .help-copy {
+    display: none;
+  }
+
+  .public-shell--mobile-game .progress-track {
+    height: 7px;
+    margin: 6px 0 0;
+  }
+
+  .public-shell--mobile-game .status-row {
+    grid-row: 3;
+    min-width: 0;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .public-shell--mobile-game .status-pill {
+    min-width: 0;
+    flex: 1 1 0;
+    padding: 6px 8px;
+    border-radius: 8px;
+  }
+
+  .public-shell--mobile-game .status-pill--wide {
+    flex: 1.5 1 0;
+    grid-column: auto;
+  }
+
+  .public-shell--mobile-game .status-pill span {
+    overflow: hidden;
+    font-size: 0.62rem;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .status-pill strong {
+    display: block;
+    overflow: hidden;
+    font-size: 0.82rem;
+    line-height: 1.12;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .felt-card {
+    grid-row: 4;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 6px;
+    overflow: hidden;
+    padding: 8px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .public-shell--mobile-game .felt-card > .card-header {
+    min-height: 32px;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .public-shell--mobile-game .felt-card .card-header .eyebrow {
+    display: none;
+  }
+
+  .public-shell--mobile-game .felt-card .card-header h2 {
+    overflow: hidden;
+    font-size: 0.98rem;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .card-header__actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .public-shell--mobile-game .seat-grid {
+    min-height: 0;
+    display: grid;
+    gap: 6px;
+    margin-top: 0;
+    overflow: hidden;
+    align-content: stretch;
+  }
+
+  .public-shell--mobile-game .seat-grid[data-seat-count="3"],
+  .public-shell--mobile-game .seat-grid[data-seat-count="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .public-shell--mobile-game .seat-grid[data-seat-count="5"],
+  .public-shell--mobile-game .seat-grid[data-seat-count="6"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .public-shell--mobile-game .seat-grid[data-seat-count="7"],
+  .public-shell--mobile-game .seat-grid[data-seat-count="8"] {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .public-shell--mobile-game .seat-card {
+    min-width: 0;
+    min-height: 0;
+    align-content: start;
+    gap: 4px;
+    padding: 6px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .public-shell--mobile-game .seat-card--current {
+    box-shadow: inset 0 0 0 2px var(--accent-soft);
+  }
+
+  .public-shell--mobile-game .seat-card__header,
+  .public-shell--mobile-game .seat-card__footer {
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .public-shell--mobile-game .seat-card h3 {
+    overflow: hidden;
+    font-size: 0.76rem;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .seat-card p {
+    display: none;
+  }
+
+  .public-shell--mobile-game .seat-card__meta,
+  .public-shell--mobile-game .seat-card__footer {
+    font-size: 0.62rem;
+    line-height: 1.1;
+  }
+
+  .public-shell--mobile-game .seat-card__meta {
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .seat-table {
+    min-height: 58px;
+  }
+
+  .public-shell--mobile-game .seat-table__empty {
+    width: 36px;
+    height: 50px;
+  }
+
+  .public-shell--mobile-game .seat-table .playing-card--compact {
+    width: clamp(40px, 11vw, 52px);
+    min-width: clamp(40px, 11vw, 52px);
+  }
+
+  .public-shell--mobile-game .seat-captured {
+    display: none;
+  }
+
+  .public-shell--mobile-game .table-actions {
+    gap: 6px;
+    margin-top: 0;
+  }
+
+  .public-shell--mobile-game .table-copy {
+    gap: 4px 10px;
+    font-size: 0.74rem;
+    line-height: 1.15;
+  }
+
+  .public-shell--mobile-game .table-copy strong {
+    font-size: 0.85rem;
+  }
+
+  .public-shell--mobile-game .table-actions .help-copy {
+    margin: 0;
+    overflow: hidden;
+    font-size: 0.76rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell--mobile-game .button-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
+    gap: 6px;
+    margin-top: 0;
+  }
+
+  .public-shell--mobile-game .hand-card {
+    grid-row: 5;
+    min-height: 0;
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    overflow: hidden;
+    padding: 8px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .public-shell--mobile-game .hand-card > .card-header {
+    display: none;
+  }
+
+  .public-shell--mobile-game .hand-grid,
+  .public-shell--mobile-game .game-stage:fullscreen .hand-grid,
+  .public-shell--mobile-game .game-stage.game-stage--fullscreen .hand-grid {
+    min-height: 0;
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: nowrap;
+    justify-content: center;
+    gap: 0;
+    overflow: visible;
+    padding-inline: 4px;
+  }
+
+  .public-shell--mobile-game .hand-grid .playing-card:not(.playing-card--compact),
+  .public-shell--mobile-game .game-stage:fullscreen .playing-card:not(.playing-card--compact),
+  .public-shell--mobile-game .game-stage.game-stage--fullscreen .playing-card:not(.playing-card--compact) {
+    width: clamp(44px, 13vw, 60px);
+    min-width: clamp(44px, 13vw, 60px);
+  }
+
+  .public-shell--mobile-game .hand-grid .playing-card + .playing-card {
+    margin-left: clamp(-10px, -2vw, -7px);
+  }
+
+  .public-shell--mobile-game .playing-card {
+    box-shadow: 0 2px 6px rgba(45, 38, 29, 0.14);
+  }
+
+  .public-shell--mobile-game .playing-card--clickable:hover:not(:disabled) {
+    transform: translateY(-2px);
+  }
+
+  .public-shell--mobile-game .playing-card--trump {
+    outline-width: 2px;
+    outline-offset: 1px;
+  }
+
+  .public-shell--mobile-game .empty-inline {
+    padding: 10px;
+    font-size: 0.82rem;
+    line-height: 1.2;
+  }
 }
 
 @media (max-width: 1080px) {

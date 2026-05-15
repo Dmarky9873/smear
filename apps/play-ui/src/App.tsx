@@ -26,6 +26,8 @@ const LANDING_CARDS: Card[] = [
   { code: "JD", rank: "J", suit: "D", is_joker: false },
   { code: "J1", rank: null, suit: null, is_joker: true },
 ];
+const MOBILE_TABLE_QUERY =
+  "(max-width: 760px), (pointer: coarse) and (max-width: 920px)";
 
 type AppView = "home" | "play" | "learn";
 
@@ -45,6 +47,36 @@ function setHashView(view: AppView) {
     return;
   }
   window.location.hash = nextHash;
+}
+
+function getMobileTableMode(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.matchMedia(MOBILE_TABLE_QUERY).matches;
+}
+
+function useMobileTableMode(): boolean {
+  const [isMobileTable, setIsMobileTable] = useState(getMobileTableMode);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_TABLE_QUERY);
+    const updateMobileTableMode = () => {
+      setIsMobileTable(mediaQuery.matches);
+    };
+
+    updateMobileTableMode();
+    mediaQuery.addEventListener("change", updateMobileTableMode);
+    window.addEventListener("resize", updateMobileTableMode);
+
+    return () => {
+      mediaQuery.removeEventListener("change", updateMobileTableMode);
+      window.removeEventListener("resize", updateMobileTableMode);
+    };
+  }, []);
+
+  return isMobileTable;
 }
 
 function getActionKey(action: LearnAction): string {
@@ -140,6 +172,7 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
     DEFAULT_TEAM_SELECTIONS,
   );
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const isMobileTable = useMobileTableMode();
   const gameAreaRef = useRef<HTMLElement | null>(null);
 
   const {
@@ -217,6 +250,7 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
   );
   const teamsAreComplete = !teamsEnabled || unassignedPlayers.length === 0;
   const canUseFullscreenControl = typeof document !== "undefined";
+  const useMobileGameLayout = Boolean(state && isMobileTable);
 
   useEffect(() => {
     setTeamSelections((current) => {
@@ -263,6 +297,14 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
       document.removeEventListener("keydown", handleFullscreenEscape);
     };
   }, [isFullscreen]);
+
+  useEffect(() => {
+    document.body.classList.toggle("mobile-game-locked", useMobileGameLayout);
+
+    return () => {
+      document.body.classList.remove("mobile-game-locked");
+    };
+  }, [useMobileGameLayout]);
 
   function confirmNewGameIfNeeded() {
     if (!state) {
@@ -339,7 +381,14 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
   }
 
   return (
-    <main className="public-shell">
+    <main
+      className={[
+        "public-shell",
+        useMobileGameLayout ? "public-shell--mobile-game" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <section className="hero-card">
         <div>
           <span className="eyebrow">Play with bots</span>
@@ -570,16 +619,30 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
                 {state ? getRoundBanner(state.phase, currentTurnName) : "Ready"}
               </strong>
             </div>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                void handleFullscreenToggle();
-              }}
-              disabled={!state || !canUseFullscreenControl}
-            >
-              {isFullscreen ? "Exit full screen" : "Full screen"}
-            </button>
+            <div className="game-toolbar__actions">
+              {state ? (
+                <button
+                  type="button"
+                  className="ghost-button game-toolbar__mobile-new"
+                  onClick={() => {
+                    void handleStartTable();
+                  }}
+                  disabled={isLoading || !teamsAreComplete}
+                >
+                  New
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  void handleFullscreenToggle();
+                }}
+                disabled={!state || !canUseFullscreenControl}
+              >
+                {isFullscreen ? "Exit full screen" : "Full screen"}
+              </button>
+            </div>
           </div>
 
           {!state ? (
@@ -685,7 +748,10 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
                   </div>
                 </div>
 
-                <div className="seat-grid">
+                <div
+                  className="seat-grid"
+                  data-seat-count={state.round.players.length}
+                >
                   {state.round.players.map((player) => {
                     const isCurrentPlayer = player.name === turnPlayer?.name;
                     const tablePlay = getVisiblePlayForPlayer(visibleTrick, player.name);

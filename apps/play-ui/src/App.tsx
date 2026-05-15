@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 
 import {
   buildDisplayCapturedByPlayer,
@@ -26,17 +33,31 @@ const LANDING_CARDS: Card[] = [
   { code: "JD", rank: "J", suit: "D", is_joker: false },
   { code: "J1", rank: null, suit: null, is_joker: true },
 ];
+const DONATION_PRESETS = [
+  { amountCents: 300, label: "$3" },
+  { amountCents: 500, label: "$5" },
+  { amountCents: 1000, label: "$10" },
+];
+const DONATION_MIN_CENTS = 100;
+const DONATION_MAX_CENTS = 10000;
+const DONATION_CURRENCY =
+  (import.meta.env.VITE_DONATION_CURRENCY ?? "USD").toUpperCase();
 const MOBILE_TABLE_QUERY =
   "(max-width: 760px), (pointer: coarse) and (max-width: 920px)";
 
-type AppView = "home" | "play" | "learn";
+type AppView = "home" | "play" | "learn" | "donate";
 
 function viewFromHash(hash: string): AppView {
-  if (hash === "#play") {
+  const route = hash.split("?")[0];
+
+  if (route === "#play") {
     return "play";
   }
-  if (hash === "#learn") {
+  if (route === "#learn") {
     return "learn";
+  }
+  if (route === "#donate") {
+    return "donate";
   }
   return "home";
 }
@@ -94,6 +115,39 @@ function findCardByCode(cards: Card[], cardCode: string | undefined) {
     return null;
   }
   return cards.find((card) => card.code === cardCode) ?? null;
+}
+
+function formatDonationAmount(amountCents: number): string {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: DONATION_CURRENCY,
+  }).format(amountCents / 100);
+}
+
+function parseDonationAmount(value: string): number | null {
+  const normalized = value.trim();
+  if (!/^\d+(\.\d{0,2})?$/.test(normalized)) {
+    return null;
+  }
+
+  const amountCents = Math.round(Number(normalized) * 100);
+  if (
+    amountCents < DONATION_MIN_CENTS ||
+    amountCents > DONATION_MAX_CENTS
+  ) {
+    return null;
+  }
+
+  return amountCents;
+}
+
+function getDonationStatus(): "success" | "cancelled" | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const status = new URLSearchParams(window.location.search).get("donation");
+  return status === "success" || status === "cancelled" ? status : null;
 }
 
 function getRoundBanner(phase: string, currentTurnName: string): string {
@@ -159,9 +213,14 @@ type PageNavigationProps = {
   onNavigateHome: () => void;
   onNavigatePlay: () => void;
   onNavigateLearn: () => void;
+  onNavigateDonate: () => void;
 };
 
-function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) {
+function PlayBotsPage({
+  onNavigateHome,
+  onNavigateLearn,
+  onNavigateDonate,
+}: PageNavigationProps) {
   const [sessionId] = useState(() =>
     loadOrCreateSessionId("smear-play-session-id"),
   );
@@ -400,6 +459,9 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
           </button>
           <button type="button" className="ghost-button" onClick={onNavigateLearn}>
             Learn
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+            Donate
           </button>
           <button
             type="button"
@@ -1044,7 +1106,11 @@ function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) 
   );
 }
 
-function LandingPage({ onNavigatePlay, onNavigateLearn }: PageNavigationProps) {
+function LandingPage({
+  onNavigatePlay,
+  onNavigateLearn,
+  onNavigateDonate,
+}: PageNavigationProps) {
   return (
     <main className="public-shell landing-shell">
       <section className="landing-hero">
@@ -1085,12 +1151,212 @@ function LandingPage({ onNavigatePlay, onNavigateLearn }: PageNavigationProps) {
           <span>Learn</span>
           <strong>Practice random bid and card positions, then reveal the bot move.</strong>
         </button>
+        <button
+          type="button"
+          className="landing-choice"
+          onClick={onNavigateDonate}
+        >
+          <span>Support Smear</span>
+          <strong>Make a small donation toward hosting and continued tuning.</strong>
+        </button>
       </section>
     </main>
   );
 }
 
-function LearnPage({ onNavigateHome, onNavigatePlay }: PageNavigationProps) {
+function DonationPage({
+  onNavigateHome,
+  onNavigatePlay,
+  onNavigateLearn,
+}: PageNavigationProps) {
+  const client = useMemo(
+    () => createApiClient({ apiBaseUrl: API_BASE_URL, sessionId: null }),
+    [],
+  );
+  const [selectedAmountCents, setSelectedAmountCents] = useState(500);
+  const [customAmount, setCustomAmount] = useState("");
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [isStartingCheckout, setIsStartingCheckout] = useState(false);
+  const donationStatus = getDonationStatus();
+  const customAmountCents = customAmount.trim()
+    ? parseDonationAmount(customAmount)
+    : null;
+  const amountCents = customAmount.trim()
+    ? customAmountCents
+    : selectedAmountCents;
+  const amountIsValid = amountCents !== null;
+
+  async function handleDonationSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCheckoutError(null);
+
+    if (amountCents === null) {
+      setCheckoutError(
+        `Choose an amount from ${formatDonationAmount(
+          DONATION_MIN_CENTS,
+        )} to ${formatDonationAmount(DONATION_MAX_CENTS)}.`,
+      );
+      return;
+    }
+
+    setIsStartingCheckout(true);
+    try {
+      const checkout = await client.createDonationCheckoutSession({
+        amount_cents: amountCents,
+      });
+      window.location.assign(checkout.url);
+    } catch (error) {
+      setCheckoutError(
+        error instanceof Error
+          ? error.message
+          : "Could not start Stripe Checkout.",
+      );
+      setIsStartingCheckout(false);
+    }
+  }
+
+  return (
+    <main className="public-shell donation-shell">
+      <section className="hero-card">
+        <div>
+          <span className="eyebrow">Support the site</span>
+          <h1>Donate to Smear</h1>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigatePlay}>
+            Play with bots
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+        </div>
+      </section>
+
+      {donationStatus === "success" ? (
+        <div className="banner banner--success">
+          Thank you for supporting Smear.
+        </div>
+      ) : null}
+
+      {donationStatus === "cancelled" ? (
+        <div className="banner">Donation checkout was cancelled.</div>
+      ) : null}
+
+      {checkoutError ? (
+        <div className="banner banner--error">{checkoutError}</div>
+      ) : null}
+
+      <section className="donation-layout">
+        <form className="donation-panel" onSubmit={handleDonationSubmit}>
+          <div>
+            <span className="eyebrow">Small donation</span>
+            <h2>Keep the table open</h2>
+            <p>
+              A few dollars helps cover hosting, bot experiments, and the
+              multiplayer work behind the public Smear table.
+            </p>
+          </div>
+
+          <div
+            className="donation-preset-grid"
+            role="group"
+            aria-label="Donation amount"
+          >
+            {DONATION_PRESETS.map((preset) => (
+              <button
+                key={preset.amountCents}
+                type="button"
+                className={[
+                  "donation-amount-button",
+                  !customAmount.trim() &&
+                  selectedAmountCents === preset.amountCents
+                    ? "is-selected"
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                aria-pressed={
+                  !customAmount.trim() &&
+                  selectedAmountCents === preset.amountCents
+                }
+                onClick={() => {
+                  setSelectedAmountCents(preset.amountCents);
+                  setCustomAmount("");
+                  setCheckoutError(null);
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          <label className="field donation-custom-field">
+            <span>Custom amount</span>
+            <div className="donation-currency-input">
+              <span>{DONATION_CURRENCY}</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="7.50"
+                value={customAmount}
+                onChange={(event) => {
+                  setCustomAmount(event.target.value);
+                  setCheckoutError(null);
+                }}
+              />
+            </div>
+          </label>
+
+          <button
+            type="submit"
+            className="cta-button"
+            disabled={isStartingCheckout || !amountIsValid}
+          >
+            {isStartingCheckout
+              ? "Opening Stripe"
+              : `Donate ${formatDonationAmount(
+                  amountCents ?? selectedAmountCents,
+                )}`}
+          </button>
+        </form>
+
+        <aside className="donation-summary" aria-label="Donation details">
+          <div>
+            <span className="eyebrow">Stripe Checkout</span>
+            <h2>Secure payment</h2>
+            <p>
+              Payments are completed on Stripe. Smear never receives or stores
+              card details.
+            </p>
+          </div>
+          <div className="donation-detail-grid">
+            <div className="donation-detail">
+              <span>Minimum</span>
+              <strong>{formatDonationAmount(DONATION_MIN_CENTS)}</strong>
+            </div>
+            <div className="donation-detail">
+              <span>Suggested</span>
+              <strong>{formatDonationAmount(500)}</strong>
+            </div>
+            <div className="donation-detail">
+              <span>Maximum</span>
+              <strong>{formatDonationAmount(DONATION_MAX_CENTS)}</strong>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+function LearnPage({
+  onNavigateHome,
+  onNavigatePlay,
+  onNavigateDonate,
+}: PageNavigationProps) {
   const client = useMemo(
     () => createApiClient({ apiBaseUrl: API_BASE_URL, sessionId: null }),
     [],
@@ -1146,6 +1412,9 @@ function LearnPage({ onNavigateHome, onNavigatePlay }: PageNavigationProps) {
           </button>
           <button type="button" className="ghost-button" onClick={onNavigatePlay}>
             Play with bots
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+            Donate
           </button>
         </div>
       </section>
@@ -1370,6 +1639,7 @@ export default function App() {
     onNavigateHome: () => setHashView("home"),
     onNavigatePlay: () => setHashView("play"),
     onNavigateLearn: () => setHashView("learn"),
+    onNavigateDonate: () => setHashView("donate"),
   };
 
   if (view === "play") {
@@ -1378,6 +1648,10 @@ export default function App() {
 
   if (view === "learn") {
     return <LearnPage {...navigation} />;
+  }
+
+  if (view === "donate") {
+    return <DonationPage {...navigation} />;
   }
 
   return <LandingPage {...navigation} />;

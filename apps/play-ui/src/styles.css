@@ -123,6 +123,8 @@ textarea:disabled {
 
 .help-copy,
 .landing-hero p,
+.donation-panel p,
+.donation-summary p,
 .seat-card p,
 .learn-result p,
 .result-card p {
@@ -208,7 +210,9 @@ textarea:disabled {
 .empty-state-card,
 .progress-card,
 .learn-actions,
-.learn-position {
+.learn-position,
+.donation-panel,
+.donation-summary {
   background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: var(--page-shadow);
@@ -248,7 +252,8 @@ textarea:disabled {
 .award-card,
 .result-card,
 .seat-card,
-.seat-editor__card {
+.seat-editor__card,
+.donation-detail {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--status-bg);
@@ -279,6 +284,12 @@ textarea:disabled {
   background: var(--danger-bg);
   border: 1px solid var(--danger-border);
   color: var(--danger-text);
+}
+
+.banner--success {
+  background: var(--surface-accent);
+  border: 1px solid var(--felt-ring);
+  color: var(--accent-strong);
 }
 
 .landing-shell {
@@ -336,7 +347,7 @@ textarea:disabled {
 
 .landing-choice-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 18px;
 }
 
@@ -357,6 +368,113 @@ textarea:disabled {
 .landing-choice strong {
   color: var(--text-muted);
   font-weight: 700;
+}
+
+.donation-shell {
+  display: grid;
+  gap: 20px;
+}
+
+.donation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 24px;
+  align-items: start;
+}
+
+.donation-panel,
+.donation-summary {
+  display: grid;
+  gap: 20px;
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.donation-panel h2,
+.donation-summary h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.15;
+}
+
+.donation-panel p,
+.donation-summary p {
+  margin: 10px 0 0;
+}
+
+.donation-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.donation-amount-button {
+  min-height: 72px;
+  border-radius: 8px;
+  border: 1px solid var(--button-border);
+  background: var(--button-bg);
+  color: var(--text-main);
+  font-size: 1.25rem;
+  font-weight: 900;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.donation-amount-button:hover {
+  background: var(--button-hover);
+}
+
+.donation-amount-button:active {
+  transform: translateY(1px);
+}
+
+.donation-amount-button.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.donation-currency-input {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.donation-currency-input > span {
+  padding: 0 14px;
+  color: var(--text-dim);
+  font-weight: 900;
+}
+
+.donation-currency-input input {
+  min-height: 50px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.donation-detail-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.donation-detail {
+  padding: 14px;
+}
+
+.donation-detail span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+}
+
+.donation-detail strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.15rem;
 }
 
 .learn-layout {
@@ -551,6 +669,12 @@ textarea:disabled {
   background: var(--surface);
   color: var(--text-main);
   padding: 12px 14px;
+}
+
+.field .donation-currency-input input {
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
 }
 
 .seat-editor {
@@ -1382,7 +1506,8 @@ textarea:disabled {
 @media (max-width: 1080px) {
   .experience-grid,
   .learn-layout,
-  .landing-hero {
+  .landing-hero,
+  .donation-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1434,7 +1559,9 @@ textarea:disabled {
   .control-card,
   .progress-card,
   .learn-actions,
-  .learn-position {
+  .learn-position,
+  .donation-panel,
+  .donation-summary {
     padding: 18px;
     border-radius: 8px;
   }
@@ -1479,7 +1606,8 @@ textarea:disabled {
   }
 
   .landing-choice,
-  .learn-option {
+  .learn-option,
+  .donation-amount-button {
     min-height: 58px;
   }
 
@@ -1507,7 +1635,8 @@ textarea:disabled {
   .status-row,
   .help-panel__grid,
   .learn-status-row,
-  .result-grid {
+  .result-grid,
+  .donation-preset-grid {
     grid-template-columns: 1fr;
   }
 

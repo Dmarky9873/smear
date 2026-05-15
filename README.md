@@ -166,6 +166,9 @@ Useful environment variables for the backend:
 - `SMEAR_CORS_ORIGINS` is a comma-separated allowlist of frontend origins. By default the API allows the two local Vite apps on ports `5173` and `5174`.
 - `SMEAR_STATE_DB_PATH` controls where browser sessions are persisted. The default is `.smear/sessions.sqlite3`; set it to `none` to use memory only.
 - `SMEAR_SESSION_TTL_HOURS` controls how long inactive browser sessions are kept in the in-memory cache. Persisted sessions can still be restored from `SMEAR_STATE_DB_PATH` after cache expiry or server restart.
+- `STRIPE_SECRET_KEY` enables the donation checkout endpoint. Set it in your runtime environment or host secrets manager, not in source code.
+- `SMEAR_PUBLIC_SITE_URL` is the browser URL Stripe should redirect back to after donation checkout, for example `https://play-smear.com`. Local dev falls back to the Vite play app URL.
+- `SMEAR_DONATION_CURRENCY` controls donation currency. It defaults to `usd`.
 
 Production packaging intentionally excludes neural bot replay/checkpoint output under `backend/bots/models/`. Only the small runtime bundles named `neural_3p_v*.json` should be committed or shipped to Railway.
 
@@ -181,6 +184,7 @@ Useful endpoints:
 - `GET /game/legal-actions`
 - `POST /game/play`
 - `GET /game/score`
+- `POST /donations/checkout-session` creates a Stripe Checkout Session for a one-time site donation.
 - `WS /game/ws?session_id=...` streams `game_state` messages for the session whenever the game changes.
 - `GET /learn/challenge` returns a random practice position, legal learner options, and the optimal bot action to reveal after the learner chooses.
 
@@ -212,6 +216,8 @@ By default:
 - the public play app runs at [http://127.0.0.1:5174](http://127.0.0.1:5174)
 
 To point either frontend at a deployed backend, set `VITE_API_BASE_URL` before starting or building it.
+
+For the donation page, the browser display currency defaults to USD. Set `VITE_DONATION_CURRENCY` to match `SMEAR_DONATION_CURRENCY` if you change it.
 
 ### Simulator
 

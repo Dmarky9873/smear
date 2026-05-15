@@ -27,6 +27,14 @@ class PlayCardRequest(BaseModel):
     auto_run_bots: bool = True
 
 
+class DonationCheckoutRequest(BaseModel):
+    amount_cents: int = Field(ge=100, le=10000)
+
+
+class DonationCheckoutResponse(BaseModel):
+    url: str
+
+
 class CardResponse(BaseModel):
     code: str
     rank: str | None

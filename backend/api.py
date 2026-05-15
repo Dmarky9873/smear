@@ -6,16 +6,24 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
 
 try:
+    from .donations import (
+        DonationCheckoutError,
+        DonationConfigurationError,
+        create_donation_checkout_session,
+    )
     from .realtime import game_events
     from .schemas import (
         BidRequest,
         BotProgressResponse,
+        DonationCheckoutRequest,
+        DonationCheckoutResponse,
         GameStateResponse,
         HealthResponse,
         LearnChallengeResponse,
@@ -30,10 +38,17 @@ try:
     from .bots.registry import list_ready_bot_metadata
     from .learn import generate_learn_challenge
 except ImportError:
+    from donations import (
+        DonationCheckoutError,
+        DonationConfigurationError,
+        create_donation_checkout_session,
+    )
     from realtime import game_events
     from schemas import (
         BidRequest,
         BotProgressResponse,
+        DonationCheckoutRequest,
+        DonationCheckoutResponse,
         GameStateResponse,
         HealthResponse,
         LearnChallengeResponse,
@@ -115,6 +130,33 @@ def get_learn_challenge(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+@router.post(
+    "/donations/checkout-session",
+    response_model=DonationCheckoutResponse,
+)
+def create_donation_checkout(
+    payload: DonationCheckoutRequest,
+    request: Request,
+) -> dict:
+    try:
+        checkout_url = create_donation_checkout_session(
+            payload.amount_cents,
+            origin=request.headers.get("origin"),
+        )
+    except DonationConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except DonationCheckoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return {"url": checkout_url}
 
 
 @router.post(

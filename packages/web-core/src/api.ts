@@ -22,6 +22,14 @@ export type NewGamePayload = {
   auto_run_bots?: boolean;
 };
 
+export type DonationCheckoutPayload = {
+  amount_cents: number;
+};
+
+export type DonationCheckoutResponse = {
+  url: string;
+};
+
 export type ApiClientOptions = {
   apiBaseUrl?: string;
   sessionId?: string | null;
@@ -207,6 +215,20 @@ export function createApiClient({
     fetchLearnChallenge(phase?: "auction" | "play"): Promise<LearnChallenge> {
       const path = phase ? `/learn/challenge?phase=${phase}` : "/learn/challenge";
       return request<LearnChallenge>(apiBaseUrl, sessionId, path);
+    },
+
+    createDonationCheckoutSession(
+      payload: DonationCheckoutPayload,
+    ): Promise<DonationCheckoutResponse> {
+      return request<DonationCheckoutResponse>(
+        apiBaseUrl,
+        sessionId,
+        "/donations/checkout-session",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
     },
 
     playCard(

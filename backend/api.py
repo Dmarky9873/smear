@@ -1,13 +1,24 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 
 try:
+    from .realtime import game_events
     from .schemas import (
         BidRequest,
         BotProgressResponse,
         GameStateResponse,
         HealthResponse,
+        LearnChallengeResponse,
         LegalActionsResponse,
         NewGameRequest,
         PlayCardRequest,
@@ -17,12 +28,15 @@ try:
     from .serializers import serialize_game, serialize_score_details
     from .store import GameNotInitializedError, RoundNotTerminalError, game_store
     from .bots.registry import list_ready_bot_metadata
+    from .learn import generate_learn_challenge
 except ImportError:
+    from realtime import game_events
     from schemas import (
         BidRequest,
         BotProgressResponse,
         GameStateResponse,
         HealthResponse,
+        LearnChallengeResponse,
         LegalActionsResponse,
         NewGameRequest,
         PlayCardRequest,
@@ -32,6 +46,7 @@ except ImportError:
     from serializers import serialize_game, serialize_score_details
     from store import GameNotInitializedError, RoundNotTerminalError, game_store
     from bots.registry import list_ready_bot_metadata
+    from learn import generate_learn_challenge
 
 
 router = APIRouter()
@@ -46,6 +61,15 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
+def normalize_session_id(session_id: str | None) -> str:
+    resolved = (session_id or DEFAULT_SESSION_ID).strip()
+    if not resolved:
+        raise ValueError("session id must not be blank")
+    if len(resolved) > 128:
+        raise ValueError("session id must be 128 characters or fewer")
+    return resolved
+
+
 def resolve_session_id(
     x_smear_session_id: str | None = Header(
         default=None,
@@ -53,12 +77,21 @@ def resolve_session_id(
     ),
     session_id: str | None = Query(default=None),
 ) -> str:
-    resolved = (x_smear_session_id or session_id or DEFAULT_SESSION_ID).strip()
-    if not resolved:
-        raise _bad_request("session id must not be blank")
-    if len(resolved) > 128:
-        raise _bad_request("session id must be 128 characters or fewer")
-    return resolved
+    try:
+        return normalize_session_id(x_smear_session_id or session_id)
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+
+async def _broadcast_game_state(session_id: str, state_payload: dict | None) -> None:
+    await game_events.broadcast(
+        session_id,
+        {
+            "type": "game_state",
+            "revision": game_store.get_revision(session_id),
+            "state": state_payload,
+        },
+    )
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -71,12 +104,25 @@ def get_ready_bots() -> dict:
     return {"bots": list_ready_bot_metadata()}
 
 
+@router.get("/learn/challenge", response_model=LearnChallengeResponse)
+def get_learn_challenge(
+    phase: str | None = Query(default=None, pattern="^(auction|play)$"),
+) -> dict:
+    try:
+        return generate_learn_challenge(preferred_phase=phase)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
 @router.post(
     "/game/new",
     response_model=GameStateResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def new_game(
+async def new_game(
     payload: NewGameRequest,
     session_id: str = Depends(resolve_session_id),
 ) -> dict:
@@ -92,11 +138,13 @@ def new_game(
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
-    return serialize_game(game)
+    response = serialize_game(game)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.post("/game/auction/bid", response_model=GameStateResponse)
-def place_bid(
+async def place_bid(
     payload: BidRequest,
     session_id: str = Depends(resolve_session_id),
 ) -> dict:
@@ -111,11 +159,13 @@ def place_bid(
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
-    return serialize_game(session)
+    response = serialize_game(session)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.post("/game/auction/pass", response_model=GameStateResponse)
-def pass_auction(
+async def pass_auction(
     auto_run_bots: bool = True,
     session_id: str = Depends(resolve_session_id),
 ) -> dict:
@@ -129,11 +179,13 @@ def pass_auction(
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
-    return serialize_game(session)
+    response = serialize_game(session)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.post("/game/reset", response_model=GameStateResponse)
-def reset_game(
+async def reset_game(
     auto_run_bots: bool = True,
     session_id: str = Depends(resolve_session_id),
 ) -> dict:
@@ -145,11 +197,13 @@ def reset_game(
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
 
-    return serialize_game(game)
+    response = serialize_game(game)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.post("/game/next-round", response_model=GameStateResponse)
-def next_round(
+async def next_round(
     auto_run_bots: bool = True,
     session_id: str = Depends(resolve_session_id),
 ) -> dict:
@@ -163,7 +217,9 @@ def next_round(
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
-    return serialize_game(session)
+    response = serialize_game(session)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.get("/game/state", response_model=GameStateResponse)
@@ -187,7 +243,7 @@ def get_game_legal_actions(session_id: str = Depends(resolve_session_id)) -> dic
 
 
 @router.post("/game/play", response_model=GameStateResponse)
-def play_card(
+async def play_card(
     payload: PlayCardRequest,
     session_id: str = Depends(resolve_session_id),
 ) -> dict:
@@ -202,11 +258,13 @@ def play_card(
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
-    return serialize_game(game)
+    response = serialize_game(game)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.post("/game/bots/step", response_model=GameStateResponse)
-def step_bot_turn(session_id: str = Depends(resolve_session_id)) -> dict:
+async def step_bot_turn(session_id: str = Depends(resolve_session_id)) -> dict:
     try:
         session = game_store.advance_bot_turn(session_id)
     except GameNotInitializedError as exc:
@@ -214,7 +272,9 @@ def step_bot_turn(session_id: str = Depends(resolve_session_id)) -> dict:
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
 
-    return serialize_game(session)
+    response = serialize_game(session)
+    await _broadcast_game_state(session_id, response)
+    return response
 
 
 @router.get("/game/bots/progress", response_model=BotProgressResponse)
@@ -233,3 +293,37 @@ def get_game_score(session_id: str = Depends(resolve_session_id)) -> dict:
         raise _not_found(str(exc)) from exc
     except RoundNotTerminalError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.websocket("/game/ws")
+async def game_websocket(
+    websocket: WebSocket,
+    session_id: str | None = Query(default=None),
+) -> None:
+    try:
+        resolved_session_id = normalize_session_id(session_id)
+    except ValueError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await game_events.connect(resolved_session_id, websocket)
+    try:
+        try:
+            current_state = serialize_game(game_store.get_state(resolved_session_id))
+        except GameNotInitializedError:
+            current_state = None
+
+        await websocket.send_json(
+            {
+                "type": "game_state",
+                "revision": game_store.get_revision(resolved_session_id),
+                "state": current_state,
+            }
+        )
+
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await game_events.disconnect(resolved_session_id, websocket)

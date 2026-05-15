@@ -2,6 +2,7 @@ import type {
   BotProgress,
   GameState,
   LegalActionsResponse,
+  LearnChallenge,
   ReadyBotListResponse,
   Score,
 } from "./types";
@@ -26,6 +27,12 @@ export type ApiClientOptions = {
   sessionId?: string | null;
 };
 
+export type GameStateEvent = {
+  type: "game_state";
+  revision: number;
+  state: GameState | null;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -48,6 +55,20 @@ function withAutoRunBots(
     auto_run_bots: String(options.auto_run_bots),
   });
   return `${path}?${searchParams.toString()}`;
+}
+
+function buildGameEventsUrl(
+  apiBaseUrl: string,
+  sessionId: string | null | undefined,
+): string {
+  const url = new URL(apiBaseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/game/ws`;
+  url.search = "";
+  if (sessionId) {
+    url.searchParams.set("session_id", sessionId);
+  }
+  return url.toString();
 }
 
 function buildRequestHeaders(
@@ -183,6 +204,11 @@ export function createApiClient({
       );
     },
 
+    fetchLearnChallenge(phase?: "auction" | "play"): Promise<LearnChallenge> {
+      const path = phase ? `/learn/challenge?phase=${phase}` : "/learn/challenge";
+      return request<LearnChallenge>(apiBaseUrl, sessionId, path);
+    },
+
     playCard(
       cardCode: string,
       options?: MutatingRequestOptions,
@@ -223,6 +249,13 @@ export function createApiClient({
         sessionId,
         "/game/bots/progress",
       );
+    },
+
+    openGameEvents(): WebSocket | null {
+      if (typeof WebSocket === "undefined") {
+        return null;
+      }
+      return new WebSocket(buildGameEventsUrl(apiBaseUrl, sessionId));
     },
   };
 }

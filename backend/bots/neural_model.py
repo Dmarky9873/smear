@@ -1,30 +1,50 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 import json
 import math
 import random
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
-
-try:
-    import torch
-    from torch import nn
-except ImportError:  # pragma: no cover - exercised when torch is unavailable
-    torch = None
-    nn = None
-
-
-_TorchModuleBase = nn.Module if nn is not None else object
+from typing import Any, Callable, Iterable, Sequence
 
 
 DEFAULT_TRAINING_BACKEND = "auto"
 DEFAULT_TRAINER_BATCH_SIZE = 64
 TRAINING_BACKEND_CHOICES = ("auto", "python", "torch")
+_torch_module: Any | None = None
+_torch_nn_module: Any | None = None
+_torch_import_attempted = False
+
+
+def _load_torch() -> tuple[Any | None, Any | None]:
+    global _torch_import_attempted, _torch_module, _torch_nn_module
+    if _torch_import_attempted:
+        return _torch_module, _torch_nn_module
+
+    _torch_import_attempted = True
+    try:
+        torch_module = importlib.import_module("torch")
+    except ImportError:  # pragma: no cover - exercised when torch is unavailable
+        _torch_module = None
+        _torch_nn_module = None
+        return None, None
+
+    _torch_module = torch_module
+    _torch_nn_module = torch_module.nn
+    return _torch_module, _torch_nn_module
+
+
+def _require_torch() -> tuple[Any, Any]:
+    torch_module, nn_module = _load_torch()
+    if torch_module is None or nn_module is None:
+        raise ImportError("torch is required for the PyTorch trainer")
+    return torch_module, nn_module
 
 
 def is_torch_available() -> bool:
-    return torch is not None
+    torch_module, _ = _load_torch()
+    return torch_module is not None
 
 
 def resolve_training_backend(backend: str = DEFAULT_TRAINING_BACKEND) -> str:
@@ -44,15 +64,16 @@ def resolve_training_backend(backend: str = DEFAULT_TRAINING_BACKEND) -> str:
 
 
 def _configure_torch_runtime(*, torch_num_threads: int | None) -> None:
-    if torch is None or torch_num_threads is None:
+    torch_module, _ = _load_torch()
+    if torch_module is None or torch_num_threads is None:
         return
     bounded_threads = max(1, int(torch_num_threads))
     try:
-        torch.set_num_threads(bounded_threads)
+        torch_module.set_num_threads(bounded_threads)
     except RuntimeError:
         pass
     try:
-        torch.set_num_interop_threads(1)
+        torch_module.set_num_interop_threads(1)
     except RuntimeError:
         pass
 
@@ -70,29 +91,6 @@ class RegressionExample:
     features: list[float]
     target: float
     weight: float = 1.0
-
-
-class _TorchScalarMLP(_TorchModuleBase):
-    def __init__(self, *, input_dim: int, hidden_dim: int):
-        super().__init__()
-        self.hidden = nn.Linear(input_dim, hidden_dim)
-        self.output = nn.Linear(hidden_dim, 1)
-
-    @classmethod
-    def from_scalar_mlp(cls, model: "ScalarMLP") -> "_TorchScalarMLP":
-        if torch is None:
-            raise ImportError("torch is required to build the PyTorch trainer")
-        module = cls(input_dim=model.input_dim, hidden_dim=model.hidden_dim)
-        with torch.no_grad():
-            module.hidden.weight.copy_(torch.tensor(model.weights1, dtype=torch.float32))
-            module.hidden.bias.copy_(torch.tensor(model.biases1, dtype=torch.float32))
-            module.output.weight.copy_(torch.tensor([model.weights2], dtype=torch.float32))
-            module.output.bias.copy_(torch.tensor([model.bias2], dtype=torch.float32))
-        return module
-
-    def forward(self, features):
-        hidden = torch.tanh(self.hidden(features))
-        return self.output(hidden).squeeze(-1)
 
 
 class ScalarMLP:
@@ -268,10 +266,42 @@ class ScalarMLP:
             raise ValueError("target_distribution must sum to a positive value")
         return [value / total for value in example.target_distribution]
 
+    @staticmethod
+    def _build_torch_module(model: "ScalarMLP"):
+        torch, nn = _require_torch()
+
+        class TorchScalarMLP(nn.Module):
+            def __init__(self, *, input_dim: int, hidden_dim: int):
+                super().__init__()
+                self.hidden = nn.Linear(input_dim, hidden_dim)
+                self.output = nn.Linear(hidden_dim, 1)
+
+            def forward(self, features):
+                hidden = torch.tanh(self.hidden(features))
+                return self.output(hidden).squeeze(-1)
+
+        module = TorchScalarMLP(
+            input_dim=model.input_dim,
+            hidden_dim=model.hidden_dim,
+        )
+        with torch.no_grad():
+            module.hidden.weight.copy_(
+                torch.tensor(model.weights1, dtype=torch.float32)
+            )
+            module.hidden.bias.copy_(
+                torch.tensor(model.biases1, dtype=torch.float32)
+            )
+            module.output.weight.copy_(
+                torch.tensor([model.weights2], dtype=torch.float32)
+            )
+            module.output.bias.copy_(
+                torch.tensor([model.bias2], dtype=torch.float32)
+            )
+        return module
+
     @classmethod
-    def _from_torch_module(cls, module: _TorchScalarMLP) -> "ScalarMLP":
-        if torch is None:
-            raise ImportError("torch is required to export the PyTorch trainer")
+    def _from_torch_module(cls, module) -> "ScalarMLP":
+        torch, _ = _require_torch()
         with torch.no_grad():
             return cls(
                 input_dim=module.hidden.in_features,
@@ -472,8 +502,7 @@ class ScalarMLP:
         batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
         torch_num_threads: int | None = None,
     ) -> list[dict[str, float]]:
-        if torch is None:
-            raise ImportError("torch is required for the PyTorch trainer")
+        torch, _ = _require_torch()
         if epochs <= 0:
             raise ValueError("epochs must be positive")
         if learning_rate <= 0:
@@ -486,7 +515,7 @@ class ScalarMLP:
             raise ValueError("at least one training example is required")
 
         _configure_torch_runtime(torch_num_threads=torch_num_threads)
-        network = _TorchScalarMLP.from_scalar_mlp(self)
+        network = self._build_torch_module(self)
         optimizer = torch.optim.Adam(network.parameters(), lr=learning_rate)
 
         example_count = len(examples)
@@ -732,8 +761,7 @@ class ScalarMLP:
         batch_size: int = DEFAULT_TRAINER_BATCH_SIZE,
         torch_num_threads: int | None = None,
     ) -> list[dict[str, float]]:
-        if torch is None:
-            raise ImportError("torch is required for the PyTorch trainer")
+        torch, _ = _require_torch()
         if epochs <= 0:
             raise ValueError("epochs must be positive")
         if learning_rate <= 0:
@@ -746,7 +774,7 @@ class ScalarMLP:
             raise ValueError("at least one regression example is required")
 
         _configure_torch_runtime(torch_num_threads=torch_num_threads)
-        network = _TorchScalarMLP.from_scalar_mlp(self)
+        network = self._build_torch_module(self)
         optimizer = torch.optim.Adam(network.parameters(), lr=learning_rate)
 
         example_count = len(examples)

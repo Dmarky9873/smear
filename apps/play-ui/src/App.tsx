@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   buildDisplayCapturedByPlayer,
+  createApiClient,
   loadOrCreateSessionId,
   PlayingCard,
   sortCardsHighToLow,
   useSmearGame,
   type Card,
+  type LearnAction,
+  type LearnChallenge,
   type TrickState,
 } from "@smear/web-core";
 
@@ -17,6 +20,49 @@ const DEFAULT_TEAM_SELECTIONS = [
   [0, 1],
   [2, 3],
 ];
+const LANDING_CARDS: Card[] = [
+  { code: "AH", rank: "A", suit: "H", is_joker: false },
+  { code: "10C", rank: "10", suit: "C", is_joker: false },
+  { code: "JD", rank: "J", suit: "D", is_joker: false },
+  { code: "J1", rank: null, suit: null, is_joker: true },
+];
+
+type AppView = "home" | "play" | "learn";
+
+function viewFromHash(hash: string): AppView {
+  if (hash === "#play") {
+    return "play";
+  }
+  if (hash === "#learn") {
+    return "learn";
+  }
+  return "home";
+}
+
+function setHashView(view: AppView) {
+  const nextHash = view === "home" ? "" : `#${view}`;
+  if (window.location.hash === nextHash) {
+    return;
+  }
+  window.location.hash = nextHash;
+}
+
+function getActionKey(action: LearnAction): string {
+  if (action.type === "bid") {
+    return `bid:${action.amount}`;
+  }
+  if (action.type === "play_card") {
+    return `play_card:${action.card_code}`;
+  }
+  return "pass";
+}
+
+function findCardByCode(cards: Card[], cardCode: string | undefined) {
+  if (!cardCode) {
+    return null;
+  }
+  return cards.find((card) => card.code === cardCode) ?? null;
+}
 
 function getRoundBanner(phase: string, currentTurnName: string): string {
   if (phase === "auction") {
@@ -77,11 +123,18 @@ function buildTeamsInputFromSelections(
     .join("\n");
 }
 
-export default function App() {
+type PageNavigationProps = {
+  onNavigateHome: () => void;
+  onNavigatePlay: () => void;
+  onNavigateLearn: () => void;
+};
+
+function PlayBotsPage({ onNavigateHome, onNavigateLearn }: PageNavigationProps) {
   const [sessionId] = useState(() =>
     loadOrCreateSessionId("smear-play-session-id"),
   );
   const [showHistory, setShowHistory] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [teamsEnabled, setTeamsEnabled] = useState(true);
   const [teamSelections, setTeamSelections] = useState<number[][]>(
     DEFAULT_TEAM_SELECTIONS,
@@ -288,8 +341,61 @@ export default function App() {
   return (
     <main className="public-shell">
       <section className="hero-card">
-        <h1>smear online alpha</h1>
+        <div>
+          <span className="eyebrow">Play with bots</span>
+          <h1>Smear</h1>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+          <button
+            type="button"
+            className="help-button"
+            aria-expanded={showHelp}
+            aria-controls="smear-help-panel"
+            onClick={() => setShowHelp((current) => !current)}
+          >
+            Help
+          </button>
+        </div>
       </section>
+
+      {showHelp ? (
+        <section
+          id="smear-help-panel"
+          className="help-panel"
+          aria-labelledby="smear-help-heading"
+        >
+          <div className="help-panel__header">
+            <h2 id="smear-help-heading">Table help</h2>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => setShowHelp(false)}
+            >
+              Close
+            </button>
+          </div>
+          <div className="help-panel__grid">
+            <p>
+              Set the players and teams on the left, then start a new game when
+              every team seat is assigned.
+            </p>
+            <p>
+              When it is your turn, playable cards are active. Cards that cannot
+              be played are dimmed.
+            </p>
+            <p>
+              Use full screen for a simpler table view with larger cards and
+              fewer distractions.
+            </p>
+          </div>
+        </section>
+      ) : null}
 
       {error ? <div className="banner banner--error">{error}</div> : null}
 
@@ -870,4 +976,343 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function LandingPage({ onNavigatePlay, onNavigateLearn }: PageNavigationProps) {
+  return (
+    <main className="public-shell landing-shell">
+      <section className="landing-hero">
+        <div className="landing-hero__copy">
+          <span className="eyebrow">Smear online</span>
+          <h1>Smear</h1>
+          <p>
+            Sit down against bots, or work through one position at a time and
+            compare your choice with the best bot.
+          </p>
+        </div>
+        <div className="landing-card-fan" aria-hidden="true">
+          {LANDING_CARDS.map((card) => (
+            <PlayingCard
+              key={card.code}
+              card={card}
+              compact
+              isTrump={card.suit === "H" || card.is_joker}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-choice-grid" aria-label="Choose how to play">
+        <button
+          type="button"
+          className="landing-choice"
+          onClick={onNavigatePlay}
+        >
+          <span>Play with bots</span>
+          <strong>Start or continue a table against computer players.</strong>
+        </button>
+        <button
+          type="button"
+          className="landing-choice"
+          onClick={onNavigateLearn}
+        >
+          <span>Learn</span>
+          <strong>Practice random bid and card positions, then reveal the bot move.</strong>
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function LearnPage({ onNavigateHome, onNavigatePlay }: PageNavigationProps) {
+  const client = useMemo(
+    () => createApiClient({ apiBaseUrl: API_BASE_URL, sessionId: null }),
+    [],
+  );
+  const [challenge, setChallenge] = useState<LearnChallenge | null>(null);
+  const [selectedAction, setSelectedAction] = useState<LearnAction | null>(null);
+  const [isLoadingChallenge, setIsLoadingChallenge] = useState(true);
+  const [learnError, setLearnError] = useState<string | null>(null);
+
+  const loadChallenge = useCallback(async () => {
+    setIsLoadingChallenge(true);
+    setLearnError(null);
+    setSelectedAction(null);
+    try {
+      const nextChallenge = await client.fetchLearnChallenge();
+      setChallenge(nextChallenge);
+    } catch (error) {
+      setLearnError(
+        error instanceof Error
+          ? error.message
+          : "Could not load a learning position.",
+      );
+    } finally {
+      setIsLoadingChallenge(false);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    void loadChallenge();
+  }, [loadChallenge]);
+
+  const actor = challenge
+    ? challenge.state.round.players.find(
+        (player) => player.name === challenge.actor_name,
+      ) ?? null
+    : null;
+  const selectedKey = selectedAction ? getActionKey(selectedAction) : null;
+  const bestKey = challenge ? getActionKey(challenge.best_action) : null;
+  const selectedMatchesBest =
+    selectedKey !== null && bestKey !== null && selectedKey === bestKey;
+  const currentTrick = challenge?.state.round.current_trick ?? null;
+
+  return (
+    <main className="public-shell learn-shell">
+      <section className="hero-card">
+        <div>
+          <span className="eyebrow">Learn</span>
+          <h1>Practice a position</h1>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigatePlay}>
+            Play with bots
+          </button>
+        </div>
+      </section>
+
+      {learnError ? (
+        <div className="banner banner--error">{learnError}</div>
+      ) : null}
+
+      <section className="learn-layout">
+        <div className="learn-position">
+          <div className="card-header">
+            <div>
+              <span className="eyebrow">
+                {challenge?.phase === "auction" ? "Auction" : "Card play"}
+              </span>
+              <h2>
+                {isLoadingChallenge
+                  ? "Loading a position"
+                  : challenge?.prompt ?? "No position loaded"}
+              </h2>
+            </div>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                void loadChallenge();
+              }}
+              disabled={isLoadingChallenge}
+            >
+              New position
+            </button>
+          </div>
+
+          {challenge ? (
+            <>
+              <section className="status-row learn-status-row">
+                <div className="status-pill">
+                  <span>Trump</span>
+                  <strong>{challenge.state.round.trump ?? "-"}</strong>
+                </div>
+                <div className="status-pill">
+                  <span>High bid</span>
+                  <strong>{challenge.state.auction.current_high_bid ?? "-"}</strong>
+                </div>
+                <div className="status-pill">
+                  <span>High bidder</span>
+                  <strong>{challenge.state.auction.highest_bidder_name ?? "-"}</strong>
+                </div>
+                <div className="status-pill">
+                  <span>Round</span>
+                  <strong>{challenge.state.match.round_number}</strong>
+                </div>
+              </section>
+
+              <section className="learn-table">
+                <div className="learn-table__header">
+                  <span>Current trick</span>
+                  <strong>{currentTrick?.leader_name ?? "-"}</strong>
+                </div>
+                <div className="learn-trick-row">
+                  {currentTrick && currentTrick.plays.length > 0 ? (
+                    currentTrick.plays.map((play, index) => (
+                      <div
+                        key={`${play.player_name}-${play.card.code}-${index}`}
+                        className="learn-trick-play"
+                      >
+                        <span>{play.player_name}</span>
+                        <PlayingCard
+                          card={play.card}
+                          compact
+                          isTrump={
+                            play.card.is_joker ||
+                            play.card.suit === challenge.state.round.trump
+                          }
+                        />
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-inline">No cards have been played to this trick.</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="learn-hand">
+                <div>
+                  <span className="eyebrow">Your hand</span>
+                  <h2>{actor?.name ?? challenge.actor_name}</h2>
+                </div>
+                <div className="hand-grid">
+                  {actor ? (
+                    sortCardsHighToLow(actor.cards).map((card) => (
+                      <PlayingCard
+                        key={card.code}
+                        card={card}
+                        compact
+                        isTrump={
+                          card.is_joker || card.suit === challenge.state.round.trump
+                        }
+                        disabled={
+                          challenge.phase === "play" &&
+                          !challenge.options.some(
+                            (option) =>
+                              option.type === "play_card" &&
+                              option.card_code === card.code,
+                          )
+                        }
+                      />
+                    ))
+                  ) : (
+                    <span className="empty-inline">Hand unavailable.</span>
+                  )}
+                </div>
+              </section>
+            </>
+          ) : (
+            <div className="empty-state-card">
+              <span className="eyebrow">Practice</span>
+              <h2>{isLoadingChallenge ? "Finding a position." : "Try loading a new position."}</h2>
+            </div>
+          )}
+        </div>
+
+        <aside className="learn-actions">
+          <div>
+            <span className="eyebrow">Choose</span>
+            <h2>Your options</h2>
+          </div>
+
+          {challenge ? (
+            <div className="learn-option-grid">
+              {challenge.options.map((option) => {
+                const optionKey = getActionKey(option);
+                const optionCard =
+                  option.type === "play_card"
+                    ? findCardByCode(actor?.cards ?? [], option.card_code)
+                    : null;
+
+                return (
+                  <button
+                    key={optionKey}
+                    type="button"
+                    className={[
+                      "learn-option",
+                      selectedKey === optionKey ? "is-selected" : "",
+                      selectedAction && bestKey === optionKey ? "is-best" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => setSelectedAction(option)}
+                    disabled={Boolean(selectedAction)}
+                  >
+                    {optionCard ? (
+                      <PlayingCard
+                        card={optionCard}
+                        compact
+                        isTrump={
+                          optionCard.is_joker ||
+                          optionCard.suit === challenge.state.round.trump
+                        }
+                      />
+                    ) : null}
+                    <span>{option.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-inline">Options will appear after the position loads.</div>
+          )}
+
+          {challenge && selectedAction ? (
+            <section
+              className={[
+                "learn-result",
+                selectedMatchesBest ? "learn-result--match" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              aria-live="polite"
+            >
+              <span className="eyebrow">Best bot</span>
+              <h2>{selectedMatchesBest ? "Same choice" : "Different choice"}</h2>
+              <p>
+                You chose <strong>{selectedAction.label}</strong>.{" "}
+                {challenge.best_bot_label} would choose{" "}
+                <strong>{challenge.best_action.label}</strong>.
+              </p>
+              <button
+                type="button"
+                className="cta-button"
+                onClick={() => {
+                  void loadChallenge();
+                }}
+              >
+                Next position
+              </button>
+            </section>
+          ) : null}
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const [view, setView] = useState<AppView>(() =>
+    typeof window === "undefined" ? "home" : viewFromHash(window.location.hash),
+  );
+
+  useEffect(() => {
+    function handleHashChange() {
+      setView(viewFromHash(window.location.hash));
+    }
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => {
+      window.removeEventListener("hashchange", handleHashChange);
+    };
+  }, []);
+
+  const navigation = {
+    onNavigateHome: () => setHashView("home"),
+    onNavigatePlay: () => setHashView("play"),
+    onNavigateLearn: () => setHashView("learn"),
+  };
+
+  if (view === "play") {
+    return <PlayBotsPage {...navigation} />;
+  }
+
+  if (view === "learn") {
+    return <LearnPage {...navigation} />;
+  }
+
+  return <LandingPage {...navigation} />;
 }

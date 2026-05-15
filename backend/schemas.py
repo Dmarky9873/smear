@@ -151,6 +151,25 @@ class LegalActionsResponse(BaseModel):
     actions: list[PlayCardActionResponse | BidActionResponse | PassActionResponse]
 
 
+class LearnActionResponse(BaseModel):
+    type: Literal["bid", "pass", "play_card"]
+    label: str
+    amount: int | None = None
+    card_code: str | None = None
+
+
+class LearnChallengeResponse(BaseModel):
+    id: str
+    phase: Literal["auction", "play"]
+    actor_name: str
+    prompt: str
+    state: GameStateResponse
+    options: list[LearnActionResponse]
+    best_bot_id: str
+    best_bot_label: str
+    best_action: LearnActionResponse
+
+
 class ScoreBreakdownResponse(BaseModel):
     high: int
     jack: int

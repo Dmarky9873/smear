@@ -1,0 +1,18 @@
+# Keep Railway/Railpack and Docker build contexts small.
+.git
+.smear
+.venv
+node_modules
+frontend/node_modules
+frontend/dist
+apps/play-ui/node_modules
+apps/play-ui/dist
+packages/web-core/node_modules
+packages/web-core/dist
+__pycache__
+.pytest_cache
+
+# Neural bot training output is large and not needed by the API at runtime.
+backend/bots/models/**
+!backend/bots/models/
+!backend/bots/models/neural_3p_v*.json

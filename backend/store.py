@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
 from threading import RLock
 import time
 
 try:
     from .gameplay import GameSession, MatchController, RoundNotTerminalError
+    from .persistence import SQLiteSessionRepository
 except ImportError:
     from gameplay import GameSession, MatchController, RoundNotTerminalError
+    from persistence import SQLiteSessionRepository
 
 
 class GameNotInitializedError(RuntimeError):
@@ -16,8 +19,12 @@ class GameNotInitializedError(RuntimeError):
 
 
 class GameStore:
-    def __init__(self):
-        self._controller: MatchController | None = None
+    def __init__(self, controller: MatchController | None = None):
+        self._controller = controller
+
+    @property
+    def has_controller(self) -> bool:
+        return self._controller is not None
 
     def require_controller(self) -> MatchController:
         if self._controller is None:
@@ -91,16 +98,25 @@ def _load_session_ttl_seconds() -> int:
     return max(1, int(hours * 60 * 60))
 
 
+def _load_state_db_path() -> str | None:
+    raw_value = os.getenv("SMEAR_STATE_DB_PATH", ".smear/sessions.sqlite3").strip()
+    if raw_value.lower() in {"", "none", "off", "disabled"}:
+        return None
+    return str(Path(raw_value))
+
+
 @dataclass
 class SessionEntry:
     store: GameStore = field(default_factory=GameStore)
     lock: RLock = field(default_factory=RLock)
     last_accessed_at: float = field(default_factory=time.monotonic)
+    revision: int = 0
 
 
 class SessionGameStore:
-    def __init__(self, session_ttl_seconds: int):
+    def __init__(self, session_ttl_seconds: int, repository=None):
         self._session_ttl_seconds = session_ttl_seconds
+        self._repository = repository
         self._sessions: dict[str, SessionEntry] = {}
         self._lock = RLock()
 
@@ -119,16 +135,54 @@ class SessionGameStore:
             self._prune_expired_sessions_locked()
             entry = self._sessions.get(session_id)
             if entry is None:
-                entry = SessionEntry()
+                persisted = (
+                    self._repository.load(session_id)
+                    if self._repository is not None
+                    else None
+                )
+                entry = (
+                    SessionEntry(
+                        store=GameStore(persisted.controller),
+                        revision=persisted.revision,
+                    )
+                    if persisted is not None
+                    else SessionEntry()
+                )
                 self._sessions[session_id] = entry
             entry.last_accessed_at = time.monotonic()
             return entry
 
-    def _run(self, session_id: str, operation):
+    def _persist_entry_locked(self, session_id: str, entry: SessionEntry) -> None:
+        if self._repository is None or not entry.store.has_controller:
+            return
+        self._repository.save(
+            session_id,
+            entry.store.require_controller(),
+            entry.revision,
+        )
+
+    def _run(
+        self,
+        session_id: str,
+        operation,
+        *,
+        persist_after: bool = False,
+        increment_revision: bool = False,
+    ):
         entry = self._get_entry(session_id)
         with entry.lock:
             entry.last_accessed_at = time.monotonic()
-            return operation(entry.store)
+            result = operation(entry.store)
+            if increment_revision:
+                entry.revision += 1
+            if persist_after:
+                self._persist_entry_locked(session_id, entry)
+            return result
+
+    def get_revision(self, session_id: str) -> int:
+        entry = self._get_entry(session_id)
+        with entry.lock:
+            return entry.revision
 
     def create_game(
         self,
@@ -148,25 +202,39 @@ class SessionGameStore:
                 player_bots=player_bots,
                 auto_run_bots=auto_run_bots,
             ),
+            persist_after=True,
+            increment_revision=True,
         )
 
     def reset_round(self, session_id: str, auto_run_bots: bool = True) -> GameSession:
         return self._run(
             session_id,
             lambda store: store.reset_round(auto_run_bots=auto_run_bots),
+            persist_after=True,
+            increment_revision=True,
         )
 
     def next_round(self, session_id: str, auto_run_bots: bool = True) -> GameSession:
         return self._run(
             session_id,
             lambda store: store.next_round(auto_run_bots=auto_run_bots),
+            persist_after=True,
+            increment_revision=True,
         )
 
     def get_state(self, session_id: str) -> GameSession:
-        return self._run(session_id, lambda store: store.get_state())
+        return self._run(
+            session_id,
+            lambda store: store.get_state(),
+            persist_after=True,
+        )
 
     def get_legal_actions(self, session_id: str) -> list[dict]:
-        return self._run(session_id, lambda store: store.get_legal_actions())
+        return self._run(
+            session_id,
+            lambda store: store.get_legal_actions(),
+            persist_after=True,
+        )
 
     def place_bid(
         self,
@@ -180,12 +248,16 @@ class SessionGameStore:
                 amount,
                 auto_run_bots=auto_run_bots,
             ),
+            persist_after=True,
+            increment_revision=True,
         )
 
     def pass_auction(self, session_id: str, auto_run_bots: bool = True) -> GameSession:
         return self._run(
             session_id,
             lambda store: store.pass_auction(auto_run_bots=auto_run_bots),
+            persist_after=True,
+            increment_revision=True,
         )
 
     def play_card(
@@ -200,16 +272,31 @@ class SessionGameStore:
                 card_code,
                 auto_run_bots=auto_run_bots,
             ),
+            persist_after=True,
+            increment_revision=True,
         )
 
     def advance_bot_turn(self, session_id: str) -> GameSession:
-        return self._run(session_id, lambda store: store.advance_bot_turn())
+        return self._run(
+            session_id,
+            lambda store: store.advance_bot_turn(),
+            persist_after=True,
+            increment_revision=True,
+        )
 
     def get_score(self, session_id: str) -> dict:
-        return self._run(session_id, lambda store: store.get_score())
+        return self._run(
+            session_id,
+            lambda store: store.get_score(),
+            persist_after=True,
+        )
 
     def get_bot_progress(self, session_id: str) -> dict:
         return self._run(session_id, lambda store: store.get_bot_progress())
 
 
-game_store = SessionGameStore(session_ttl_seconds=_load_session_ttl_seconds())
+_state_db_path = _load_state_db_path()
+game_store = SessionGameStore(
+    session_ttl_seconds=_load_session_ttl_seconds(),
+    repository=SQLiteSessionRepository(_state_db_path) if _state_db_path else None,
+)

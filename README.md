@@ -164,7 +164,10 @@ The API will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
 Useful environment variables for the backend:
 
 - `SMEAR_CORS_ORIGINS` is a comma-separated allowlist of frontend origins. By default the API allows the two local Vite apps on ports `5173` and `5174`.
-- `SMEAR_SESSION_TTL_HOURS` controls how long inactive browser sessions are kept in memory. The default is `12`.
+- `SMEAR_STATE_DB_PATH` controls where browser sessions are persisted. The default is `.smear/sessions.sqlite3`; set it to `none` to use memory only.
+- `SMEAR_SESSION_TTL_HOURS` controls how long inactive browser sessions are kept in the in-memory cache. Persisted sessions can still be restored from `SMEAR_STATE_DB_PATH` after cache expiry or server restart.
+
+Production packaging intentionally excludes neural bot replay/checkpoint output under `backend/bots/models/`. Only the small runtime bundles named `neural_3p_v*.json` should be committed or shipped to Railway.
 
 Useful endpoints:
 
@@ -178,6 +181,8 @@ Useful endpoints:
 - `GET /game/legal-actions`
 - `POST /game/play`
 - `GET /game/score`
+- `WS /game/ws?session_id=...` streams `game_state` messages for the session whenever the game changes.
+- `GET /learn/challenge` returns a random practice position, legal learner options, and the optimal bot action to reveal after the learner chooses.
 
 Every stateful endpoint also accepts an `X-Smear-Session-Id` header. The browser apps generate and persist that header automatically so each browser gets its own isolated game.
 

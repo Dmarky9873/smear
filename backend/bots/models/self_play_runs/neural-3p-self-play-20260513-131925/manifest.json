@@ -1,1 +1,0 @@
-{"started_at": "20260513-131925", "initial_model_path": "/Users/danielmarkusson/Documents/GitHub/smear/backend/bots/models/neural_3p_v3.json", "self_play_matches": 1, "alpha": 1, "replay_window": 2, "duration_hours": 0.001, "eval_games": 1, "eval_games_vs_optimal": 1, "precheck_games": 1, "winner_policy_weight": 1.5, "workers": 1, "seed": 0}

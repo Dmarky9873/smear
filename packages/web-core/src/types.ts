@@ -106,6 +106,22 @@ export type LegalActionsResponse = {
   actions: LegalAction[];
 };
 
+export type LearnAction = LegalAction & {
+  label: string;
+};
+
+export type LearnChallenge = {
+  id: string;
+  phase: "auction" | "play";
+  actor_name: string;
+  prompt: string;
+  state: GameState;
+  options: LearnAction[];
+  best_bot_id: string;
+  best_bot_label: string;
+  best_action: LearnAction;
+};
+
 export type ScoreBreakdown = {
   high: number;
   jack: number;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, createApiClient } from "../api";
+import { ApiError, createApiClient, type GameStateEvent } from "../api";
 import type {
   BotProgress,
   BidAction,
@@ -258,6 +258,14 @@ export function useSmearGame({
     }
   }
 
+  async function refreshStateAfterReconnect() {
+    try {
+      await loadGameState();
+    } catch (taskError) {
+      setError(taskError instanceof Error ? taskError.message : "Unknown error");
+    }
+  }
+
   function cancelBotSequence() {
     botSequenceRef.current += 1;
     setAwaitingNextTrick(false);
@@ -393,6 +401,107 @@ export function useSmearGame({
     void runWithErrorHandling(async () => {
       await loadGameState();
     });
+  }, [api]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let isClosed = false;
+    let reconnectTimeoutId: number | null = null;
+    let reconnectDelayMs = 500;
+    let socket: WebSocket | null = null;
+
+    function clearReconnectTimer() {
+      if (reconnectTimeoutId !== null) {
+        window.clearTimeout(reconnectTimeoutId);
+        reconnectTimeoutId = null;
+      }
+    }
+
+    function scheduleReconnect() {
+      if (isClosed || reconnectTimeoutId !== null) {
+        return;
+      }
+
+      reconnectTimeoutId = window.setTimeout(() => {
+        reconnectTimeoutId = null;
+        connect();
+      }, reconnectDelayMs);
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5000);
+    }
+
+    function connect() {
+      clearReconnectTimer();
+      socket = api.openGameEvents();
+      if (socket === null) {
+        return;
+      }
+
+      socket.onopen = () => {
+        reconnectDelayMs = 500;
+        void refreshStateAfterReconnect();
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as GameStateEvent;
+          if (message.type !== "game_state") {
+            return;
+          }
+
+          if (message.state === null) {
+            setState(null);
+            setLegalActions([]);
+            setScore(null);
+            return;
+          }
+
+          void syncStateSnapshot(message.state).catch((taskError) => {
+            setError(
+              taskError instanceof Error ? taskError.message : "Unknown error",
+            );
+          });
+        } catch {
+          setError("Received an invalid game update.");
+        }
+      };
+
+      socket.onclose = () => {
+        socket = null;
+        scheduleReconnect();
+      };
+
+      socket.onerror = () => {
+        socket?.close();
+      };
+    }
+
+    connect();
+
+    return () => {
+      isClosed = true;
+      clearReconnectTimer();
+      socket?.close();
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void refreshStateAfterReconnect();
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [api]);
 
   useEffect(() => {

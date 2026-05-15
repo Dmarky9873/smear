@@ -32,8 +32,7 @@
   --slider-track-bg: #e9e9e9;
   --slider-track-border: #b8b8b8;
   --progress-track-bg: #ececec;
-  --progress-bar-start: #3559a6;
-  --progress-bar-end: #6d8fd3;
+  --progress-bar: #355f54;
   --button-bg: #ffffff;
   --button-bg-soft: #f3f3f3;
   --button-text: #111111;
@@ -80,8 +79,7 @@
   --slider-track-bg: #2a3642;
   --slider-track-border: #526171;
   --progress-track-bg: #27303a;
-  --progress-bar-start: #5679c2;
-  --progress-bar-end: #7fa0de;
+  --progress-bar: #7aa89d;
   --button-bg: #18212b;
   --button-bg-soft: #22303d;
   --button-text: #eef4fb;
@@ -582,11 +580,7 @@ button {
   left: 0;
   width: 0;
   border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    var(--progress-bar-start) 0%,
-    var(--progress-bar-end) 100%
-  );
+  background: var(--progress-bar);
   transition: width 140ms ease-out;
 }
 

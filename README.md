@@ -172,6 +172,8 @@ Useful environment variables for the backend:
 
 Production packaging intentionally excludes neural bot replay/checkpoint output under `backend/bots/models/`. Only the small runtime bundles named `neural_3p_v*.json` should be committed or shipped to Railway.
 
+For the Railway backend service, set the service root directory to `/backend` and the custom config-as-code path to `/backend/railway.json`. The backend config clears Railway's build command so Railpack installs `requirements.txt` only once, then starts FastAPI with `python -m uvicorn server:app --host 0.0.0.0 --port $PORT`.
+
 Useful endpoints:
 
 - `GET /health`

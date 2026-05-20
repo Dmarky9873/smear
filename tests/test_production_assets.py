@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -43,3 +44,13 @@ def test_production_ignores_training_model_artifacts(ignore_file: str) -> None:
     assert "backend/bots/models/**" in patterns
     assert "!backend/bots/models/" in patterns
     assert "!backend/bots/models/neural_3p_v*.json" in patterns
+
+
+def test_railway_backend_config_does_not_reinstall_requirements_as_build_step() -> None:
+    config = json.loads((REPO_ROOT / "backend/railway.json").read_text(encoding="utf-8"))
+
+    assert config["build"]["builder"] == "RAILPACK"
+    assert config["build"]["buildCommand"] is None
+    assert config["deploy"]["startCommand"] == (
+        "python -m uvicorn server:app --host 0.0.0.0 --port $PORT"
+    )

@@ -16,8 +16,13 @@ import {
   sortCardsHighToLow,
   useSmearGame,
   type Card,
+  type LegalAction,
   type LearnAction,
   type LearnChallenge,
+  type LobbyState,
+  type LobbyStateEvent,
+  type Player,
+  type ReadyBot,
   type TrickState,
 } from "@smear/web-core";
 
@@ -44,10 +49,13 @@ const DONATION_MAX_CENTS = 10000;
 const DONATION_CURRENCY = (
   import.meta.env.VITE_DONATION_CURRENCY ?? "CAD"
 ).toUpperCase();
+const DEFAULT_LEARN_BOT_ID = "optimal-bot";
 const MOBILE_TABLE_QUERY =
   "(max-width: 760px), (pointer: coarse) and (max-width: 920px)";
+const LOBBY_TOKEN_STORAGE_PREFIX = "smear-lobby-player-token:";
 
 type AppView = "home" | "play" | "learn" | "donate";
+type PlayMode = "menu" | "bots" | "host" | "join" | "lobby";
 
 function viewFromHash(hash: string): AppView {
   const route = hash.split("?")[0];
@@ -164,6 +172,58 @@ function getRoundBanner(phase: string, currentTurnName: string): string {
   }
 
   return "Round over";
+}
+
+function getTurnName(state: LobbyState["game_state"]): string {
+  if (!state) {
+    return "-";
+  }
+  if (state.phase === "auction") {
+    return state.auction.current_bidder_name;
+  }
+  if (state.phase === "play") {
+    return state.round.current_player_name;
+  }
+  if (state.phase === "match_complete") {
+    return "Match over";
+  }
+  return "Round over";
+}
+
+function normalizeLobbyCode(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function getLobbyTokenStorageKey(lobbyCode: string): string {
+  return `${LOBBY_TOKEN_STORAGE_PREFIX}${normalizeLobbyCode(lobbyCode)}`;
+}
+
+function loadLobbyPlayerToken(lobbyCode: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.localStorage.getItem(getLobbyTokenStorageKey(lobbyCode));
+}
+
+function saveLobbyPlayerToken(lobbyCode: string, playerToken: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(getLobbyTokenStorageKey(lobbyCode), playerToken);
+}
+
+function getBidActions(actions: LegalAction[]) {
+  return actions.filter(
+    (action): action is Extract<LegalAction, { type: "bid" }> =>
+      action.type === "bid",
+  );
+}
+
+function getPlayCardActions(actions: LegalAction[]) {
+  return actions.filter(
+    (action): action is Extract<LegalAction, { type: "play_card" }> =>
+      action.type === "play_card",
+  );
 }
 
 function getVisiblePlayForPlayer(trick: TrickState | null, playerName: string) {
@@ -329,6 +389,8 @@ function PlayBotsPage({
   const teamsAreComplete = !teamsEnabled || unassignedPlayers.length === 0;
   const canUseFullscreenControl = typeof document !== "undefined";
   const useMobileGameLayout = Boolean(state && isMobileTable);
+  const isRoundTerminal = Boolean(state?.round.is_terminal);
+  const isMatchComplete = Boolean(state?.match.is_complete);
   const wasMobileLayout = useRef(useMobileGameLayout);
   const isSetupDrawerOpen = setupSidebarOpen && useMobileGameLayout;
 
@@ -408,7 +470,7 @@ function PlayBotsPage({
   }, [useMobileGameLayout]);
 
   function confirmNewGameIfNeeded() {
-    if (!state) {
+    if (!state || state.match.is_complete) {
       return true;
     }
 
@@ -696,6 +758,9 @@ function PlayBotsPage({
       className={[
         "public-shell",
         useMobileGameLayout ? "public-shell--mobile-game" : "",
+        useMobileGameLayout && isRoundTerminal
+          ? "public-shell--round-complete"
+          : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -809,6 +874,7 @@ function PlayBotsPage({
             "board-column",
             "game-stage",
             isFullscreen ? "game-stage--fullscreen" : "",
+            isRoundTerminal ? "game-stage--complete" : "",
           ]
             .filter(Boolean)
             .join(" ")}
@@ -939,7 +1005,7 @@ function PlayBotsPage({
                       >
                         Continue
                       </button>
-                    ) : state.round.is_terminal && !state.match.is_complete ? (
+                    ) : isRoundTerminal && !isMatchComplete ? (
                       <button
                         type="button"
                         className="ghost-button"
@@ -1199,7 +1265,7 @@ function PlayBotsPage({
                       <span className="eyebrow">Scoring</span>
                       <h2>{getScoreHeading(state.round.is_terminal)}</h2>
                     </div>
-                    {state.match.is_complete ? (
+                    {isMatchComplete ? (
                       <div className="hero-badge">
                         <span>Winner</span>
                         <strong>{state.match.winner_names.join(", ")}</strong>
@@ -1257,6 +1323,37 @@ function PlayBotsPage({
                       </article>
                     ))}
                   </div>
+                </section>
+              ) : null}
+
+              {isRoundTerminal ? (
+                <section
+                  className="mobile-completion-actions"
+                  aria-label="Round completion actions"
+                >
+                  {isMatchComplete ? (
+                    <button
+                      type="button"
+                      className="cta-button"
+                      onClick={() => {
+                        void handleStartTable();
+                      }}
+                      disabled={isLoading || !teamsAreComplete}
+                    >
+                      New game
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="cta-button"
+                      onClick={() => {
+                        void handleNextRoundPlay();
+                      }}
+                      disabled={isLoading}
+                    >
+                      Next round
+                    </button>
+                  )}
                 </section>
               ) : null}
             </>
@@ -1319,6 +1416,1110 @@ function PlayBotsPage({
   );
 }
 
+type PlayPageProps = PageNavigationProps;
+
+type PlayModeMenuProps = PageNavigationProps & {
+  onChooseBots: () => void;
+  onChooseHost: () => void;
+  onChooseJoin: () => void;
+};
+
+function PlayModeMenu({
+  onNavigateHome,
+  onNavigateLearn,
+  onNavigateDonate,
+  onChooseBots,
+  onChooseHost,
+  onChooseJoin,
+}: PlayModeMenuProps) {
+  return (
+    <main className="public-shell landing-shell">
+      <section className="hero-card">
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Play</span>
+            <h1>Choose a table</h1>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+            Donate
+          </button>
+        </div>
+      </section>
+
+      <section className="landing-choice-grid" aria-label="Play options">
+        <button type="button" className="landing-choice" onClick={onChooseBots}>
+          <span>Play with bots</span>
+          <strong>Start or continue a local table against computer players.</strong>
+        </button>
+        <button type="button" className="landing-choice" onClick={onChooseHost}>
+          <span>Start a lobby</span>
+          <strong>Create a lobby code, fill the seats, then start a real table.</strong>
+        </button>
+        <button type="button" className="landing-choice" onClick={onChooseJoin}>
+          <span>Enter lobby code</span>
+          <strong>Join a friend’s table from this device.</strong>
+        </button>
+      </section>
+
+      <SiteFooter />
+    </main>
+  );
+}
+
+type HostLobbyPageProps = PageNavigationProps & {
+  onBackToPlayMenu: () => void;
+  onOpenLobby: (lobby: LobbyState) => void;
+};
+
+function HostLobbyPage({
+  onBackToPlayMenu,
+  onNavigateHome,
+  onNavigateLearn,
+  onNavigateDonate,
+  onOpenLobby,
+}: HostLobbyPageProps) {
+  const client = useMemo(
+    () => createApiClient({ apiBaseUrl: API_BASE_URL, sessionId: null }),
+    [],
+  );
+  const [hostName, setHostName] = useState("You");
+  const [numPlayers, setNumPlayers] = useState(4);
+  const [teamsEnabled, setTeamsEnabled] = useState(true);
+  const [teamSelections, setTeamSelections] = useState<number[][]>(
+    DEFAULT_TEAM_SELECTIONS,
+  );
+  const [isCreatingLobby, setIsCreatingLobby] = useState(false);
+  const [lobbyError, setLobbyError] = useState<string | null>(null);
+
+  const seatOptions = useMemo(
+    () =>
+      Array.from({ length: numPlayers }, (_, index) => ({
+        index,
+        name: index === 0 ? hostName.trim() || "You" : `Seat ${index + 1}`,
+      })),
+    [hostName, numPlayers],
+  );
+  const assignedSeatIndexes = useMemo(
+    () => new Set(teamSelections.flat()),
+    [teamSelections],
+  );
+  const unassignedSeats = seatOptions.filter(
+    (seat) => !assignedSeatIndexes.has(seat.index),
+  );
+  const teamsAreComplete = !teamsEnabled || unassignedSeats.length === 0;
+
+  useEffect(() => {
+    setTeamSelections((current) => {
+      const filtered = current
+        .map((team) => team.filter((seatIndex) => seatIndex < numPlayers))
+        .filter((team) => team.length > 0);
+      return filtered.length > 0 ? filtered : [[]];
+    });
+  }, [numPlayers]);
+
+  function handleTeamMemberToggle(teamIndex: number, seatIndex: number) {
+    setTeamSelections((current) => {
+      const selectedInTeam = current[teamIndex]?.includes(seatIndex) ?? false;
+      const withoutSeat = current.map((team) =>
+        team.filter((memberIndex) => memberIndex !== seatIndex),
+      );
+
+      if (selectedInTeam) {
+        return withoutSeat;
+      }
+
+      return withoutSeat.map((team, index) =>
+        index === teamIndex
+          ? [...team, seatIndex].sort((left, right) => left - right)
+          : team,
+      );
+    });
+  }
+
+  async function handleCreateLobby(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsCreatingLobby(true);
+    setLobbyError(null);
+    try {
+      const lobby = await client.createLobby({
+        host_name: hostName,
+        num_players: numPlayers,
+        teams: teamsEnabled ? teamSelections : null,
+        host_seat_index: 0,
+      });
+      if (lobby.you) {
+        saveLobbyPlayerToken(lobby.code, lobby.you.player_token);
+      }
+      onOpenLobby(lobby);
+    } catch (error) {
+      setLobbyError(
+        error instanceof Error ? error.message : "Could not create lobby.",
+      );
+    } finally {
+      setIsCreatingLobby(false);
+    }
+  }
+
+  return (
+    <main className="public-shell lobby-shell">
+      <section className="hero-card">
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Start a lobby</span>
+            <h1>Set up the table</h1>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onBackToPlayMenu}>
+            Play
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+            Donate
+          </button>
+        </div>
+      </section>
+
+      {lobbyError ? <div className="banner banner--error">{lobbyError}</div> : null}
+
+      <form className="lobby-setup-grid" onSubmit={handleCreateLobby}>
+        <section className="control-card lobby-panel">
+          <div className="card-header">
+            <div>
+              <span className="eyebrow">Seats</span>
+              <h2>Lobby details</h2>
+            </div>
+          </div>
+
+          <label className="field">
+            <span>Your name</span>
+            <input
+              type="text"
+              value={hostName}
+              maxLength={32}
+              onChange={(event) => setHostName(event.target.value)}
+            />
+          </label>
+
+          <label className="field">
+            <span>Seats</span>
+            <input
+              type="number"
+              min={3}
+              max={8}
+              value={numPlayers}
+              onChange={(event) => setNumPlayers(Number(event.target.value) || 3)}
+            />
+          </label>
+
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={teamsEnabled}
+              onChange={(event) => setTeamsEnabled(event.target.checked)}
+            />
+            <span>Play with teams</span>
+          </label>
+
+          <button
+            type="submit"
+            className="cta-button"
+            disabled={isCreatingLobby || !teamsAreComplete}
+          >
+            {isCreatingLobby ? "Creating lobby" : "Create lobby"}
+          </button>
+        </section>
+
+        {teamsEnabled ? (
+          <section className="control-card lobby-panel">
+            <div className="team-picker">
+              <div className="team-picker__header">
+                <span>Teams</span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setTeamSelections((current) => [...current, []])}
+                  disabled={teamSelections.length >= numPlayers}
+                >
+                  Add team
+                </button>
+              </div>
+
+              {teamSelections.map((team, teamIndex) => (
+                <section key={teamIndex} className="team-picker__team">
+                  <div className="team-picker__team-header">
+                    <strong>Team {teamIndex + 1}</strong>
+                    {teamSelections.length > 1 ? (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() =>
+                          setTeamSelections((current) =>
+                            current.filter((_, index) => index !== teamIndex),
+                          )
+                        }
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="player-chip-grid">
+                    {seatOptions.map((seat) => {
+                      const isSelected = team.includes(seat.index);
+                      const isAssignedElsewhere =
+                        !isSelected && assignedSeatIndexes.has(seat.index);
+
+                      return (
+                        <button
+                          key={seat.index}
+                          type="button"
+                          className={[
+                            "player-chip",
+                            isSelected ? "is-selected" : "",
+                            isAssignedElsewhere ? "is-assigned-elsewhere" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          aria-pressed={isSelected}
+                          onClick={() =>
+                            handleTeamMemberToggle(teamIndex, seat.index)
+                          }
+                        >
+                          {seat.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+
+              {unassignedSeats.length > 0 ? (
+                <div className="team-picker__unassigned">
+                  <span>Unassigned</span>
+                  <div className="team-picker__unassigned-list">
+                    {unassignedSeats.map((seat) => (
+                      <span key={seat.index}>{seat.name}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
+      </form>
+
+      <SiteFooter />
+    </main>
+  );
+}
+
+type JoinLobbyPageProps = PageNavigationProps & {
+  onBackToPlayMenu: () => void;
+  onOpenLobby: (lobby: LobbyState) => void;
+};
+
+function JoinLobbyPage({
+  onBackToPlayMenu,
+  onNavigateHome,
+  onNavigateLearn,
+  onNavigateDonate,
+  onOpenLobby,
+}: JoinLobbyPageProps) {
+  const client = useMemo(
+    () => createApiClient({ apiBaseUrl: API_BASE_URL, sessionId: null }),
+    [],
+  );
+  const [lobbyCode, setLobbyCode] = useState("");
+  const [playerName, setPlayerName] = useState("");
+  const [foundLobby, setFoundLobby] = useState<LobbyState | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [isLoadingLobby, setIsLoadingLobby] = useState(false);
+
+  async function handleFindLobby(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedCode = normalizeLobbyCode(lobbyCode);
+    if (!normalizedCode) {
+      setJoinError("Enter a lobby code.");
+      return;
+    }
+
+    setIsLoadingLobby(true);
+    setJoinError(null);
+    try {
+      const storedToken = loadLobbyPlayerToken(normalizedCode);
+      const lobby = await client.fetchLobby(normalizedCode, storedToken);
+      if (lobby.you) {
+        onOpenLobby(lobby);
+        return;
+      }
+      setFoundLobby(lobby);
+    } catch (error) {
+      setFoundLobby(null);
+      setJoinError(
+        error instanceof Error ? error.message : "Could not find that lobby.",
+      );
+    } finally {
+      setIsLoadingLobby(false);
+    }
+  }
+
+  async function handleJoinSeat(seatIndex: number) {
+    const normalizedCode = normalizeLobbyCode(lobbyCode);
+    setIsLoadingLobby(true);
+    setJoinError(null);
+    try {
+      const lobby = await client.joinLobby(normalizedCode, {
+        player_name: playerName,
+        seat_index: seatIndex,
+      });
+      if (lobby.you) {
+        saveLobbyPlayerToken(lobby.code, lobby.you.player_token);
+      }
+      onOpenLobby(lobby);
+    } catch (error) {
+      setJoinError(
+        error instanceof Error ? error.message : "Could not join that lobby.",
+      );
+    } finally {
+      setIsLoadingLobby(false);
+    }
+  }
+
+  return (
+    <main className="public-shell lobby-shell">
+      <section className="hero-card">
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Enter lobby code</span>
+            <h1>Join a table</h1>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onBackToPlayMenu}>
+            Play
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+            Donate
+          </button>
+        </div>
+      </section>
+
+      {joinError ? <div className="banner banner--error">{joinError}</div> : null}
+
+      <section className="lobby-setup-grid">
+        <form className="control-card lobby-panel" onSubmit={handleFindLobby}>
+          <div className="card-header">
+            <div>
+              <span className="eyebrow">Code</span>
+              <h2>Find lobby</h2>
+            </div>
+          </div>
+
+          <label className="field">
+            <span>Lobby code</span>
+            <input
+              type="text"
+              value={lobbyCode}
+              autoCapitalize="characters"
+              maxLength={16}
+              onChange={(event) => {
+                setLobbyCode(normalizeLobbyCode(event.target.value));
+                setFoundLobby(null);
+              }}
+            />
+          </label>
+
+          <label className="field">
+            <span>Your name</span>
+            <input
+              type="text"
+              value={playerName}
+              maxLength={32}
+              onChange={(event) => setPlayerName(event.target.value)}
+            />
+          </label>
+
+          <button
+            type="submit"
+            className="cta-button"
+            disabled={isLoadingLobby || !normalizeLobbyCode(lobbyCode)}
+          >
+            {isLoadingLobby ? "Finding lobby" : "Find lobby"}
+          </button>
+        </form>
+
+        {foundLobby ? (
+          <section className="control-card lobby-panel">
+            <div className="card-header">
+              <div>
+                <span className="eyebrow">Lobby {foundLobby.code}</span>
+                <h2>Choose a seat</h2>
+              </div>
+            </div>
+
+            {foundLobby.status !== "waiting" ? (
+              <div className="empty-inline">This lobby has already started.</div>
+            ) : (
+              <div className="lobby-seat-list">
+                {foundLobby.seats.map((seat) => (
+                  <button
+                    key={seat.index}
+                    type="button"
+                    className="lobby-seat-button"
+                    disabled={
+                      isLoadingLobby || seat.is_occupied || !playerName.trim()
+                    }
+                    onClick={() => {
+                      void handleJoinSeat(seat.index);
+                    }}
+                  >
+                    <span>Seat {seat.index + 1}</span>
+                    <strong>{seat.player_name ?? "Open"}</strong>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
+      </section>
+
+      <SiteFooter />
+    </main>
+  );
+}
+
+type MultiplayerLobbyPageProps = PageNavigationProps & {
+  initialLobby: LobbyState | null;
+  lobbyCode: string;
+  playerToken: string;
+  onBackToPlayMenu: () => void;
+};
+
+function MultiplayerLobbyPage({
+  initialLobby,
+  lobbyCode,
+  playerToken,
+  onBackToPlayMenu,
+  onNavigateHome,
+  onNavigateLearn,
+  onNavigateDonate,
+}: MultiplayerLobbyPageProps) {
+  const client = useMemo(
+    () => createApiClient({ apiBaseUrl: API_BASE_URL, sessionId: null }),
+    [],
+  );
+  const [lobby, setLobby] = useState<LobbyState | null>(initialLobby);
+  const [lobbyError, setLobbyError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadLobby = useCallback(async () => {
+    try {
+      const nextLobby = await client.fetchLobby(lobbyCode, playerToken);
+      setLobby(nextLobby);
+      setLobbyError(null);
+    } catch (error) {
+      setLobbyError(
+        error instanceof Error ? error.message : "Could not load lobby.",
+      );
+    }
+  }, [client, lobbyCode, playerToken]);
+
+  useEffect(() => {
+    void loadLobby();
+  }, [loadLobby]);
+
+  useEffect(() => {
+    let isClosed = false;
+    let reconnectTimeoutId: number | null = null;
+    let reconnectDelayMs = 500;
+    let socket: WebSocket | null = null;
+
+    function scheduleReconnect() {
+      if (isClosed || reconnectTimeoutId !== null) {
+        return;
+      }
+      reconnectTimeoutId = window.setTimeout(() => {
+        reconnectTimeoutId = null;
+        connect();
+      }, reconnectDelayMs);
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5000);
+    }
+
+    function connect() {
+      socket = client.openLobbyEvents(lobbyCode, playerToken);
+      if (socket === null) {
+        return;
+      }
+      socket.onopen = () => {
+        reconnectDelayMs = 500;
+        void loadLobby();
+      };
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as LobbyStateEvent;
+          if (message.type === "lobby_state") {
+            setLobby(message.lobby);
+            setLobbyError(null);
+          }
+        } catch {
+          setLobbyError("Received an invalid lobby update.");
+        }
+      };
+      socket.onclose = () => {
+        socket = null;
+        scheduleReconnect();
+      };
+      socket.onerror = () => {
+        socket?.close();
+      };
+    }
+
+    connect();
+
+    return () => {
+      isClosed = true;
+      if (reconnectTimeoutId !== null) {
+        window.clearTimeout(reconnectTimeoutId);
+      }
+      socket?.close();
+    };
+  }, [client, loadLobby, lobbyCode, playerToken]);
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void loadLobby();
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [loadLobby]);
+
+  async function runLobbyTask(task: () => Promise<LobbyState>) {
+    setIsLoading(true);
+    setLobbyError(null);
+    try {
+      setLobby(await task());
+    } catch (error) {
+      setLobbyError(
+        error instanceof Error ? error.message : "Lobby action failed.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const state = lobby?.game_state ?? null;
+  const currentTurnName = getTurnName(state);
+  const isYourTurn =
+    Boolean(lobby?.you?.player_name) && lobby?.you?.player_name === currentTurnName;
+  const bidActions = getBidActions(lobby?.legal_actions ?? []);
+  const playActions = getPlayCardActions(lobby?.legal_actions ?? []);
+  const canPassAuction =
+    lobby?.legal_actions.some((action) => action.type === "pass") ?? false;
+  const legalCardCodes = new Set(playActions.map((action) => action.card_code));
+  const youPlayer = state?.round.players.find(
+    (player) => player.name === lobby?.you?.player_name,
+  ) ?? null;
+  const orderedHand = youPlayer ? sortCardsHighToLow(youPlayer.cards) : [];
+  const visibleTrick = state
+    ? state.round.current_trick.plays.length > 0
+      ? state.round.current_trick
+      : state.round.current_trick
+    : null;
+  const completedTricks = state ? [...state.round.trick_history].reverse() : [];
+  const displayCapturedByPlayer = state
+    ? buildDisplayCapturedByPlayer(state.round)
+    : null;
+
+  async function handleCopyLobbyCode() {
+    try {
+      await navigator.clipboard?.writeText(lobby?.code ?? lobbyCode);
+    } catch {
+      setLobbyError("Could not copy the lobby code on this device.");
+    }
+  }
+
+  return (
+    <main className="public-shell lobby-shell">
+      <section className="hero-card">
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Lobby {lobby?.code ?? lobbyCode}</span>
+            <h1>{state ? "Smear" : "Waiting room"}</h1>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onBackToPlayMenu}>
+            Play
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateDonate}>
+            Donate
+          </button>
+        </div>
+      </section>
+
+      {lobbyError ? <div className="banner banner--error">{lobbyError}</div> : null}
+
+      {!lobby ? (
+        <section className="empty-state-card">
+          <span className="eyebrow">Lobby</span>
+          <h2>Loading lobby.</h2>
+        </section>
+      ) : lobby.status === "waiting" ? (
+        <section className="lobby-room-grid">
+          <div className="control-card lobby-panel">
+            <div className="card-header">
+              <div>
+                <span className="eyebrow">Code</span>
+                <h2 className="lobby-code">{lobby.code}</h2>
+              </div>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  void handleCopyLobbyCode();
+                }}
+              >
+                Copy
+              </button>
+            </div>
+            <div className="lobby-seat-list">
+              {lobby.seats.map((seat) => (
+                <div key={seat.index} className="lobby-seat-row">
+                  <span>Seat {seat.index + 1}</span>
+                  <strong>{seat.player_name ?? "Open"}</strong>
+                  {seat.is_host ? <em>Host</em> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <aside className="control-card lobby-panel">
+            <div>
+              <span className="eyebrow">Start</span>
+              <h2>{lobby.is_full ? "Ready to play" : "Waiting for seats"}</h2>
+              <p className="help-copy">
+                Share the lobby code with the other players. The host can start
+                once every seat is filled.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="cta-button"
+              disabled={!lobby.you?.is_host || !lobby.is_full || isLoading}
+              onClick={() => {
+                void runLobbyTask(() =>
+                  client.startLobby(lobby.code, playerToken),
+                );
+              }}
+            >
+              {isLoading ? "Starting" : "Start game"}
+            </button>
+          </aside>
+        </section>
+      ) : state ? (
+        <>
+          <section className="status-row">
+            <div className="status-pill">
+              <span>Round</span>
+              <strong>{state.match.round_number}</strong>
+            </div>
+            <div className="status-pill">
+              <span>Trump</span>
+              <strong>{state.round.trump ?? "-"}</strong>
+            </div>
+            <div className="status-pill status-pill--wide">
+              <span>Status</span>
+              <strong>{getRoundBanner(state.phase, currentTurnName)}</strong>
+            </div>
+            {state.match.scores.map((entry) => (
+              <div key={entry.name} className="status-pill">
+                <span>{entry.name}</span>
+                <strong>{entry.points}</strong>
+              </div>
+            ))}
+          </section>
+
+          <section className="felt-card">
+            <div className="card-header">
+              <div>
+                <span className="eyebrow">Table</span>
+                <h2>{state.phase === "auction" ? "Auction" : "Current trick"}</h2>
+              </div>
+              <div className="card-header__actions">
+                {state.round.is_terminal && !state.match.is_complete ? (
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      void runLobbyTask(() =>
+                        client.nextLobbyRound(lobby.code, playerToken),
+                      );
+                    }}
+                    disabled={isLoading}
+                  >
+                    Next round
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="seat-grid" data-seat-count={state.round.players.length}>
+              {state.round.players.map((player: Player) => {
+                const tablePlay = getVisiblePlayForPlayer(visibleTrick, player.name);
+                const displayCaptured = displayCapturedByPlayer?.[player.name] ?? {
+                  cards: player.captured_cards,
+                  count: player.captured_count,
+                };
+                const isCurrentPlayer = player.name === currentTurnName;
+
+                return (
+                  <article
+                    key={player.name}
+                    className={[
+                      "seat-card",
+                      isCurrentPlayer ? "seat-card--current" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    <div className="seat-card__header">
+                      <div>
+                        <h3>{player.name}</h3>
+                        <p>{player.name === lobby.you?.player_name ? "You" : "Human"}</p>
+                      </div>
+                      <span className="seat-card__meta">
+                        {player.card_count} cards
+                      </span>
+                    </div>
+
+                    <div className="seat-table">
+                      {tablePlay ? (
+                        <PlayingCard
+                          card={tablePlay.card}
+                          compact
+                          isTrump={
+                            !tablePlay.card.is_joker &&
+                            state.round.trump === tablePlay.card.suit
+                          }
+                        />
+                      ) : (
+                        <div className="seat-table__empty" />
+                      )}
+                    </div>
+
+                    <div className="seat-card__footer">
+                      <span>Captured {displayCaptured.count}</span>
+                      <span>
+                        {state.auction.highest_bidder_name === player.name &&
+                        state.auction.current_high_bid !== null
+                          ? `Bid ${state.auction.current_high_bid}`
+                          : " "}
+                      </span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
+            <div className="table-actions">
+              {state.phase === "auction" ? (
+                <>
+                  <div className="table-copy">
+                    <span>Current bid</span>
+                    <strong>{state.auction.current_high_bid ?? "-"}</strong>
+                  </div>
+                  {isYourTurn ? (
+                    <div className="button-row">
+                      {bidActions.map((action) => (
+                        <button
+                          key={action.amount}
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => {
+                            void runLobbyTask(() =>
+                              client.placeLobbyBid(
+                                lobby.code,
+                                playerToken,
+                                action.amount,
+                              ),
+                            );
+                          }}
+                        >
+                          Bid {action.amount}
+                        </button>
+                      ))}
+                      {canPassAuction ? (
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => {
+                            void runLobbyTask(() =>
+                              client.passLobbyAuction(lobby.code, playerToken),
+                            );
+                          }}
+                        >
+                          Pass
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="help-copy">Waiting for {currentTurnName} to act.</p>
+                  )}
+                </>
+              ) : (
+                <div className="table-copy">
+                  <span>Lead</span>
+                  <strong>{visibleTrick?.leader_name ?? "-"}</strong>
+                  <span>Winner</span>
+                  <strong>{visibleTrick?.winner_name ?? "-"}</strong>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="hand-card">
+            <div className="card-header">
+              <div>
+                <span className="eyebrow">Your hand</span>
+                <h2>{lobby.you?.player_name ?? "Player"}</h2>
+              </div>
+            </div>
+
+            {orderedHand.length > 0 ? (
+              <div className="hand-grid">
+                {orderedHand.map((card) => (
+                  <PlayingCard
+                    key={card.code}
+                    card={card}
+                    isTrump={!card.is_joker && state.round.trump === card.suit}
+                    disabled={
+                      state.phase !== "play" ||
+                      !isYourTurn ||
+                      isLoading ||
+                      !legalCardCodes.has(card.code)
+                    }
+                    onClick={
+                      state.phase === "play" &&
+                      isYourTurn &&
+                      legalCardCodes.has(card.code)
+                        ? () => {
+                            void runLobbyTask(() =>
+                              client.playLobbyCard(
+                                lobby.code,
+                                playerToken,
+                                card.code,
+                              ),
+                            );
+                          }
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="empty-inline">
+                {state.round.is_terminal
+                  ? "The round is complete."
+                  : "Your hand will appear after the game starts."}
+              </div>
+            )}
+          </section>
+
+          {completedTricks.length > 0 ? (
+            <section className="history-card">
+              <div className="card-header">
+                <div>
+                  <span className="eyebrow">Trick history</span>
+                  <h2>{completedTricks.length} completed</h2>
+                </div>
+              </div>
+              <div className="history-list">
+                {completedTricks.map((trick, trickIndex) => (
+                  <article
+                    key={`${trick.leader_name}-${trickIndex}-${trick.winner_name ?? "unknown"}`}
+                    className="history-item"
+                  >
+                    <div className="history-item__header">
+                      <span>Lead {trick.leader_name}</span>
+                      <strong>{trick.winner_name ?? "-"}</strong>
+                    </div>
+                    <div className="history-item__cards">
+                      {trick.plays.map((play, index) => (
+                        <div
+                          key={`${play.player_name}-${play.card.code}-${index}`}
+                          className="history-play"
+                        >
+                          <span>{play.player_name}</span>
+                          <PlayingCard card={play.card} compact />
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {lobby.score ? (
+            <section className="summary-card">
+              <div className="card-header">
+                <div>
+                  <span className="eyebrow">Scoring</span>
+                  <h2>{getScoreHeading(state.round.is_terminal)}</h2>
+                </div>
+                {state.match.is_complete ? (
+                  <div className="hero-badge">
+                    <span>Winner</span>
+                    <strong>{state.match.winner_names.join(", ")}</strong>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="award-grid">
+                <div className="award-card">
+                  <span>High</span>
+                  <strong>{lobby.score.awards.high.unit_name}</strong>
+                </div>
+                <div className="award-card">
+                  <span>Jack</span>
+                  <strong>
+                    {lobby.score.awards.jack.unit_name ??
+                      lobby.score.awards.jack.reason}
+                  </strong>
+                </div>
+                <div className="award-card">
+                  <span>Low</span>
+                  <strong>{lobby.score.awards.low.unit_name}</strong>
+                </div>
+                <div className="award-card">
+                  <span>Jokers</span>
+                  <strong>{getJokerAwardText(lobby.score.results)}</strong>
+                </div>
+                <div className="award-card">
+                  <span>Game</span>
+                  <strong>
+                    {lobby.score.awards.game.unit_name ??
+                      lobby.score.awards.game.tied_unit_names?.join(", ") ??
+                      "-"}
+                  </strong>
+                </div>
+              </div>
+            </section>
+          ) : null}
+        </>
+      ) : (
+        <section className="empty-state-card">
+          <span className="eyebrow">Lobby</span>
+          <h2>The game has not started yet.</h2>
+        </section>
+      )}
+
+      <SiteFooter />
+    </main>
+  );
+}
+
+function PlayPage(navigation: PlayPageProps) {
+  const [mode, setMode] = useState<PlayMode>("menu");
+  const [activeLobbyCode, setActiveLobbyCode] = useState<string | null>(null);
+  const [activePlayerToken, setActivePlayerToken] = useState<string | null>(null);
+  const [initialLobby, setInitialLobby] = useState<LobbyState | null>(null);
+
+  function handleOpenLobby(lobby: LobbyState) {
+    if (!lobby.you) {
+      return;
+    }
+    saveLobbyPlayerToken(lobby.code, lobby.you.player_token);
+    setActiveLobbyCode(lobby.code);
+    setActivePlayerToken(lobby.you.player_token);
+    setInitialLobby(lobby);
+    setMode("lobby");
+  }
+
+  function handleBackToPlayMenu() {
+    setMode("menu");
+  }
+
+  if (mode === "bots") {
+    return <PlayBotsPage {...navigation} />;
+  }
+
+  if (mode === "host") {
+    return (
+      <HostLobbyPage
+        {...navigation}
+        onBackToPlayMenu={handleBackToPlayMenu}
+        onOpenLobby={handleOpenLobby}
+      />
+    );
+  }
+
+  if (mode === "join") {
+    return (
+      <JoinLobbyPage
+        {...navigation}
+        onBackToPlayMenu={handleBackToPlayMenu}
+        onOpenLobby={handleOpenLobby}
+      />
+    );
+  }
+
+  if (mode === "lobby" && activeLobbyCode && activePlayerToken) {
+    return (
+      <MultiplayerLobbyPage
+        {...navigation}
+        initialLobby={initialLobby}
+        lobbyCode={activeLobbyCode}
+        playerToken={activePlayerToken}
+        onBackToPlayMenu={handleBackToPlayMenu}
+      />
+    );
+  }
+
+  return (
+    <PlayModeMenu
+      {...navigation}
+      onChooseBots={() => setMode("bots")}
+      onChooseHost={() => setMode("host")}
+      onChooseJoin={() => setMode("join")}
+    />
+  );
+}
+
 function LandingPage({
   onNavigatePlay,
   onNavigateLearn,
@@ -1335,8 +2536,9 @@ function LandingPage({
             </div>
           </div>
           <p>
-            Sit down against bots, or work through one position at a time and
-            compare your choice with the best bot.
+            Sit down with friends, play a fast table against bots, or work
+            through one position at a time and compare your choice with the best
+            bot.
           </p>
         </div>
         <div className="landing-card-fan" aria-hidden="true">
@@ -1357,8 +2559,8 @@ function LandingPage({
           className="landing-choice"
           onClick={onNavigatePlay}
         >
-          <span>Play with bots</span>
-          <strong>Start or continue a table against computer players.</strong>
+          <span>Play</span>
+          <strong>Choose bots, host a lobby, or enter a lobby code.</strong>
         </button>
         <button
           type="button"
@@ -1383,11 +2585,10 @@ function LandingPage({
       </section>
 
       <p className="landing-note">
-        Multiplayer with real people is in development, so the only available
-        game mode right now is playing with bots. The best bot to play against
-        is the Optimal bot, which is designed to play like a human and has no
-        information about human hands. All bots except the omniscient bots have
-        the same information a human would have. Questions? Reach out at{" "}
+        The best bot to play against is the Optimal bot, which is designed to
+        play like a human and has no information about human hands. All bots
+        except the omniscient bots have the same information a human would have.
+        Questions? Reach out at{" "}
         <a href="mailto:support@play-smear.com">support@play-smear.com</a>.
       </p>
 
@@ -1470,7 +2671,7 @@ function DonationPage({
             className="ghost-button"
             onClick={onNavigatePlay}
           >
-            Play with bots
+            Play
           </button>
           <button
             type="button"
@@ -1614,15 +2815,22 @@ function LearnPage({
   const [selectedAction, setSelectedAction] = useState<LearnAction | null>(
     null,
   );
+  const [availableLearnBots, setAvailableLearnBots] = useState<ReadyBot[]>([]);
+  const [selectedLearnBotId, setSelectedLearnBotId] =
+    useState(DEFAULT_LEARN_BOT_ID);
   const [isLoadingChallenge, setIsLoadingChallenge] = useState(true);
   const [learnError, setLearnError] = useState<string | null>(null);
+  const [botLoadError, setBotLoadError] = useState<string | null>(null);
 
   const loadChallenge = useCallback(async () => {
     setIsLoadingChallenge(true);
     setLearnError(null);
     setSelectedAction(null);
     try {
-      const nextChallenge = await client.fetchLearnChallenge();
+      const nextChallenge = await client.fetchLearnChallenge(
+        undefined,
+        selectedLearnBotId,
+      );
       setChallenge(nextChallenge);
     } catch (error) {
       setLearnError(
@@ -1633,6 +2841,41 @@ function LearnPage({
     } finally {
       setIsLoadingChallenge(false);
     }
+  }, [client, selectedLearnBotId]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadBots() {
+      setBotLoadError(null);
+      try {
+        const response = await client.fetchBots();
+        if (!isActive) {
+          return;
+        }
+        setAvailableLearnBots(response.bots);
+        if (response.bots.length > 0) {
+          setSelectedLearnBotId((currentBotId) =>
+            response.bots.some((bot) => bot.id === currentBotId)
+              ? currentBotId
+              : response.bots[0].id,
+          );
+        }
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+        setBotLoadError(
+          error instanceof Error ? error.message : "Could not load bots.",
+        );
+      }
+    }
+
+    void loadBots();
+
+    return () => {
+      isActive = false;
+    };
   }, [client]);
 
   useEffect(() => {
@@ -1649,6 +2892,18 @@ function LearnPage({
   const selectedMatchesBest =
     selectedKey !== null && bestKey !== null && selectedKey === bestKey;
   const currentTrick = challenge?.state.round.current_trick ?? null;
+  const learnBotOptions =
+    availableLearnBots.length > 0
+      ? availableLearnBots
+      : [
+          {
+            id: DEFAULT_LEARN_BOT_ID,
+            label: challenge?.best_bot_label ?? "Optimal Bot",
+            description: "Adaptive hidden-information minimax.",
+          },
+        ];
+  const selectedLearnBot =
+    learnBotOptions.find((bot) => bot.id === selectedLearnBotId) ?? null;
 
   return (
     <main className="public-shell learn-shell">
@@ -1673,7 +2928,7 @@ function LearnPage({
             className="ghost-button"
             onClick={onNavigatePlay}
           >
-            Play with bots
+            Play
           </button>
           <button
             type="button"
@@ -1820,6 +3075,31 @@ function LearnPage({
             <h2>Your options</h2>
           </div>
 
+          <label className="field learn-bot-field">
+            <span>Learning from</span>
+            <select
+              value={selectedLearnBotId}
+              onChange={(event) => {
+                setSelectedLearnBotId(event.target.value);
+              }}
+              disabled={isLoadingChallenge && availableLearnBots.length === 0}
+            >
+              {learnBotOptions.map((bot) => (
+                <option key={bot.id} value={bot.id}>
+                  {bot.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {selectedLearnBot ? (
+            <p className="learn-bot-detail">{selectedLearnBot.description}</p>
+          ) : null}
+
+          {botLoadError ? (
+            <div className="empty-inline">{botLoadError}</div>
+          ) : null}
+
           {challenge ? (
             <div className="learn-option-grid">
               {challenge.options.map((option) => {
@@ -1883,6 +3163,9 @@ function LearnPage({
                 {challenge.best_bot_label} would choose{" "}
                 <strong>{challenge.best_action.label}</strong>.
               </p>
+              <p className="learn-result__explanation">
+                {challenge.best_action_explanation}
+              </p>
               <button
                 type="button"
                 className="cta-button"
@@ -1926,7 +3209,7 @@ export default function App() {
   };
 
   if (view === "play") {
-    return <PlayBotsPage {...navigation} />;
+    return <PlayPage {...navigation} />;
   }
 
   if (view === "learn") {

@@ -10,6 +10,7 @@ export type Player = {
   bot_id: string | null;
   bot_label: string | null;
   cards: Card[];
+  card_count: number;
   captured_cards: Card[];
   captured_count: number;
 };
@@ -120,6 +121,7 @@ export type LearnChallenge = {
   best_bot_id: string;
   best_bot_label: string;
   best_action: LearnAction;
+  best_action_explanation: string;
 };
 
 export type ScoreBreakdown = {
@@ -194,4 +196,31 @@ export type BotProgress = {
   completed_units: number | null;
   total_units: number | null;
   percent_complete: number | null;
+};
+
+export type LobbySeat = {
+  index: number;
+  player_name: string | null;
+  is_occupied: boolean;
+  is_host: boolean;
+};
+
+export type LobbyPlayerIdentity = {
+  player_token: string;
+  player_name: string;
+  seat_index: number;
+  is_host: boolean;
+};
+
+export type LobbyState = {
+  code: string;
+  status: "waiting" | "active";
+  num_players: number;
+  seats: LobbySeat[];
+  teams: number[][] | null;
+  is_full: boolean;
+  you: LobbyPlayerIdentity | null;
+  game_state: GameState | null;
+  legal_actions: LegalAction[];
+  score: Score | null;
 };

@@ -23,15 +23,24 @@ def serialize_card(card: Card) -> dict:
     }
 
 
-def serialize_player(player: Player, session: GameSession) -> dict:
+def serialize_player(
+    player: Player,
+    session: GameSession,
+    *,
+    viewer_name: str | None = None,
+    reveal_hand: bool = True,
+) -> dict:
     captured_cards = sort_cards(player.captured_cards)
     bot_id = session.player_bot_ids.get(player.name)
     bot_label = get_ready_bot_spec(bot_id).label if bot_id is not None else None
+    hand_cards = sort_cards(player.cards)
+    visible_hand_cards = hand_cards if reveal_hand or player.name == viewer_name else []
     return {
         "name": player.name,
         "bot_id": bot_id,
         "bot_label": bot_label,
-        "cards": [serialize_card(card) for card in sort_cards(player.cards)],
+        "cards": [serialize_card(card) for card in visible_hand_cards],
+        "card_count": len(hand_cards),
         "captured_cards": [serialize_card(card) for card in captured_cards],
         "captured_count": len(captured_cards),
     }
@@ -73,16 +82,32 @@ def serialize_team(team: Team) -> dict:
     }
 
 
-def serialize_round_state(session: GameSession) -> dict:
+def serialize_round_state(
+    session: GameSession,
+    *,
+    viewer_name: str | None = None,
+    reveal_hands: bool = True,
+    reveal_hidden_cards: bool = True,
+) -> dict:
     round_state = session.game.round_state
     hidden_cards = sort_cards(round_state.hidden_cards)
     return {
-        "players": [serialize_player(player, session) for player in round_state.players],
+        "players": [
+            serialize_player(
+                player,
+                session,
+                viewer_name=viewer_name,
+                reveal_hand=reveal_hands,
+            )
+            for player in round_state.players
+        ],
         "current_player_name": round_state.current_player.name,
         "trump": round_state.trump,
         "current_trick": serialize_trick(round_state.current_trick),
         "hidden_cards_count": len(hidden_cards),
-        "hidden_cards": [serialize_card(card) for card in hidden_cards],
+        "hidden_cards": [
+            serialize_card(card) for card in hidden_cards
+        ] if reveal_hidden_cards else [],
         "trick_history": [
             serialize_trick(trick) for trick in round_state.trick_history
         ],
@@ -138,6 +163,27 @@ def serialize_game(session: GameSession) -> dict:
         "auction": serialize_auction(session),
         "match": serialize_match(session),
         "round": serialize_round_state(session),
+    }
+
+
+def serialize_game_for_player(
+    session: GameSession,
+    viewer_name: str,
+) -> dict:
+    game = session.game
+    reveal_hidden_cards = session.phase in {"round_complete", "match_complete"}
+    return {
+        "num_players": game.num_players,
+        "low": game.low,
+        "phase": session.phase,
+        "auction": serialize_auction(session),
+        "match": serialize_match(session),
+        "round": serialize_round_state(
+            session,
+            viewer_name=viewer_name,
+            reveal_hands=False,
+            reveal_hidden_cards=reveal_hidden_cards,
+        ),
     }
 
 

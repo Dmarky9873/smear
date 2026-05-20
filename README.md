@@ -186,7 +186,11 @@ Useful endpoints:
 - `GET /game/score`
 - `POST /donations/checkout-session` creates a Stripe Checkout Session for a one-time site donation.
 - `WS /game/ws?session_id=...` streams `game_state` messages for the session whenever the game changes.
-- `GET /learn/challenge` returns a random practice position, legal learner options, and the optimal bot action to reveal after the learner chooses.
+- `POST /lobbies` creates a multiplayer lobby with a shareable code and host player token.
+- `POST /lobbies/{code}/join` adds a player to an open lobby seat.
+- `POST /lobbies/{code}/start` starts a full lobby as a shared human-controlled match.
+- `WS /lobbies/{code}/ws?player_token=...` streams player-scoped lobby and game updates.
+- `GET /learn/challenge?bot_id=optimal-bot` returns a filtered practice position, legal learner options, the selected bot action, and an explanation to reveal after the learner chooses.
 
 Every stateful endpoint also accepts an `X-Smear-Session-Id` header. The browser apps generate and persist that header automatically so each browser gets its own isolated game.
 

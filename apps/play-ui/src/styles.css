@@ -418,6 +418,84 @@ textarea:disabled {
   font-weight: 700;
 }
 
+.lobby-shell {
+  display: grid;
+  gap: 20px;
+}
+
+.lobby-setup-grid,
+.lobby-room-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.lobby-panel {
+  display: grid;
+  gap: 20px;
+}
+
+.lobby-code {
+  font-size: clamp(2rem, 9vw, 4.25rem);
+  line-height: 0.95;
+  letter-spacing: 0.08em;
+}
+
+.lobby-seat-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lobby-seat-button,
+.lobby-seat-row {
+  min-height: 64px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 12px 14px;
+}
+
+.lobby-seat-button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.lobby-seat-button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--button-hover);
+}
+
+.lobby-seat-button span,
+.lobby-seat-row span {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.lobby-seat-button strong,
+.lobby-seat-row strong {
+  overflow-wrap: anywhere;
+}
+
+.lobby-seat-row {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.lobby-seat-row em {
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
 .donation-shell {
   display: grid;
   gap: 20px;
@@ -588,6 +666,13 @@ textarea:disabled {
   top: 18px;
 }
 
+.learn-bot-detail {
+  margin: -8px 0 0;
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
 .learn-option-grid {
   display: grid;
   gap: 12px;
@@ -641,6 +726,11 @@ textarea:disabled {
 
 .learn-result p {
   margin: 0;
+}
+
+.learn-result__explanation {
+  color: var(--text-dim);
+  line-height: 1.5;
 }
 
 .experience-grid {
@@ -988,6 +1078,10 @@ textarea:disabled {
   padding: 22px;
 }
 
+.mobile-completion-actions {
+  display: none;
+}
+
 .progress-card__header,
 .result-card__header,
 .seat-card__header,
@@ -1316,8 +1410,13 @@ textarea:disabled {
   }
 
   .public-shell--mobile-game > .hero-card,
+  .public-shell--mobile-game > .site-footer,
   .public-shell--mobile-game .control-card,
   .public-shell--mobile-game .history-card {
+    display: none;
+  }
+
+  .public-shell--mobile-game .summary-card {
     display: none;
   }
 
@@ -1686,13 +1785,92 @@ textarea:disabled {
     font-size: 0.82rem;
     line-height: 1.2;
   }
+
+  .public-shell--mobile-game.public-shell--round-complete .game-stage,
+  .public-shell--mobile-game.public-shell--round-complete
+    .game-stage:fullscreen,
+  .public-shell--mobile-game.public-shell--round-complete
+    .game-stage.game-stage--fullscreen {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .progress-slot,
+  .public-shell--mobile-game.public-shell--round-complete .felt-card,
+  .public-shell--mobile-game.public-shell--round-complete .hand-card {
+    display: none;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .status-row {
+    grid-row: 2;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .summary-card {
+    grid-row: 3;
+    min-height: 0;
+    display: block;
+    overflow-y: auto;
+    padding: 14px;
+    border-radius: 8px;
+    box-shadow: none;
+    overscroll-behavior: contain;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .summary-card h2 {
+    font-size: 1.2rem;
+    line-height: 1.15;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .award-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .award-card,
+  .public-shell--mobile-game.public-shell--round-complete .result-card {
+    padding: 10px;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .result-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete .result-card p {
+    margin: 6px 0 0;
+    font-size: 0.86rem;
+    line-height: 1.25;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete
+    .mobile-completion-actions {
+    grid-row: 4;
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .public-shell--mobile-game.public-shell--round-complete
+    .mobile-completion-actions
+    .cta-button {
+    min-height: 44px;
+    padding: 10px 14px;
+  }
 }
 
 @media (max-width: 1080px) {
   .experience-grid,
   .learn-layout,
   .landing-hero,
-  .donation-layout {
+  .donation-layout,
+  .lobby-setup-grid,
+  .lobby-room-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1792,7 +1970,8 @@ textarea:disabled {
   .learn-actions,
   .learn-position,
   .donation-panel,
-  .donation-summary {
+  .donation-summary,
+  .lobby-panel {
     padding: 18px;
     border-radius: 8px;
   }
@@ -1838,7 +2017,9 @@ textarea:disabled {
 
   .landing-choice,
   .learn-option,
-  .donation-amount-button {
+  .donation-amount-button,
+  .lobby-seat-button,
+  .lobby-seat-row {
     min-height: 58px;
   }
 

@@ -3,6 +3,7 @@ import type {
   GameState,
   LegalActionsResponse,
   LearnChallenge,
+  LobbyState,
   ReadyBotListResponse,
   Score,
 } from "./types";
@@ -22,6 +23,18 @@ export type NewGamePayload = {
   auto_run_bots?: boolean;
 };
 
+export type CreateLobbyPayload = {
+  host_name: string;
+  num_players: number;
+  teams: number[][] | null;
+  host_seat_index?: number;
+};
+
+export type JoinLobbyPayload = {
+  player_name: string;
+  seat_index?: number | null;
+};
+
 export type DonationCheckoutPayload = {
   amount_cents: number;
 };
@@ -39,6 +52,12 @@ export type GameStateEvent = {
   type: "game_state";
   revision: number;
   state: GameState | null;
+};
+
+export type LobbyStateEvent = {
+  type: "lobby_state";
+  revision: number;
+  lobby: LobbyState;
 };
 
 export class ApiError extends Error {
@@ -76,6 +95,21 @@ function buildGameEventsUrl(
   if (sessionId) {
     url.searchParams.set("session_id", sessionId);
   }
+  return url.toString();
+}
+
+function buildLobbyEventsUrl(
+  apiBaseUrl: string,
+  lobbyCode: string,
+  playerToken: string,
+): string {
+  const url = new URL(apiBaseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/lobbies/${encodeURIComponent(
+    lobbyCode,
+  )}/ws`;
+  url.search = "";
+  url.searchParams.set("player_token", playerToken);
   return url.toString();
 }
 
@@ -154,6 +188,124 @@ export function createApiClient({
       });
     },
 
+    createLobby(payload: CreateLobbyPayload): Promise<LobbyState> {
+      return request<LobbyState>(apiBaseUrl, null, "/lobbies", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+
+    fetchLobby(
+      lobbyCode: string,
+      playerToken?: string | null,
+    ): Promise<LobbyState> {
+      const searchParams = new URLSearchParams();
+      if (playerToken) {
+        searchParams.set("player_token", playerToken);
+      }
+      const query = searchParams.toString();
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}${query ? `?${query}` : ""}`,
+      );
+    },
+
+    joinLobby(
+      lobbyCode: string,
+      payload: JoinLobbyPayload,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/join`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+    },
+
+    startLobby(lobbyCode: string, playerToken: string): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/start`,
+        {
+          method: "POST",
+          body: JSON.stringify({ player_token: playerToken }),
+        },
+      );
+    },
+
+    placeLobbyBid(
+      lobbyCode: string,
+      playerToken: string,
+      amount: number,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/auction/bid`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            player_token: playerToken,
+            amount,
+          }),
+        },
+      );
+    },
+
+    passLobbyAuction(
+      lobbyCode: string,
+      playerToken: string,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/auction/pass`,
+        {
+          method: "POST",
+          body: JSON.stringify({ player_token: playerToken }),
+        },
+      );
+    },
+
+    playLobbyCard(
+      lobbyCode: string,
+      playerToken: string,
+      cardCode: string,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/play`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            player_token: playerToken,
+            card_code: cardCode,
+          }),
+        },
+      );
+    },
+
+    nextLobbyRound(
+      lobbyCode: string,
+      playerToken: string,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/next-round`,
+        {
+          method: "POST",
+          body: JSON.stringify({ player_token: playerToken }),
+        },
+      );
+    },
+
     resetRound(options?: MutatingRequestOptions): Promise<GameState> {
       return request<GameState>(
         apiBaseUrl,
@@ -212,8 +364,19 @@ export function createApiClient({
       );
     },
 
-    fetchLearnChallenge(phase?: "auction" | "play"): Promise<LearnChallenge> {
-      const path = phase ? `/learn/challenge?phase=${phase}` : "/learn/challenge";
+    fetchLearnChallenge(
+      phase?: "auction" | "play",
+      botId?: string,
+    ): Promise<LearnChallenge> {
+      const searchParams = new URLSearchParams();
+      if (phase) {
+        searchParams.set("phase", phase);
+      }
+      if (botId) {
+        searchParams.set("bot_id", botId);
+      }
+      const query = searchParams.toString();
+      const path = query ? `/learn/challenge?${query}` : "/learn/challenge";
       return request<LearnChallenge>(apiBaseUrl, sessionId, path);
     },
 
@@ -278,6 +441,15 @@ export function createApiClient({
         return null;
       }
       return new WebSocket(buildGameEventsUrl(apiBaseUrl, sessionId));
+    },
+
+    openLobbyEvents(lobbyCode: string, playerToken: string): WebSocket | null {
+      if (typeof WebSocket === "undefined") {
+        return null;
+      }
+      return new WebSocket(
+        buildLobbyEventsUrl(apiBaseUrl, lobbyCode, playerToken),
+      );
     },
   };
 }

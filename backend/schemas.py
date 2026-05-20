@@ -17,6 +17,36 @@ class NewGameRequest(BaseModel):
     auto_run_bots: bool = True
 
 
+class CreateLobbyRequest(BaseModel):
+    host_name: str
+    num_players: int = Field(default=4, ge=3, le=8)
+    teams: list[list[int]] | None = None
+    host_seat_index: int = Field(default=0, ge=0, le=7)
+
+
+class JoinLobbyRequest(BaseModel):
+    player_name: str
+    seat_index: int | None = Field(default=None, ge=0, le=7)
+
+
+class StartLobbyRequest(BaseModel):
+    player_token: str
+
+
+class LobbyActionRequest(BaseModel):
+    player_token: str
+
+
+class LobbyBidRequest(BaseModel):
+    player_token: str
+    amount: int = Field(ge=1, le=6)
+
+
+class LobbyPlayCardRequest(BaseModel):
+    player_token: str
+    card_code: str
+
+
 class BidRequest(BaseModel):
     amount: int = Field(ge=1, le=6)
     auto_run_bots: bool = True
@@ -47,6 +77,7 @@ class PlayerResponse(BaseModel):
     bot_id: str | None = None
     bot_label: str | None = None
     cards: list[CardResponse]
+    card_count: int
     captured_cards: list[CardResponse]
     captured_count: int
 
@@ -176,6 +207,7 @@ class LearnChallengeResponse(BaseModel):
     best_bot_id: str
     best_bot_label: str
     best_action: LearnActionResponse
+    best_action_explanation: str
 
 
 class ScoreBreakdownResponse(BaseModel):
@@ -225,3 +257,36 @@ class RoundScoreResponse(BaseModel):
     bid_summary: BidSummaryResponse
     awards: dict[str, ScoreAwardResponse]
     results: list[ScoreResultResponse]
+
+
+class LobbySeatResponse(BaseModel):
+    index: int
+    player_name: str | None = None
+    is_occupied: bool
+    is_host: bool = False
+
+
+class LobbyPlayerIdentityResponse(BaseModel):
+    player_token: str
+    player_name: str
+    seat_index: int
+    is_host: bool
+
+
+class LobbyStateResponse(BaseModel):
+    code: str
+    status: Literal["waiting", "active"]
+    num_players: int
+    seats: list[LobbySeatResponse]
+    teams: list[list[int]] | None = None
+    is_full: bool
+    you: LobbyPlayerIdentityResponse | None = None
+    game_state: GameStateResponse | None = None
+    legal_actions: list[PlayCardActionResponse | BidActionResponse | PassActionResponse]
+    score: RoundScoreResponse | None = None
+
+
+class LobbyEventResponse(BaseModel):
+    type: Literal["lobby_state"]
+    revision: int
+    lobby: LobbyStateResponse

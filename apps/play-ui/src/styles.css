@@ -481,7 +481,7 @@ textarea:disabled {
 
 .lobby-seat-row {
   display: grid;
-  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto minmax(180px, auto);
+  grid-template-columns: minmax(72px, max-content) minmax(12rem, 1fr) auto;
   gap: 12px;
   align-items: center;
 }
@@ -489,6 +489,12 @@ textarea:disabled {
 .lobby-seat-row__body {
   display: grid;
   gap: 2px;
+  min-width: 0;
+}
+
+.lobby-seat-row__body strong {
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .lobby-seat-row__body small {
@@ -505,18 +511,25 @@ textarea:disabled {
 }
 
 .lobby-seat-controls {
+  grid-column: 2 / -1;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .lobby-seat-controls .ghost-button {
+  width: auto;
+  flex: 0 0 auto;
   min-height: 40px;
   padding: 8px 12px;
 }
 
 .lobby-seat-controls__select {
+  display: grid;
+  flex: 1 1 240px;
   grid-template-columns: auto minmax(120px, 1fr);
   gap: 8px;
   align-items: center;
+  max-width: 360px;
 }
 
 .lobby-seat-controls__select > span {

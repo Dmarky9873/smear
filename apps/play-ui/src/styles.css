@@ -481,9 +481,51 @@ textarea:disabled {
 
 .lobby-seat-row {
   display: grid;
-  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto minmax(180px, auto);
   gap: 12px;
   align-items: center;
+}
+
+.lobby-seat-row__body {
+  display: grid;
+  gap: 2px;
+}
+
+.lobby-seat-row__body small {
+  color: var(--text-muted);
+  font-weight: 800;
+}
+
+.lobby-seat-row__badges,
+.lobby-seat-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.lobby-seat-controls {
+  justify-content: flex-end;
+}
+
+.lobby-seat-controls .ghost-button {
+  min-height: 40px;
+  padding: 8px 12px;
+}
+
+.lobby-seat-controls__select {
+  grid-template-columns: auto minmax(120px, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.lobby-seat-controls__select > span {
+  font-size: 0.82rem;
+}
+
+.lobby-seat-controls__select select {
+  min-height: 40px;
+  padding: 6px 30px 6px 10px;
 }
 
 .lobby-seat-row em {
@@ -2021,6 +2063,20 @@ textarea:disabled {
   .lobby-seat-button,
   .lobby-seat-row {
     min-height: 58px;
+  }
+
+  .lobby-seat-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .lobby-seat-controls {
+    justify-content: stretch;
+  }
+
+  .lobby-seat-controls .ghost-button,
+  .lobby-seat-controls__select {
+    width: 100%;
   }
 
   .playing-card {

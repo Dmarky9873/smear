@@ -6,6 +6,11 @@ import string
 from threading import RLock
 import time
 
+try:
+    from .bots.registry import get_ready_bot_spec
+except ImportError:
+    from bots.registry import get_ready_bot_spec
+
 
 LOBBY_CODE_ALPHABET = string.ascii_uppercase + string.digits
 LOBBY_CODE_LENGTH = 5
@@ -25,11 +30,18 @@ class LobbySeat:
     index: int
     player_name: str | None = None
     player_token: str | None = None
+    bot_id: str | None = None
     is_host: bool = False
 
     @property
     def is_occupied(self) -> bool:
-        return self.player_name is not None and self.player_token is not None
+        return self.player_name is not None and (
+            self.player_token is not None or self.bot_id is not None
+        )
+
+    @property
+    def is_bot(self) -> bool:
+        return self.bot_id is not None
 
 
 @dataclass
@@ -72,6 +84,10 @@ class Lobby:
             None,
         )
 
+    @property
+    def player_bot_ids(self) -> list[str | None]:
+        return [seat.bot_id for seat in self.seats]
+
 
 def _normalize_lobby_code(code: str) -> str:
     normalized = code.strip().upper()
@@ -105,6 +121,14 @@ def _normalize_player_name(player_name: str) -> str:
         raise ValueError("player name is required")
     if len(normalized) > 32:
         raise ValueError("player names must be 32 characters or fewer")
+    return normalized
+
+
+def _normalize_bot_id(bot_id: str) -> str:
+    normalized = bot_id.strip()
+    if not normalized:
+        raise ValueError("bot id is required")
+    get_ready_bot_spec(normalized)
     return normalized
 
 
@@ -263,6 +287,79 @@ class LobbyStore:
             seat.player_token = player_token
             self._touch_locked(lobby, increment_revision=True)
             return lobby, player_token
+
+    def add_bot(
+        self,
+        *,
+        code: str,
+        player_token: str | None,
+        seat_index: int,
+        bot_id: str,
+        player_name: str | None = None,
+    ) -> Lobby:
+        lobby, _host_seat = self.require_host(code, player_token)
+        normalized_bot_id = _normalize_bot_id(bot_id)
+        normalized_seat_index = _normalize_seat_index(seat_index, lobby.num_players)
+        bot_spec = get_ready_bot_spec(normalized_bot_id)
+        explicit_player_name = player_name is not None and player_name.strip()
+        normalized_name = (
+            _normalize_player_name(player_name)
+            if explicit_player_name
+            else f"{bot_spec.label} {normalized_seat_index + 1}"
+        )
+
+        with self._lock:
+            if lobby.status != "waiting":
+                raise ValueError("Bots can only be changed before the lobby starts.")
+
+            seat = lobby.seats[normalized_seat_index]
+            if seat.is_occupied:
+                raise ValueError("That seat is already taken.")
+
+            occupied_names = {
+                candidate.player_name.lower()
+                for candidate in lobby.seats
+                if candidate.player_name is not None
+            }
+            if not explicit_player_name:
+                base_name = normalized_name
+                duplicate_index = 2
+                while normalized_name.lower() in occupied_names:
+                    normalized_name = f"{base_name} ({duplicate_index})"
+                    duplicate_index += 1
+
+            if normalized_name.lower() in occupied_names:
+                raise ValueError("That player name is already in this lobby.")
+
+            seat.player_name = normalized_name
+            seat.player_token = None
+            seat.bot_id = normalized_bot_id
+            self._touch_locked(lobby, increment_revision=True)
+            return lobby
+
+    def remove_bot(
+        self,
+        *,
+        code: str,
+        player_token: str | None,
+        seat_index: int,
+    ) -> Lobby:
+        lobby, _host_seat = self.require_host(code, player_token)
+        normalized_seat_index = _normalize_seat_index(seat_index, lobby.num_players)
+
+        with self._lock:
+            if lobby.status != "waiting":
+                raise ValueError("Bots can only be changed before the lobby starts.")
+
+            seat = lobby.seats[normalized_seat_index]
+            if not seat.is_bot:
+                raise ValueError("That seat is not controlled by a bot.")
+
+            seat.player_name = None
+            seat.player_token = None
+            seat.bot_id = None
+            self._touch_locked(lobby, increment_revision=True)
+            return lobby
 
     def require_player(self, code: str, player_token: str | None) -> tuple[Lobby, LobbySeat]:
         if not player_token:

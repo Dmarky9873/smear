@@ -25,6 +25,7 @@ try:
     )
     from .realtime import game_events, lobby_events
     from .schemas import (
+        AddLobbyBotRequest,
         BidRequest,
         BotProgressResponse,
         CreateLobbyRequest,
@@ -42,6 +43,7 @@ try:
         NewGameRequest,
         PlayCardRequest,
         ReadyBotListResponse,
+        RemoveLobbyBotRequest,
         RoundScoreResponse,
         StartLobbyRequest,
     )
@@ -51,7 +53,7 @@ try:
         serialize_score_details,
     )
     from .store import GameNotInitializedError, RoundNotTerminalError, game_store
-    from .bots.registry import list_ready_bot_metadata
+    from .bots.registry import get_ready_bot_spec, list_ready_bot_metadata
     from .learn import generate_learn_challenge
 except ImportError:
     from donations import (
@@ -66,6 +68,7 @@ except ImportError:
     )
     from realtime import game_events, lobby_events
     from schemas import (
+        AddLobbyBotRequest,
         BidRequest,
         BotProgressResponse,
         CreateLobbyRequest,
@@ -83,6 +86,7 @@ except ImportError:
         NewGameRequest,
         PlayCardRequest,
         ReadyBotListResponse,
+        RemoveLobbyBotRequest,
         RoundScoreResponse,
         StartLobbyRequest,
     )
@@ -92,7 +96,7 @@ except ImportError:
         serialize_score_details,
     )
     from store import GameNotInitializedError, RoundNotTerminalError, game_store
-    from bots.registry import list_ready_bot_metadata
+    from bots.registry import get_ready_bot_spec, list_ready_bot_metadata
     from learn import generate_learn_challenge
 
 
@@ -153,6 +157,22 @@ def _is_lobby_player_turn(session, player_name: str) -> bool:
     return False
 
 
+def _serialize_lobby_seat(seat) -> dict:
+    bot_label = None
+    if seat.bot_id is not None:
+        bot_label = get_ready_bot_spec(seat.bot_id).label
+
+    return {
+        "index": seat.index,
+        "player_name": seat.player_name,
+        "is_occupied": seat.is_occupied,
+        "is_bot": seat.is_bot,
+        "bot_id": seat.bot_id,
+        "bot_label": bot_label,
+        "is_host": seat.is_host,
+    }
+
+
 def _serialize_lobby(lobby, player_token: str | None = None) -> dict:
     seat = lobby.find_seat_by_token(player_token) if player_token else None
     game_state = None
@@ -175,15 +195,7 @@ def _serialize_lobby(lobby, player_token: str | None = None) -> dict:
         "code": lobby.code,
         "status": lobby.status,
         "num_players": lobby.num_players,
-        "seats": [
-            {
-                "index": seat_item.index,
-                "player_name": seat_item.player_name,
-                "is_occupied": seat_item.is_occupied,
-                "is_host": seat_item.is_host,
-            }
-            for seat_item in lobby.seats
-        ],
+        "seats": [_serialize_lobby_seat(seat_item) for seat_item in lobby.seats],
         "teams": lobby.teams,
         "is_full": lobby.is_full,
         "you": (
@@ -345,6 +357,51 @@ async def join_lobby(lobby_code: str, payload: JoinLobbyRequest) -> dict:
     return response
 
 
+@router.post("/lobbies/{lobby_code}/bots", response_model=LobbyStateResponse)
+async def add_lobby_bot(lobby_code: str, payload: AddLobbyBotRequest) -> dict:
+    try:
+        lobby = lobby_store.add_bot(
+            code=lobby_code,
+            player_token=payload.player_token,
+            seat_index=payload.seat_index,
+            bot_id=payload.bot_id,
+            player_name=payload.player_name,
+        )
+    except LobbyNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except LobbyPermissionError as exc:
+        raise _forbidden(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    response = _serialize_lobby(lobby, payload.player_token)
+    await _broadcast_lobby_state(lobby.code)
+    return response
+
+
+@router.post("/lobbies/{lobby_code}/bots/remove", response_model=LobbyStateResponse)
+async def remove_lobby_bot(
+    lobby_code: str,
+    payload: RemoveLobbyBotRequest,
+) -> dict:
+    try:
+        lobby = lobby_store.remove_bot(
+            code=lobby_code,
+            player_token=payload.player_token,
+            seat_index=payload.seat_index,
+        )
+    except LobbyNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except LobbyPermissionError as exc:
+        raise _forbidden(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    response = _serialize_lobby(lobby, payload.player_token)
+    await _broadcast_lobby_state(lobby.code)
+    return response
+
+
 @router.post("/lobbies/{lobby_code}/start", response_model=LobbyStateResponse)
 async def start_lobby(lobby_code: str, payload: StartLobbyRequest) -> dict:
     try:
@@ -357,8 +414,8 @@ async def start_lobby(lobby_code: str, payload: StartLobbyRequest) -> dict:
                 num_players=lobby.num_players,
                 player_names=lobby.player_names,
                 teams=lobby.named_teams,
-                player_bots=[None for _ in range(lobby.num_players)],
-                auto_run_bots=False,
+                player_bots=lobby.player_bot_ids,
+                auto_run_bots=True,
             )
             lobby = lobby_store.mark_started(lobby.code)
     except LobbyNotFoundError as exc:
@@ -387,7 +444,7 @@ async def place_lobby_bid(lobby_code: str, payload: LobbyBidRequest) -> dict:
         game_store.place_bid(
             lobby.session_id,
             payload.amount,
-            auto_run_bots=False,
+            auto_run_bots=True,
         )
         lobby = lobby_store.touch_lobby(lobby.code)
     except GameNotInitializedError as exc:
@@ -414,7 +471,7 @@ async def pass_lobby_auction(
 
     try:
         _ensure_lobby_player_turn(lobby, seat)
-        game_store.pass_auction(lobby.session_id, auto_run_bots=False)
+        game_store.pass_auction(lobby.session_id, auto_run_bots=True)
         lobby = lobby_store.touch_lobby(lobby.code)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc
@@ -437,7 +494,7 @@ async def play_lobby_card(lobby_code: str, payload: LobbyPlayCardRequest) -> dic
         game_store.play_card(
             lobby.session_id,
             payload.card_code,
-            auto_run_bots=False,
+            auto_run_bots=True,
         )
         lobby = lobby_store.touch_lobby(lobby.code)
     except GameNotInitializedError as exc:
@@ -457,7 +514,7 @@ async def next_lobby_round(lobby_code: str, payload: LobbyActionRequest) -> dict
         raise _bad_request("This lobby has not started.")
 
     try:
-        game_store.next_round(lobby.session_id, auto_run_bots=False)
+        game_store.next_round(lobby.session_id, auto_run_bots=True)
         lobby = lobby_store.touch_lobby(lobby.code)
     except GameNotInitializedError as exc:
         raise _not_found(str(exc)) from exc

@@ -35,6 +35,18 @@ export type JoinLobbyPayload = {
   seat_index?: number | null;
 };
 
+export type AddLobbyBotPayload = {
+  player_token: string;
+  seat_index: number;
+  bot_id: string;
+  player_name?: string | null;
+};
+
+export type RemoveLobbyBotPayload = {
+  player_token: string;
+  seat_index: number;
+};
+
 export type DonationCheckoutPayload = {
   amount_cents: number;
 };
@@ -219,6 +231,36 @@ export function createApiClient({
         apiBaseUrl,
         null,
         `/lobbies/${encodeURIComponent(lobbyCode)}/join`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+    },
+
+    addLobbyBot(
+      lobbyCode: string,
+      payload: AddLobbyBotPayload,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/bots`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+    },
+
+    removeLobbyBot(
+      lobbyCode: string,
+      payload: RemoveLobbyBotPayload,
+    ): Promise<LobbyState> {
+      return request<LobbyState>(
+        apiBaseUrl,
+        null,
+        `/lobbies/${encodeURIComponent(lobbyCode)}/bots/remove`,
         {
           method: "POST",
           body: JSON.stringify(payload),

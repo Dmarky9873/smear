@@ -202,6 +202,9 @@ export type LobbySeat = {
   index: number;
   player_name: string | null;
   is_occupied: boolean;
+  is_bot: boolean;
+  bot_id: string | null;
+  bot_label: string | null;
   is_host: boolean;
 };
 

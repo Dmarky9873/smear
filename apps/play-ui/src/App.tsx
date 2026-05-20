@@ -1896,7 +1896,10 @@ function JoinLobbyPage({
                     }}
                   >
                     <span>Seat {seat.index + 1}</span>
-                    <strong>{seat.player_name ?? "Open"}</strong>
+                    <strong>
+                      {seat.player_name ?? "Open"}
+                      {seat.bot_label ? ` (${seat.bot_label})` : ""}
+                    </strong>
                   </button>
                 ))}
               </div>
@@ -1933,6 +1936,8 @@ function MultiplayerLobbyPage({
   const [lobby, setLobby] = useState<LobbyState | null>(initialLobby);
   const [lobbyError, setLobbyError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [availableBots, setAvailableBots] = useState<ReadyBot[]>([]);
+  const [botSelections, setBotSelections] = useState<Record<number, string>>({});
 
   const loadLobby = useCallback(async () => {
     try {
@@ -1949,6 +1954,29 @@ function MultiplayerLobbyPage({
   useEffect(() => {
     void loadLobby();
   }, [loadLobby]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    void client
+      .fetchBots()
+      .then((payload) => {
+        if (isActive) {
+          setAvailableBots(payload.bots);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setLobbyError(
+            error instanceof Error ? error.message : "Could not load bots.",
+          );
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [client]);
 
   useEffect(() => {
     let isClosed = false;
@@ -2056,6 +2084,14 @@ function MultiplayerLobbyPage({
   const displayCapturedByPlayer = state
     ? buildDisplayCapturedByPlayer(state.round)
     : null;
+  const defaultLobbyBotId =
+    availableBots.find((bot) => bot.id === "greedy")?.id ??
+    availableBots[0]?.id ??
+    "";
+
+  function getSelectedBotId(seatIndex: number): string {
+    return botSelections[seatIndex] ?? defaultLobbyBotId;
+  }
 
   async function handleCopyLobbyCode() {
     try {
@@ -2063,6 +2099,46 @@ function MultiplayerLobbyPage({
     } catch {
       setLobbyError("Could not copy the lobby code on this device.");
     }
+  }
+
+  function handleBotSelectionChange(seatIndex: number, botId: string) {
+    setBotSelections((current) => ({
+      ...current,
+      [seatIndex]: botId,
+    }));
+  }
+
+  async function handleAddBotToSeat(seatIndex: number) {
+    if (!lobby) {
+      return;
+    }
+
+    const botId = getSelectedBotId(seatIndex);
+    if (!botId) {
+      setLobbyError("No bot is available to add.");
+      return;
+    }
+
+    await runLobbyTask(() =>
+      client.addLobbyBot(lobby.code, {
+        player_token: playerToken,
+        seat_index: seatIndex,
+        bot_id: botId,
+      }),
+    );
+  }
+
+  async function handleRemoveBotFromSeat(seatIndex: number) {
+    if (!lobby) {
+      return;
+    }
+
+    await runLobbyTask(() =>
+      client.removeLobbyBot(lobby.code, {
+        player_token: playerToken,
+        seat_index: seatIndex,
+      }),
+    );
   }
 
   return (
@@ -2120,8 +2196,66 @@ function MultiplayerLobbyPage({
               {lobby.seats.map((seat) => (
                 <div key={seat.index} className="lobby-seat-row">
                   <span>Seat {seat.index + 1}</span>
-                  <strong>{seat.player_name ?? "Open"}</strong>
-                  {seat.is_host ? <em>Host</em> : null}
+                  <div className="lobby-seat-row__body">
+                    <strong>{seat.player_name ?? "Open"}</strong>
+                    {seat.bot_label ? <small>{seat.bot_label}</small> : null}
+                  </div>
+                  <div className="lobby-seat-row__badges">
+                    {seat.is_host ? <em>Host</em> : null}
+                    {seat.is_bot ? <em>Bot</em> : null}
+                  </div>
+                  {lobby.you?.is_host ? (
+                    <div className="lobby-seat-controls">
+                      {!seat.is_occupied ? (
+                        <>
+                          <label className="field lobby-seat-controls__select">
+                            <span>Bot</span>
+                            <select
+                              value={getSelectedBotId(seat.index)}
+                              onChange={(event) =>
+                                handleBotSelectionChange(
+                                  seat.index,
+                                  event.target.value,
+                                )
+                              }
+                              disabled={availableBots.length === 0 || isLoading}
+                            >
+                              {availableBots.map((bot) => (
+                                <option key={bot.id} value={bot.id}>
+                                  {bot.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            disabled={
+                              isLoading ||
+                              availableBots.length === 0 ||
+                              !getSelectedBotId(seat.index)
+                            }
+                            onClick={() => {
+                              void handleAddBotToSeat(seat.index);
+                            }}
+                          >
+                            Add bot
+                          </button>
+                        </>
+                      ) : seat.is_bot ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={isLoading}
+                          onClick={() => {
+                            void handleRemoveBotFromSeat(seat.index);
+                          }}
+                        >
+                          Remove bot
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -2219,7 +2353,11 @@ function MultiplayerLobbyPage({
                     <div className="seat-card__header">
                       <div>
                         <h3>{player.name}</h3>
-                        <p>{player.name === lobby.you?.player_name ? "You" : "Human"}</p>
+                        <p>
+                          {player.name === lobby.you?.player_name
+                            ? "You"
+                            : (player.bot_label ?? "Human")}
+                        </p>
                       </div>
                       <span className="seat-card__meta">
                         {player.card_count} cards

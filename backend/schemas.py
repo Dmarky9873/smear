@@ -29,6 +29,18 @@ class JoinLobbyRequest(BaseModel):
     seat_index: int | None = Field(default=None, ge=0, le=7)
 
 
+class AddLobbyBotRequest(BaseModel):
+    player_token: str
+    seat_index: int = Field(ge=0, le=7)
+    bot_id: str
+    player_name: str | None = None
+
+
+class RemoveLobbyBotRequest(BaseModel):
+    player_token: str
+    seat_index: int = Field(ge=0, le=7)
+
+
 class StartLobbyRequest(BaseModel):
     player_token: str
 
@@ -263,6 +275,9 @@ class LobbySeatResponse(BaseModel):
     index: int
     player_name: str | None = None
     is_occupied: bool
+    is_bot: bool = False
+    bot_id: str | None = None
+    bot_label: str | None = None
     is_host: bool = False
 
 

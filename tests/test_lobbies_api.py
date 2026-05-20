@@ -8,6 +8,7 @@ from backend.lobbies import LobbyStore
 from backend.persistence import SQLiteSessionRepository
 from backend.realtime import LobbyEventHub
 from backend.schemas import (
+    AddLobbyBotRequest,
     CreateLobbyRequest,
     JoinLobbyRequest,
     LobbyBidRequest,
@@ -95,6 +96,56 @@ class LobbyApiTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(exc.exception.status_code, 403)
+
+    async def test_host_can_fill_lobby_seat_with_bot(self):
+        host_lobby = await api_module.create_lobby(
+            CreateLobbyRequest(
+                host_name="A",
+                num_players=3,
+                teams=None,
+            )
+        )
+        code = host_lobby["code"]
+        host_token = host_lobby["you"]["player_token"]
+
+        player_c = await api_module.join_lobby(
+            code,
+            JoinLobbyRequest(player_name="C", seat_index=2),
+        )
+        with_bot = await api_module.add_lobby_bot(
+            code,
+            AddLobbyBotRequest(
+                player_token=host_token,
+                seat_index=1,
+                bot_id="stupid",
+                player_name="Bot",
+            ),
+        )
+
+        self.assertTrue(with_bot["is_full"])
+        self.assertTrue(with_bot["seats"][1]["is_bot"])
+        self.assertEqual(with_bot["seats"][1]["bot_id"], "stupid")
+
+        started = await api_module.start_lobby(
+            code,
+            StartLobbyRequest(player_token=host_token),
+        )
+        self.assertEqual(started["status"], "active")
+        self.assertEqual(
+            started["game_state"]["round"]["players"][1]["bot_id"],
+            "stupid",
+        )
+
+        after_host_bid = await api_module.place_lobby_bid(
+            code,
+            LobbyBidRequest(player_token=host_token, amount=1),
+        )
+
+        self.assertEqual(
+            after_host_bid["game_state"]["auction"]["current_bidder_name"],
+            player_c["you"]["player_name"],
+        )
+        self.assertEqual(after_host_bid["legal_actions"], [])
 
 
 if __name__ == "__main__":

@@ -287,7 +287,7 @@ function BrandLogo({ className = "" }: BrandLogoProps) {
   return (
     <img
       className={["brand-logo", className].filter(Boolean).join(" ")}
-      src="/logo.png"
+      src="/logo.svg"
       alt="Play Smear logo"
     />
   );

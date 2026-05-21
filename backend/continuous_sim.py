@@ -807,6 +807,51 @@ def _games_per_hour(
     return (completed_games / elapsed_seconds) * 3600.0
 
 
+def _estimated_remaining_seconds(
+    *,
+    completed_games: int,
+    max_games: int | None,
+    elapsed_seconds: float,
+) -> float | None:
+    if max_games is None:
+        return None
+    if max_games <= completed_games:
+        return 0.0
+    if completed_games <= 0 or elapsed_seconds <= 0:
+        return None
+    average_seconds_per_game = elapsed_seconds / completed_games
+    return max(0.0, (max_games - completed_games) * average_seconds_per_game)
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes > 0:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
+def _format_remaining_time(
+    *,
+    completed_games: int,
+    max_games: int | None,
+    elapsed_seconds: float,
+) -> str | None:
+    if max_games is None:
+        return None
+    remaining_seconds = _estimated_remaining_seconds(
+        completed_games=completed_games,
+        max_games=max_games,
+        elapsed_seconds=elapsed_seconds,
+    )
+    if remaining_seconds is None:
+        return "estimating"
+    return _format_duration(remaining_seconds)
+
+
 def _render_match_progress_line(
     *,
     slot_index: int,
@@ -884,16 +929,25 @@ def _render_live_progress_lines(
         completed_games=completed_games,
         elapsed_seconds=elapsed_seconds,
     )
+    remaining_text = _format_remaining_time(
+        completed_games=completed_games,
+        max_games=max_games,
+        elapsed_seconds=elapsed_seconds,
+    )
     if max_games is None:
         overall_summary = f"{completed_games} games complete"
     else:
         overall_summary = f"{completed_games}/{max_games} games complete"
+    remaining_suffix = (
+        "" if remaining_text is None else f" | remaining={remaining_text}"
+    )
 
     lines = [
         (
             f"Continuous sim | {overall_summary} | "
             f"{len(active_tasks_by_slot)}/{slot_count} running | "
             f"elapsed={elapsed_seconds:.1f}s | {games_per_hour:.1f} games/hour"
+            f"{remaining_suffix}"
         ),
         f"Last result | {last_result_text or 'none yet'}",
         _format_schedule_summary(

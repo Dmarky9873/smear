@@ -9,9 +9,12 @@ from unittest.mock import patch
 from backend.continuous_sim import (
     ContinuousSimResult,
     EloEntry,
-    _compact_bot_name,
     _build_initial_ratings,
     _build_parallel_executor,
+    _compact_bot_name,
+    _estimated_remaining_seconds,
+    _format_duration,
+    _format_remaining_time,
     compute_multiplayer_elo_deltas,
     iter_match_tasks,
     load_persisted_rating_state,
@@ -31,6 +34,42 @@ class ContinuousSimHelperTests(unittest.TestCase):
 
         self.assertAlmostEqual(result.elapsed_seconds, 3600.0)
         self.assertAlmostEqual(result.games_per_hour, 120.0)
+
+    def test_remaining_time_uses_completed_games_average(self):
+        self.assertEqual(
+            _estimated_remaining_seconds(
+                completed_games=25,
+                max_games=100,
+                elapsed_seconds=50.0,
+            ),
+            150.0,
+        )
+        self.assertEqual(_format_duration(150.0), "2m 30s")
+        self.assertEqual(
+            _format_remaining_time(
+                completed_games=25,
+                max_games=100,
+                elapsed_seconds=50.0,
+            ),
+            "2m 30s",
+        )
+
+    def test_remaining_time_waits_for_first_completed_game(self):
+        self.assertIsNone(
+            _estimated_remaining_seconds(
+                completed_games=0,
+                max_games=100,
+                elapsed_seconds=50.0,
+            )
+        )
+        self.assertEqual(
+            _format_remaining_time(
+                completed_games=0,
+                max_games=100,
+                elapsed_seconds=50.0,
+            ),
+            "estimating",
+        )
 
     def test_compact_bot_name_shows_neural_versions_explicitly(self):
         self.assertEqual(_compact_bot_name("neural-3p-v1"), "n3v1")
@@ -252,6 +291,7 @@ class ContinuousSimEntryPointTests(unittest.TestCase):
         self.assertIn("schedule=balanced", completed.stdout)
         self.assertIn("Schedule | balanced", completed.stdout)
         self.assertIn("games/hour", completed.stdout)
+        self.assertIn("remaining=", completed.stdout)
         self.assertIn("random filler", completed.stdout)
         self.assertIn("Final leaderboard after 1 game", completed.stdout)
 

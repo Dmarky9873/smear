@@ -105,7 +105,7 @@ export default function App() {
         <div className="mode-switcher__branding">
           <img
             className="mode-switcher__logo"
-            src="/logo.png"
+            src="/logo.svg"
             alt="Play Smear logo"
           />
           <div className="mode-switcher__copy">

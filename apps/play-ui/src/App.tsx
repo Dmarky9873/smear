@@ -54,8 +54,285 @@ const MOBILE_TABLE_QUERY =
   "(max-width: 760px), (pointer: coarse) and (max-width: 920px)";
 const LOBBY_TOKEN_STORAGE_PREFIX = "smear-lobby-player-token:";
 
-type AppView = "home" | "play" | "learn" | "donate";
+type AppView =
+  | "home"
+  | "play"
+  | "learn"
+  | "learn/practice"
+  | "learn/tutorial"
+  | "donate";
 type PlayMode = "menu" | "bots" | "host" | "join" | "lobby";
+type TutorialLessonId =
+  | "welcome"
+  | "deck"
+  | "auction"
+  | "trump"
+  | "legal-plays"
+  | "scoring"
+  | "match"
+  | "ready";
+
+type TutorialAnswer = {
+  label: string;
+  feedback: string;
+  isCorrect: boolean;
+};
+
+type TutorialLesson = {
+  id: TutorialLessonId;
+  eyebrow: string;
+  title: string;
+  overview: string;
+  question: string;
+  answers: TutorialAnswer[];
+};
+
+const TUTORIAL_LESSONS: TutorialLesson[] = [
+  {
+    id: "welcome",
+    eyebrow: "Lesson 1",
+    title: "Meet the table",
+    overview:
+      "Understand the goal, table size, teams, and what a round looks like.",
+    question: "How many tricks are played in one round of Smear?",
+    answers: [
+      {
+        label: "Six, one for every card dealt",
+        feedback:
+          "Every player receives six cards, and every card is played across six tricks.",
+        isCorrect: true,
+      },
+      {
+        label: "Four, one for every player",
+        feedback:
+          "Tricks are based on cards in each hand, not the number of players. Each hand has six cards.",
+        isCorrect: false,
+      },
+      {
+        label: "Until a team reaches 21",
+        feedback:
+          "Twenty-one ends the match; a single round still contains exactly six tricks.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "deck",
+    eyebrow: "Lesson 2",
+    title: "Deal and functional deck",
+    overview:
+      "Learn which cards are used and why a few unseen cards still affect scoring.",
+    question:
+      "In the usual four-player game, which functional deck is dealt?",
+    answers: [
+      {
+        label: "Ranks 9 through Ace plus two jokers, with two cards hidden",
+        feedback:
+          "Four hands use 24 cards. The 26-card functional deck leaves two unseen hiding cards.",
+        isCorrect: true,
+      },
+      {
+        label: "The full 54-card deck, with 30 cards hidden",
+        feedback:
+          "Smear removes low ranks to keep the hiding cards close to two; four players use a low of 9.",
+        isCorrect: false,
+      },
+      {
+        label: "Ranks 10 through Ace, with no jokers",
+        feedback:
+          "Jokers are always included in the functional deck and can score points.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "auction",
+    eyebrow: "Lesson 3",
+    title: "Win the right to lead",
+    overview:
+      "Bidding is one lap around the table and the winning bid carries risk.",
+    question:
+      "Nobody has bid before the dealer, who is the last bidder. What can the dealer do?",
+    answers: [
+      {
+        label: "They must bid from 1 to 6",
+        feedback:
+          "The final bidder cannot pass when no bid has been made, so every round gets an auction winner.",
+        isCorrect: true,
+      },
+      {
+        label: "Pass and redeal",
+        feedback:
+          "There is no all-pass redeal. The last bidder is forced to open the bidding.",
+        isCorrect: false,
+      },
+      {
+        label: "Name trump without bidding",
+        feedback:
+          "Trump is determined later by the first card led, not declared during the auction.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "trump",
+    eyebrow: "Lesson 4",
+    title: "Trump and winning tricks",
+    overview:
+      "The auction winner establishes trump with the first lead, then cards compete by priority.",
+    question:
+      "Trump is hearts. A trick contains the ace of spades, a joker, and the king of hearts. Which wins?",
+    answers: [
+      {
+        label: "King of hearts",
+        feedback:
+          "Any trump suit card defeats jokers and off-suit cards; the highest played trump wins.",
+        isCorrect: true,
+      },
+      {
+        label: "The joker",
+        feedback:
+          "A joker wins only when no trump suit card appears in the trick.",
+        isCorrect: false,
+      },
+      {
+        label: "Ace of spades",
+        feedback:
+          "An off-suit ace cannot beat a trump card in the trick.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "legal-plays",
+    eyebrow: "Lesson 5",
+    title: "Choose a legal card",
+    overview:
+      "Trump and jokers are flexible, but following a non-trump suit and responding to a trump lead impose limits.",
+    question:
+      "Trump is hearts and diamonds are led. You hold 9D, 10H, J1, and KS. Which cards are legal?",
+    answers: [
+      {
+        label: "9D, 10H, and J1",
+        feedback:
+          "You may follow diamonds, play trump, or play a joker. You cannot discard KS while you can follow diamonds.",
+        isCorrect: true,
+      },
+      {
+        label: "Only 9D",
+        feedback:
+          "Following suit is legal, but trump cards and jokers are also always legal responses during a trick.",
+        isCorrect: false,
+      },
+      {
+        label: "All four cards",
+        feedback:
+          "KS is an off-suit discard and is illegal while you still hold a diamond to follow the led suit.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "scoring",
+    eyebrow: "Lesson 6",
+    title: "Score the six points",
+    overview:
+      "A round awards high, low, jack, two possible joker points, and game.",
+    question:
+      "You were dealt the lowest visible trump, but an opponent captured it in a trick. Who receives low?",
+    answers: [
+      {
+        label: "You or your team",
+        feedback:
+          "Low stays with the scoring unit originally dealt and playing that trump card, even if the trick is lost.",
+        isCorrect: true,
+      },
+      {
+        label: "The opponent who captured it",
+        feedback:
+          "Most cards score through capture, but low is the explicit exception.",
+        isCorrect: false,
+      },
+      {
+        label: "Nobody",
+        feedback:
+          "The lowest visible trump is worth one low point whenever it was dealt, regardless of who takes its trick.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "match",
+    eyebrow: "Lesson 7",
+    title: "Make the bid and win",
+    overview:
+      "The bidder can reach 21, but failing the contract costs the bid amount.",
+    question:
+      "A bidding team bids 4 but earns only 3 raw round points. What happens to its match score?",
+    answers: [
+      {
+        label: "It loses 4 match points",
+        feedback:
+          "Missing the contract sets the bidding unit back by the full bid, not by its earned points.",
+        isCorrect: true,
+      },
+      {
+        label: "It adds 3 points",
+        feedback:
+          "The bidder adds its points only after making its bid.",
+        isCorrect: false,
+      },
+      {
+        label: "It loses 1 point",
+        feedback:
+          "The penalty is not the shortfall. A failed bid subtracts the entire bid amount.",
+        isCorrect: false,
+      },
+    ],
+  },
+  {
+    id: "ready",
+    eyebrow: "Lesson 8",
+    title: "Play a complete round",
+    overview:
+      "Put the sequence together before moving from rules to practice or a table.",
+    question:
+      "Which sequence correctly describes a round from start to finish?",
+    answers: [
+      {
+        label:
+          "Bid once each, bidder leads trump, play six tricks, score cards, check the bid",
+        feedback:
+          "That is the full round loop. You now have the rules needed to begin playing.",
+        isCorrect: true,
+      },
+      {
+        label:
+          "Choose trump, deal hands, bid repeatedly, score after every trick",
+        feedback:
+          "Cards are dealt first, the auction is one lap, and trump is established by the bidder's first lead.",
+        isCorrect: false,
+      },
+      {
+        label:
+          "Deal, play any six tricks, then let the highest score declare trump",
+        feedback:
+          "Trump must be established on the first lead so it can govern trick play and scoring.",
+        isCorrect: false,
+      },
+    ],
+  },
+];
+
+const TUTORIAL_CARDS: Record<string, Card> = {
+  "10H": { code: "10H", rank: "10", suit: "H", is_joker: false },
+  KH: { code: "KH", rank: "K", suit: "H", is_joker: false },
+  AD: { code: "AD", rank: "A", suit: "D", is_joker: false },
+  AS: { code: "AS", rank: "A", suit: "S", is_joker: false },
+  "9D": { code: "9D", rank: "9", suit: "D", is_joker: false },
+  KS: { code: "KS", rank: "K", suit: "S", is_joker: false },
+  J1: { code: "J1", rank: null, suit: null, is_joker: true },
+};
 
 function viewFromHash(hash: string): AppView {
   const route = hash.split("?")[0];
@@ -65,6 +342,12 @@ function viewFromHash(hash: string): AppView {
   }
   if (route === "#learn") {
     return "learn";
+  }
+  if (route === "#learn/practice") {
+    return "learn/practice";
+  }
+  if (route === "#learn/tutorial") {
+    return "learn/tutorial";
   }
   if (route === "#donate") {
     return "donate";
@@ -2674,8 +2957,8 @@ function LandingPage({
             </div>
           </div>
           <p>
-            Sit down with friends, play a fast table against bots, or work
-            through one position at a time and compare your choice with the best
+            Sit down with friends, play a fast table against bots, learn the
+            rules from the beginning, or practice positions against the best
             bot.
           </p>
         </div>
@@ -2707,7 +2990,7 @@ function LandingPage({
         >
           <span>Learn</span>
           <strong>
-            Practice random bid and card positions, then reveal the bot move.
+            Take the complete tutorial or practice bid and card positions.
           </strong>
         </button>
         <button
@@ -2940,9 +3223,706 @@ function DonationPage({
   );
 }
 
+type LearnPageProps = PageNavigationProps & {
+  onChoosePractice: () => void;
+  onChooseTutorial: () => void;
+};
+
 function LearnPage({
   onNavigateHome,
   onNavigatePlay,
+  onNavigateDonate,
+  onChoosePractice,
+  onChooseTutorial,
+}: LearnPageProps) {
+  return (
+    <main className="public-shell learn-menu-shell">
+      <section className="hero-card">
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Learn</span>
+            <h1>Learn Smear</h1>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigatePlay}>
+            Play
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateDonate}
+          >
+            Donate
+          </button>
+        </div>
+      </section>
+
+      <section className="learn-menu-intro">
+        <span className="eyebrow">Choose a path</span>
+        <h2>Start with the rules or test your decisions</h2>
+        <p>
+          Tutorial is designed for a first-time player. Practice drops you into
+          auction and card-play positions once you understand the table.
+        </p>
+      </section>
+
+      <section className="learn-mode-grid" aria-label="Learning modes">
+        <button
+          type="button"
+          className="learn-mode-card learn-mode-card--featured"
+          onClick={onChooseTutorial}
+        >
+          <span className="eyebrow">Start here</span>
+          <h2>Tutorial</h2>
+          <p>
+            Learn the deck, bidding, trump, legal plays, scoring, and how to
+            win a match in eight guided lessons.
+          </p>
+          <strong>Begin tutorial</strong>
+        </button>
+        <button
+          type="button"
+          className="learn-mode-card"
+          onClick={onChoosePractice}
+        >
+          <span className="eyebrow">Already know the rules?</span>
+          <h2>Practice</h2>
+          <p>
+            Make a bid or play a card in a generated position, then compare
+            your decision with a selected bot.
+          </p>
+          <strong>Practice positions</strong>
+        </button>
+      </section>
+
+      <SiteFooter />
+    </main>
+  );
+}
+
+type TutorialCardPlayProps = {
+  cardCode: string;
+  label: string;
+  isTrump?: boolean;
+  disabled?: boolean;
+};
+
+function TutorialCardPlay({
+  cardCode,
+  label,
+  isTrump = false,
+  disabled = false,
+}: TutorialCardPlayProps) {
+  return (
+    <div className="tutorial-card-play">
+      <span>{label}</span>
+      <PlayingCard
+        card={TUTORIAL_CARDS[cardCode]}
+        compact
+        isTrump={isTrump}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+function TutorialLessonContent({ lessonId }: { lessonId: TutorialLessonId }) {
+  if (lessonId === "welcome") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          Smear is a trick-taking card game for 3 to 8 players. Four players on
+          two teams is the most natural table: teammates combine their round
+          points and match score.
+        </p>
+        <div className="tutorial-rule-grid">
+          <article>
+            <strong>Goal</strong>
+            <span>Reach 21 match points by winning a bid and scoring a round.</span>
+          </article>
+          <article>
+            <strong>Hand</strong>
+            <span>Each player receives 6 cards every round.</span>
+          </article>
+          <article>
+            <strong>Round</strong>
+            <span>An auction followed by 6 tricks, using every card in hand.</span>
+          </article>
+          <article>
+            <strong>Teams</strong>
+            <span>Play individually or in any configured team grouping.</span>
+          </article>
+        </div>
+        <div className="tutorial-callout">
+          <strong>What is a trick?</strong>
+          <p>
+            Each player contributes one card. One card wins, and its player
+            captures the cards for scoring. The trick winner leads the next
+            trick.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  if (lessonId === "deck") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          The full deck has 52 standard cards and 2 jokers. Smear deals from a
+          smaller functional deck each round so there are only a few unknown
+          hiding cards left after every player receives six cards.
+        </p>
+        <p>
+          Ranks run from low to high: <strong>2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K, A</strong>.
+          The deck is shuffled fresh each round.
+        </p>
+        <div className="tutorial-table-wrap">
+          <table className="tutorial-data-table">
+            <caption>Functional deck by player count</caption>
+            <thead>
+              <tr>
+                <th scope="col">Players</th>
+                <th scope="col">Lowest rank used</th>
+                <th scope="col">Hidden cards</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>3</td><td>10</td><td>4</td></tr>
+              <tr><td>4</td><td>9</td><td>2</td></tr>
+              <tr><td>5</td><td>7</td><td>4</td></tr>
+              <tr><td>6</td><td>6</td><td>2</td></tr>
+              <tr><td>7</td><td>4</td><td>4</td></tr>
+              <tr><td>8</td><td>3</td><td>2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="tutorial-callout">
+          <strong>Why hiding cards matter</strong>
+          <p>
+            Nobody plays hidden cards, but a hidden trump jack removes the jack
+            scoring point, and hidden trump ranks determine which dealt trumps
+            are the visible high and low.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  if (lessonId === "auction") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          Before cards are played, each player gets exactly one chance to bid
+          for the right to lead the round. A bid promises that the bidder or
+          bidding team will score at least that many round points.
+        </p>
+        <ol className="tutorial-steps">
+          <li>The dealer moves one seat clockwise each round.</li>
+          <li>
+            The player to the dealer&apos;s left bids first, continuing
+            clockwise until the dealer acts last.
+          </li>
+          <li>
+            A legal bid is an integer from <strong>1 through 6</strong> and
+            must be higher than every earlier bid. A player may pass after a
+            bid exists.
+          </li>
+          <li>
+            Players may initially pass, but if everyone before the final
+            bidder passed, that final bidder must bid.
+          </li>
+        </ol>
+        <div className="tutorial-callout">
+          <strong>A bid of 6</strong>
+          <p>
+            Six is the maximum, but it does not stop the auction early.
+            Remaining players still take their turn; their only legal choice is
+            to pass.
+          </p>
+        </div>
+        <p>
+          After the single bidding lap, the highest bidder wins the auction and
+          leads the first trick.
+        </p>
+      </>
+    );
+  }
+
+  if (lessonId === "trump") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          Trump is not announced during bidding. The suit of the auction
+          winner&apos;s first card becomes trump for the entire round. That
+          opening card cannot be a joker because a joker has no suit.
+        </p>
+        <div className="tutorial-card-example">
+          <div className="tutorial-card-example__header">
+            <strong>Example trick</strong>
+            <span>First lead made hearts trump</span>
+          </div>
+          <div className="tutorial-card-row">
+            <TutorialCardPlay cardCode="10H" label="Lead" isTrump />
+            <TutorialCardPlay cardCode="AS" label="Off-suit" />
+            <TutorialCardPlay cardCode="J1" label="Joker" isTrump />
+            <TutorialCardPlay cardCode="KH" label="Winner" isTrump />
+          </div>
+        </div>
+        <h3>How a trick is won</h3>
+        <ol className="tutorial-steps">
+          <li>Highest card played in the round&apos;s trump suit wins.</li>
+          <li>
+            If no trump was played, the <strong>first joker played</strong>{" "}
+            wins. A second joker cannot beat it.
+          </li>
+          <li>
+            If there is neither trump nor a joker, the highest card in the
+            suit led to this trick wins.
+          </li>
+        </ol>
+        <p>
+          After trump is set, any later trick leader may lead any card,
+          including a joker. The winner of every trick leads the next one.
+        </p>
+      </>
+    );
+  }
+
+  if (lessonId === "legal-plays") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          During a trick, trump cards and jokers can always be played. Rules
+          for ordinary cards depend on what was led.
+        </p>
+        <div className="tutorial-rule-grid tutorial-rule-grid--play">
+          <article>
+            <strong>Trump was led</strong>
+            <span>
+              Play trump or a joker if you hold either. You may discard a
+              non-trump only when you have no trump-capable response.
+            </span>
+          </article>
+          <article>
+            <strong>Ordinary suit was led</strong>
+            <span>
+              You may trump or play a joker. If you play an ordinary card, you
+              must follow the led suit when you have it.
+            </span>
+          </article>
+          <article>
+            <strong>You cannot follow</strong>
+            <span>
+              If an ordinary non-trump card led the trick and you hold none of
+              its suit, any ordinary off-suit discard is legal.
+            </span>
+          </article>
+          <article>
+            <strong>A joker was led</strong>
+            <span>Every card in your hand is legal.</span>
+          </article>
+        </div>
+        <div className="tutorial-card-example">
+          <div className="tutorial-card-example__header">
+            <strong>Trump: hearts; lead: ace of diamonds</strong>
+            <span>Legal cards are highlighted; king of spades is blocked.</span>
+          </div>
+          <div className="tutorial-card-row">
+            <TutorialCardPlay cardCode="AD" label="Lead" />
+            <TutorialCardPlay cardCode="9D" label="Follow suit" />
+            <TutorialCardPlay cardCode="10H" label="Trump" isTrump />
+            <TutorialCardPlay cardCode="J1" label="Joker" isTrump />
+            <TutorialCardPlay cardCode="KS" label="Illegal discard" disabled />
+          </div>
+        </div>
+        <div className="tutorial-callout">
+          <strong>Trump-lead edge case</strong>
+          <p>
+            If diamonds are trump, diamonds are led, and your only
+            trump-capable card is a joker, you must play that joker instead of
+            discarding an ordinary off-suit card.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  if (lessonId === "scoring") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          Up to six raw points are available after the sixth trick. Points go
+          to a player or to the combined team when teams are enabled.
+        </p>
+        <div className="tutorial-points-grid">
+          <article><strong>High</strong><span>Highest visible trump: 1 point.</span></article>
+          <article><strong>Jack</strong><span>Jack of trump: 1 point, unless hidden.</span></article>
+          <article><strong>Low</strong><span>Lowest visible trump: 1 point for its original holder.</span></article>
+          <article><strong>Jokers</strong><span>Each captured joker: 1 point, up to 2.</span></article>
+          <article><strong>Game</strong><span>Unique highest game-card total: 1 point.</span></article>
+        </div>
+        <div className="tutorial-callout">
+          <strong>Low is different</strong>
+          <p>
+            High, jack, jokers, and game depend on possession or captured
+            cards. Low belongs to whoever was originally dealt the lowest
+            visible trump and played it, even when another player captures its
+            trick.
+          </p>
+        </div>
+        <h3>Counting game</h3>
+        <div className="tutorial-value-row" aria-label="Game card values">
+          <span><strong>10</strong> = 10</span>
+          <span><strong>J</strong> = 1</span>
+          <span><strong>Q</strong> = 2</span>
+          <span><strong>K</strong> = 3</span>
+          <span><strong>A</strong> = 4</span>
+          <span><strong>2-9</strong> = 0</span>
+        </div>
+        <p>
+          Only a unique highest captured-card total earns game. If the leading
+          total is tied, no one receives that point. Visible trump means a
+          trump card in the functional deck that was not hidden in the deal.
+        </p>
+      </>
+    );
+  }
+
+  if (lessonId === "match") {
+    return (
+      <>
+        <p className="tutorial-lead">
+          Raw points are applied differently to the bidding unit and everyone
+          else. The standard target score is 21.
+        </p>
+        <div className="tutorial-rule-grid">
+          <article>
+            <strong>Bid made</strong>
+            <span>
+              If the bidder scores at least its bid, it adds its full raw round
+              total, not just the bid.
+            </span>
+          </article>
+          <article>
+            <strong>Bid missed</strong>
+            <span>
+              If the bidder falls short, it subtracts the bid amount from its
+              match score.
+            </span>
+          </article>
+          <article>
+            <strong>Non-bidders</strong>
+            <span>
+              Every other scoring unit adds its raw points, but cannot rise
+              above 20 in a game to 21.
+            </span>
+          </article>
+          <article>
+            <strong>Winning</strong>
+            <span>
+              Only the unit that won the auction can reach the target and win
+              at the end of that round.
+            </span>
+          </article>
+        </div>
+        <div className="tutorial-score-example">
+          <strong>Contract examples</strong>
+          <p>
+            Bid 3 and score 5: add 5. Bid 4 and score 3: subtract 4. A
+            non-bidding team at 19 that scores 3 finishes the round at 20, not
+            22.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <p className="tutorial-lead">
+        You can now follow a round without guessing: cards are dealt, players
+        bid once, the bidder&apos;s opening lead sets trump, six tricks are
+        played legally, points are counted, and the bidder&apos;s contract
+        decides match movement.
+      </p>
+      <div className="tutorial-recap">
+        <h3>At the table, remember</h3>
+        <ol className="tutorial-steps">
+          <li>
+            Bid for points you believe your hand or team can secure, remembering
+            that losing a bid costs its full value.
+          </li>
+          <li>
+            If you win the auction, choose your first lead carefully because
+            its suit is trump for all six tricks.
+          </li>
+          <li>
+            During tricks, track trump and jokers first, then led suit; do not
+            make an off-suit discard when the follow rules prohibit it.
+          </li>
+          <li>
+            Track high, jack, low, both jokers, and captured game values while
+            aiming to make the bid and eventually reach 21.
+          </li>
+        </ol>
+      </div>
+      <p>
+        Practice offers generated decisions with bot feedback. Play starts a
+        table against bots or with other people.
+      </p>
+    </>
+  );
+}
+
+type TutorialQuestionProps = {
+  lesson: TutorialLesson;
+  selectedAnswer: number | undefined;
+  onSelectAnswer: (answerIndex: number) => void;
+};
+
+function TutorialQuestion({
+  lesson,
+  selectedAnswer,
+  onSelectAnswer,
+}: TutorialQuestionProps) {
+  const answer =
+    selectedAnswer === undefined ? null : lesson.answers[selectedAnswer];
+
+  return (
+    <section className="tutorial-question">
+      <span className="eyebrow">Check your understanding</span>
+      <h3>{lesson.question}</h3>
+      <div className="tutorial-answer-grid">
+        {lesson.answers.map((option, index) => (
+          <button
+            key={option.label}
+            type="button"
+            className={[
+              "tutorial-answer",
+              selectedAnswer === index ? "is-selected" : "",
+              selectedAnswer === index && option.isCorrect ? "is-correct" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            aria-pressed={selectedAnswer === index}
+            onClick={() => onSelectAnswer(index)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {answer ? (
+        <p
+          className={[
+            "tutorial-feedback",
+            answer.isCorrect ? "tutorial-feedback--correct" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          role="status"
+        >
+          <strong>{answer.isCorrect ? "Correct." : "Try again."}</strong>{" "}
+          {answer.feedback}
+        </p>
+      ) : (
+        <p className="tutorial-feedback">
+          Choose an answer to unlock the next lesson.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function TutorialPage({
+  onNavigateHome,
+  onNavigatePlay,
+  onNavigateLearn,
+  onNavigateDonate,
+}: PageNavigationProps) {
+  const [lessonIndex, setLessonIndex] = useState(0);
+  const [unlockedIndex, setUnlockedIndex] = useState(0);
+  const [answers, setAnswers] = useState<
+    Partial<Record<TutorialLessonId, number>>
+  >({});
+  const [hasCompletedTutorial, setHasCompletedTutorial] = useState(false);
+  const lesson = TUTORIAL_LESSONS[lessonIndex];
+  const selectedAnswer = answers[lesson.id];
+  const answerIsCorrect =
+    selectedAnswer !== undefined &&
+    lesson.answers[selectedAnswer]?.isCorrect === true;
+  const isLastLesson = lessonIndex === TUTORIAL_LESSONS.length - 1;
+  const progressPercent = Math.round(
+    ((lessonIndex + (answerIsCorrect ? 1 : 0)) / TUTORIAL_LESSONS.length) *
+      100,
+  );
+
+  function handleContinue() {
+    if (!answerIsCorrect) {
+      return;
+    }
+    if (isLastLesson) {
+      setHasCompletedTutorial(true);
+      return;
+    }
+
+    const nextIndex = lessonIndex + 1;
+    setUnlockedIndex((current) => Math.max(current, nextIndex));
+    setLessonIndex(nextIndex);
+  }
+
+  return (
+    <main className="public-shell tutorial-shell">
+      <section className="hero-card">
+        <div className="hero-card__branding">
+          <BrandLogo className="brand-logo--badge" />
+          <div>
+            <span className="eyebrow">Learn / Tutorial</span>
+            <h1>How to play Smear</h1>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button type="button" className="ghost-button" onClick={onNavigateLearn}>
+            Learn
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigateHome}>
+            Home
+          </button>
+          <button type="button" className="ghost-button" onClick={onNavigatePlay}>
+            Play
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateDonate}
+          >
+            Donate
+          </button>
+        </div>
+      </section>
+
+      <section className="tutorial-layout">
+        <aside className="tutorial-sidebar" aria-label="Tutorial lessons">
+          <div>
+            <span className="eyebrow">Progress</span>
+            <strong>{progressPercent}% complete</strong>
+          </div>
+          <div className="tutorial-progress-track" aria-hidden="true">
+            <span style={{ width: `${progressPercent}%` }} />
+          </div>
+          <nav className="tutorial-step-list">
+            {TUTORIAL_LESSONS.map((item, index) => {
+              const selected = index === lessonIndex;
+              const lessonAnswer = answers[item.id];
+              const completed =
+                lessonAnswer !== undefined &&
+                item.answers[lessonAnswer]?.isCorrect === true;
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={[
+                    "tutorial-step-button",
+                    selected ? "is-selected" : "",
+                    completed ? "is-complete" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => setLessonIndex(index)}
+                  disabled={index > unlockedIndex}
+                  aria-current={selected ? "step" : undefined}
+                >
+                  <span>{item.eyebrow}</span>
+                  <strong>{item.title}</strong>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        <article className="tutorial-content">
+          <header className="tutorial-content__header">
+            <span className="eyebrow">{lesson.eyebrow}</span>
+            <h2>{lesson.title}</h2>
+            <p>{lesson.overview}</p>
+          </header>
+
+          <TutorialLessonContent lessonId={lesson.id} />
+
+          <TutorialQuestion
+            lesson={lesson}
+            selectedAnswer={selectedAnswer}
+            onSelectAnswer={(answerIndex) =>
+              setAnswers((current) => ({
+                ...current,
+                [lesson.id]: answerIndex,
+              }))
+            }
+          />
+
+          {hasCompletedTutorial && isLastLesson ? (
+            <section className="tutorial-complete" aria-live="polite">
+              <span className="eyebrow">Tutorial complete</span>
+              <h3>You are ready to play a round.</h3>
+              <p>
+                Use Practice to check individual decisions against a bot, or
+                open a table and put the full round together.
+              </p>
+              <div className="tutorial-complete__actions">
+                <button
+                  type="button"
+                  className="cta-button"
+                  onClick={() => setHashView("learn/practice")}
+                >
+                  Practice positions
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onNavigatePlay}
+                >
+                  Play Smear
+                </button>
+              </div>
+            </section>
+          ) : null}
+
+          <div className="tutorial-controls">
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => setLessonIndex((current) => current - 1)}
+              disabled={lessonIndex === 0}
+            >
+              Previous lesson
+            </button>
+            <button
+              type="button"
+              className="cta-button"
+              onClick={handleContinue}
+              disabled={!answerIsCorrect || (isLastLesson && hasCompletedTutorial)}
+            >
+              {isLastLesson ? "Finish tutorial" : "Next lesson"}
+            </button>
+          </div>
+        </article>
+      </section>
+
+      <SiteFooter />
+    </main>
+  );
+}
+
+function PracticePage({
+  onNavigateHome,
+  onNavigatePlay,
+  onNavigateLearn,
   onNavigateDonate,
 }: PageNavigationProps) {
   const client = useMemo(
@@ -3049,11 +4029,18 @@ function LearnPage({
         <div className="hero-card__branding">
           <BrandLogo className="brand-logo--badge" />
           <div>
-            <span className="eyebrow">Learn</span>
+            <span className="eyebrow">Learn / Practice</span>
             <h1>Practice a position</h1>
           </div>
         </div>
         <div className="top-actions">
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onNavigateLearn}
+          >
+            Learn
+          </button>
           <button
             type="button"
             className="ghost-button"
@@ -3351,7 +4338,21 @@ export default function App() {
   }
 
   if (view === "learn") {
-    return <LearnPage {...navigation} />;
+    return (
+      <LearnPage
+        {...navigation}
+        onChoosePractice={() => setHashView("learn/practice")}
+        onChooseTutorial={() => setHashView("learn/tutorial")}
+      />
+    );
+  }
+
+  if (view === "learn/practice") {
+    return <PracticePage {...navigation} />;
+  }
+
+  if (view === "learn/tutorial") {
+    return <TutorialPage {...navigation} />;
   }
 
   if (view === "donate") {
